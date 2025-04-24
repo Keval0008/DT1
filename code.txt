@@ -8,6 +8,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple, Union
+import pprint
 
 
 # Cache parsed SQL to avoid redundant parsing
@@ -43,10 +44,39 @@ def get_cte_schemas(ast: exp.Expression) -> dict:
             column_dependencies = {}
 
             # Process SELECT expressions in CTE
-            for i, expr in enumerate(cte.this.expressions):
-                col_name = expr.alias if isinstance(expr, exp.Alias) else expr.this.this if isinstance(expr, exp.Column) else f"col_{i+1}"
-                col_expr = expr.this.this if isinstance(expr, exp.Column) else expr.sql()
-                col_type = "star" if isinstance(expr, exp.Star) else "column"
+            for expr in cte.this.expressions:
+                # Handle star expressions first (both qualified and unqualified)
+                if isinstance(expr, exp.Star):
+                    # Unqualified star (*)
+                    col_name = "*"
+                    col_expr = "*"
+                    col_type = "star"
+                elif isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+                    # Qualified star (table.*)
+                    col_name = "*"
+                    col_expr = f"{expr.args['table']}.*"
+                    col_type = "star"
+                # Handle regular column references
+                elif isinstance(expr, exp.Column):
+                    col_name = expr.name
+                    col_expr = expr.sql()
+                    col_type = "column"
+                # Handle aliased expressions
+                elif isinstance(expr, exp.Alias):
+                    col_name = expr.alias
+                    # For aliased columns, get the underlying column reference
+                    if isinstance(expr.this, exp.Column):
+                        col_expr = expr.this.sql()
+                        col_type = "column"
+                    # For other aliased expressions (like CASE statements)
+                    else:
+                        col_expr = expr.this.sql()
+                        col_type = "expression"
+                # Handle all other expressions
+                else:
+                    col_name = f"expr_{len(columns) + 1}"
+                    col_expr = expr.sql()
+                    col_type = "expression"
                 
                 columns[col_name] = {
                     "type": col_type,
@@ -82,8 +112,10 @@ def get_cte_schemas(ast: exp.Expression) -> dict:
     return cte_schemas
 
 def extract_main_table_schema(ast: exp.Expression, cte_names: set) -> dict:
+    print("\n=== DEBUG: extract_main_table_schema ===")
     main_select = ast.find(exp.Select)
     if not main_select:
+        print("DEBUG: No main SELECT found")
         return {}
 
     schema = {
@@ -101,60 +133,108 @@ def extract_main_table_schema(ast: exp.Expression, cte_names: set) -> dict:
 
     # Process FROM clause
     if main_select.args.get("from"):
-        for source in main_select.args["from"].expressions:
+        print("DEBUG: Processing FROM clause")
+        from_clause = main_select.args["from"]
+        
+        if isinstance(from_clause, exp.From):
+            sources = from_clause.expressions or [from_clause.this]
+        else:
+            sources = [from_clause]
+
+        for source in sources:
             if isinstance(source, exp.Table):
                 table_name = source.name
                 alias = source.alias or table_name
+                print(f"DEBUG: Found table {table_name} with alias {alias}")
                 schema["main_select"]["from_table"][table_name] = alias
                 schema["main_select"]["is_cte"][alias] = table_name in cte_names
             elif isinstance(source, exp.Alias) and isinstance(source.this, exp.Table):
                 table_name = source.this.name
                 alias = source.alias
+                print(f"DEBUG: Found aliased table {table_name} as {alias}")
                 schema["main_select"]["from_table"][table_name] = alias
                 schema["main_select"]["is_cte"][alias] = table_name in cte_names
+
 
     # Process JOINs
     for join in main_select.args.get("joins", []):
         if isinstance(join.this, exp.Table):
             table_name = join.this.name
             alias = join.this.alias or table_name
+            print(f"DEBUG: Found JOIN table {table_name} with alias {alias}")
             schema["main_select"]["joins"][table_name] = alias
             schema["main_select"]["is_cte"][alias] = table_name in cte_names
         elif isinstance(join.this, exp.Alias) and isinstance(join.this.this, exp.Table):
             table_name = join.this.this.name
             alias = join.this.alias
+            print(f"DEBUG: Found aliased JOIN table {table_name} as {alias}")
             schema["main_select"]["joins"][table_name] = alias
             schema["main_select"]["is_cte"][alias] = table_name in cte_names
 
     # Process SELECT expressions
+    print("\nDEBUG: Processing SELECT expressions")
     for i, expr in enumerate(main_select.expressions):
-        col_name = expr.alias if isinstance(expr, exp.Alias) else expr.this.this if isinstance(expr, exp.Column) else f"col_{i+1}"
-        col_expr = expr.this.this if isinstance(expr, exp.Column) else expr.sql()
-        is_star = isinstance(expr, exp.Star)
+        print(f"\nDEBUG: Processing expression {i}: {expr.sql()}")
+        print(f"DEBUG: Expression type: {type(expr)}")
         
-        schema["main_select"]["columns"][col_name] = {
-            "expression": col_expr,
-            "is_star": is_star,
-            "raw_expression": expr.sql()
-        }
+        if isinstance(expr, exp.Star):
+            print("DEBUG: Found unqualified star (*)")
+            col_key = f"star_{i}"
+            schema["main_select"]["columns"][col_key] = {
+                "expression": "*",
+                "is_star": True,
+                "raw_expression": "*"
+            }
+        elif isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+            print(f"DEBUG: Found qualified star ({expr.sql()})")
+            col_key = f"star_{i}"
+            table_ref = expr.args["table"].this if hasattr(expr.args["table"], 'this') else expr.args["table"]
+            schema["main_select"]["columns"][col_key] = {
+                "expression": f"{table_ref}.*",
+                "is_star": True,
+                "raw_expression": expr.sql()
+            }
+        else:
+            if isinstance(expr, exp.Alias):
+                col_name = expr.alias
+                col_expr = expr.this.sql()
+                print(f"DEBUG: Found aliased expression: {col_name} = {col_expr}")
+            elif isinstance(expr, exp.Column):
+                col_name = expr.name
+                col_expr = expr.sql()
+                print(f"DEBUG: Found column: {col_name}")
+            else:
+                col_name = f"expr_{i}"
+                col_expr = expr.sql()
+                print(f"DEBUG: Found complex expression: {col_name} = {col_expr}")
+            
+            schema["main_select"]["columns"][col_name] = {
+                "expression": col_expr,
+                "is_star": False,
+                "raw_expression": expr.sql()
+            }
 
-    # Process GROUP BY
-    if main_select.args.get("group"):
-        schema["main_select"]["group_by"] = [col.this.this for col in main_select.args["group"].expressions if isinstance(col, exp.Column)]
-
+    print("\nDEBUG: Final main schema:")
+    pprint.pprint(schema)
     return schema
 
 def resolve_recursive_schema(cte_schema: dict, main_schema: dict) -> dict:
     final_schema = {}
+    print("\nDEBUG: Starting resolve_recursive_schema")  # Debug
+    print(f"DEBUG: CTE Schema Keys: {cte_schema.keys()}")  # Debug
+    print(f"DEBUG: Main Schema: {main_schema}")  # Debug
 
     def extract_alias_map(source_tables: list) -> dict:
+        print(f"\nDEBUG: extract_alias_map input: {source_tables}")  # Debug
         alias_map = {}
         for table_def in source_tables:
             if " AS " in table_def:
                 original, alias = [s.strip() for s in table_def.split(" AS ")]
                 alias_map[alias] = original
             alias_map[table_def] = table_def.split(" AS ")[0]
+        print(f"DEBUG: extract_alias_map output: {alias_map}")  # Debug
         return alias_map
+
 
     def resolve_cte(name: str) -> list:
         if name in final_schema:
@@ -170,44 +250,63 @@ def resolve_recursive_schema(cte_schema: dict, main_schema: dict) -> dict:
         for col_alias, col_info in cte["columns"].items():
             col_expr = col_info["expression"]
             col_type = col_info["type"]
-            
+
             if col_type == "star":
                 for src_cte in cte.get("source_ctes", []):
                     resolved_cols.extend(resolve_cte(src_cte))
                 for table in cte.get("source_tables", []):
                     base_table = alias_map.get(table, table)
-                    resolved_cols.append(f"{base_table}.*")
+                    resolved_cols.extend([f"{base_table}.{col}" for col in table_schema.get(base_table, [])])
             else:
                 if "." in col_expr:
                     alias, col_name = col_expr.split(".", 1)
                     base_table = alias_map.get(alias, alias)
                     resolved_cols.append(f"{base_table}.{col_name}")
                 else:
-                    source_tables = cte.get("source_tables", [])
-                    if len(source_tables) == 1:
-                        base_table = alias_map.get(source_tables[0], source_tables[0])
+                    if len(cte["source_tables"]) == 1:
+                        base_table = alias_map.get(cte["source_tables"][0], cte["source_tables"][0])
                         resolved_cols.append(f"{base_table}.{col_expr}")
                     else:
-                        resolved_cols.append(col_alias)  # Use alias for CTE columns
+                        resolved_cols.append(f"{name}.{col_alias}")
 
-        final_schema[name] = list(set(resolved_cols))
+        # Add passthrough columns from previous CTEs or base tables
+        passthrough_cols = []
+        for table in cte.get("source_tables", []):
+            base_table = alias_map.get(table, table)
+            if base_table in final_schema:
+                passthrough_cols.extend(final_schema[base_table])
+            elif base_table in table_schema:
+                passthrough_cols.extend([f"{base_table}.{col}" for col in table_schema[base_table]])
+
+        # De-duplicate and merge
+        final_schema[name] = list(set(resolved_cols + passthrough_cols))
         return final_schema[name]
+
+    
 
     # Resolve all CTEs first
     for cte in cte_schema:
+        print(f"\nDEBUG: Resolving CTE {cte}")  # Debug
         resolve_cte(cte)
 
     # Resolve main SELECT
+    print("\nDEBUG: Resolving main SELECT")  # Debug
     main = main_schema.get("main_select", {})
+    print(f"DEBUG: Main select content: {main}")  # Debug
     main_cols = []
     
     # Create alias to table mapping
     alias_to_table = {}
     for table, alias in {**main.get("from_table", {}), **main.get("joins", {})}.items():
         alias_to_table[alias] = table
+    print(f"DEBUG: alias_to_table: {alias_to_table}")  # Debug
 
     for col_alias, col_expr in main.get("columns", {}).items():
+        print(f"\nDEBUG: Processing main column {col_alias}")  # Debug
+        print(f"DEBUG: Column expr: {col_expr}")  # Debug
+        
         if col_expr["is_star"]:
+            print("DEBUG: Handling star in main select")  # Debug
             for tbl_alias in {**main["from_table"], **main["joins"]}.values():
                 original_name = alias_to_table.get(tbl_alias, tbl_alias)
                 if original_name in cte_schema:
@@ -216,7 +315,13 @@ def resolve_recursive_schema(cte_schema: dict, main_schema: dict) -> dict:
                     main_cols.append(f"{original_name}.*")
         else:
             expr = col_expr["expression"]
+            print(f"DEBUG: Processing expression: {expr}")  # Debug
+            if expr is None:  # Debug
+                print("WARNING: Main select expression is None!")  # Debug
+                continue  # Debug
+                
             if "." in expr:
+                print("DEBUG: Expression has dot notation")  # Debug
                 alias, col_name = expr.split(".", 1)
                 true_table = alias_to_table.get(alias, alias)
                 if true_table in cte_schema:
@@ -228,7 +333,7 @@ def resolve_recursive_schema(cte_schema: dict, main_schema: dict) -> dict:
                 else:
                     main_cols.append(f"{true_table}.{col_name}")
             else:
-                # Handle standalone columns or aggregates
+                print("DEBUG: Simple expression in main select")  # Debug
                 source_found = False
                 for tbl_alias in {**main["from_table"], **main["joins"]}.values():
                     original_name = alias_to_table.get(tbl_alias, tbl_alias)
@@ -247,74 +352,131 @@ def resolve_recursive_schema(cte_schema: dict, main_schema: dict) -> dict:
                                 source_found = True
                                 break
                 if not source_found:
-                    main_cols.append(col_alias)  # Use alias for aggregates or unresolved columns
+                    print("DEBUG: Using column alias as fallback")  # Debug
+                    main_cols.append(col_alias)
 
+    # Include all columns from FROM sources (CTEs or base tables)
+    for tbl_alias in {**main["from_table"], **main["joins"]}.values():
+        true_table = alias_to_table.get(tbl_alias, tbl_alias)
+        if true_table in final_schema:
+            main_cols.extend(final_schema[true_table])
+        elif true_table in table_schema:
+            main_cols.extend([f"{true_table}.{col}" for col in table_schema[true_table]])
+
+    # Add explicitly selected ones too (like colz)
     final_schema["main_select"] = list(set(main_cols))
+
+    print(f"\nDEBUG: Final schema: {final_schema}")  # Debug
     return final_schema
 
 def expand_all_stars(ast: exp.Expression, resolved_schema: dict) -> exp.Expression:
+    print("\n=== DEBUG: expand_all_stars ===")
+    print(f"DEBUG: Resolved schema: {resolved_schema}")
+
     # Process CTEs first (bottom-up)
     if ast.args.get("with"):
+        print("\nDEBUG: Processing CTEs")
         for cte in ast.args["with"].expressions:
             cte_name = cte.alias
+            print(f"\nDEBUG: Processing CTE {cte_name}")
             if cte_name in resolved_schema:
-                expand_select_star(
-                    cte.this,
-                    resolved_schema[cte_name],
-                    {cte_name: cte_name}
-                )
+                print(f"DEBUG: Found schema for CTE {cte_name}")
+                print(f"DEBUG: Available columns: {resolved_schema[cte_name]}")
+                print(f"DEBUG: Original CTE SQL: {cte.this.sql()}")
+                
+                # Create source aliases mapping
+                source_aliases = {cte_name: cte_name}
+                from_clause = cte.this.args.get("from")
+                if from_clause:
+                    for source in from_clause.expressions:
+                        if isinstance(source, exp.Table):
+                            table_name = source.name
+                            alias = source.alias or table_name
+                            source_aliases[table_name] = alias
+                        elif isinstance(source, exp.Alias) and isinstance(source.this, exp.Table):
+                            table_name = source.this.name
+                            alias = source.alias
+                            source_aliases[table_name] = alias
+                
+                print(f"DEBUG: Source aliases: {source_aliases}")
+                expand_select_star(cte.this, resolved_schema[cte_name], source_aliases)
+                print(f"DEBUG: Expanded CTE SQL: {cte.this.sql()}")
     
-    # Process main query (ALWAYS expand stars)
+    # Process main query
     main_select = ast.find(exp.Select)
     if main_select and "main_select" in resolved_schema:
+        print("\nDEBUG: Processing main SELECT")
+        print(f"DEBUG: Original main SQL: {main_select.sql()}")
+        print(f"DEBUG: Available columns: {resolved_schema['main_select']}")
+        
+        # Create source aliases mapping
         source_aliases = {}
         if main_select.args.get("from"):
             for source in main_select.args["from"].expressions:
                 if isinstance(source, exp.Table):
-                    source_aliases[source.name] = source.alias or source.name
+                    table_name = source.name
+                    alias = source.alias or table_name
+                    source_aliases[table_name] = alias
                 elif isinstance(source, exp.Alias) and isinstance(source.this, exp.Table):
-                    source_aliases[source.this.name] = source.alias
+                    table_name = source.this.name
+                    alias = source.alias
+                    source_aliases[table_name] = alias
         
-        expand_select_star(
-            main_select,
-            resolved_schema["main_select"],
-            source_aliases
-        )
+        print(f"DEBUG: Source aliases: {source_aliases}")
+        expand_select_star(main_select, resolved_schema["main_select"], source_aliases)
+        print(f"DEBUG: Expanded main SQL: {main_select.sql()}")
     
     return ast
 
 def expand_select_star(select: exp.Select, available_columns: list, source_aliases: dict):
+    """
+    Expands all star expressions (*) and qualified stars (table.*) in the SELECT clause.
+
+    Args:
+        select: The sqlglot Select expression object.
+        available_columns: List of columns in the format 'table.column'.
+        source_aliases: Dictionary mapping original table names to aliases used in the query.
+    """
     new_exprs = []
-    for expr in select.args.get("expressions", []):
-        if isinstance(expr, exp.Star):  # Unqualified *
-            new_exprs.extend([
-                create_column_ref(col, source_aliases)
-                for col in available_columns
-            ])
-        elif (isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star)):
-            # Qualified star (t.*)
-            table_alias = expr.args["table"]
-            new_exprs.extend([
-                create_column_ref(col, source_aliases)
-                for col in available_columns
-                if col.startswith(f"{table_alias}.") or col.split(".")[0] == table_alias
-            ])
+
+    for expr in select.expressions:
+        if isinstance(expr, exp.Star):
+            # Unqualified star: expand to all available columns
+            for col in available_columns:
+                if "." not in col:
+                    print(f"Warning: Skipping malformed column '{col}' in unqualified star expansion")
+                    continue
+                table_name, col_name = col.split(".", 1)
+                new_exprs.append(
+                    exp.Column(
+                        this=exp.Identifier(this=col_name),
+                        table=exp.Identifier(this=table_name)
+                    )
+                )
+
+        elif isinstance(expr, exp.Column) and isinstance(expr.this, exp.Star):
+            # Qualified star: expand only columns that match the table alias
+            table_alias = expr.args["table"].this if hasattr(expr.args["table"], 'this') else expr.args["table"]
+
+            for col in available_columns:
+                if "." not in col:
+                    print(f"Warning: Skipping malformed column '{col}' in qualified star expansion")
+                    continue
+                if col.startswith(f"{table_alias}."):
+                    table_name, col_name = col.split(".", 1)
+                    new_exprs.append(
+                        exp.Column(
+                            this=exp.Identifier(this=col_name),
+                            table=exp.Identifier(this=table_name)
+                        )
+                    )
         else:
+            # Keep all other expressions as-is
             new_exprs.append(expr)
+
     select.set("expressions", new_exprs)
 
-def create_column_ref(full_column: str, source_aliases: dict) -> exp.Column:
-    parts = full_column.split(".")
-    if len(parts) > 1:
-        column = parts[-1]
-        table_ref = parts[-2]
-        alias = source_aliases.get(table_ref, table_ref)
-        return exp.Column(
-            this=exp.Identifier(this=column),
-            table=exp.Identifier(this=alias)
-        )
-    return exp.Column(this=exp.Identifier(this=full_column))
-
+    
 
 def rename_columns_to_table_prefix(ast: exp.Expression, resolved_schema: dict, cte_schema: dict, table_schema: dict) -> exp.Expression:
     """
@@ -675,17 +837,15 @@ def process_single_sql(sql: str, filename: str, replacements: dict) -> tuple:
     print(f"CTE schemas: {cte_schemas}")
     print(f"Main schema: {main_schema}")
     
-    # 4. Star expansion
+    # 4. Star expansion - Make sure expand_all_stars returns only the AST
     expanded_ast = expand_all_stars(ast, final_schema)
-
     print(f"Expanded SQL AST: {expanded_ast.sql()}")
 
     # 5. Rename columns to table prefix
-    ast = rename_columns_to_table_prefix(expanded_ast, final_schema, cte_schemas, main_schema)
-    expanded_sql = ast.sql()
+    renamed_ast = rename_columns_to_table_prefix(expanded_ast, final_schema, cte_schemas, main_schema)
+    expanded_sql = renamed_ast.sql()
 
     print(f"Renamed SQL AST: {expanded_sql}")
-
     
     # 6. Add INSERT wrapper
     wrapped_sql = wrap_select_with_insert(
@@ -748,3 +908,7 @@ if __name__ == "__main__":
     folder_path = r"C:\User_Profiles\Keval\Projects\parser\sql_files"
     master_lineage_df = process_sql_folder(folder_path, replacements)
     print(f"Processed {len(master_lineage_df)} lineage records")
+
+
+
+

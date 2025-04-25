@@ -1,136 +1,92 @@
-import os
-import re
+import dash
+from dash import dcc, html, Input, Output, State, callback
+import dash_bootstrap_components as dbc
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-from typing import Dict, List, Tuple
 import pandas as pd
-from sqlglot import parse_one, exp
-from sqlglot.lineage import LineageRunner
+import time
 
-class SQLLineageProcessor:
-    def __init__(self, replacements: Dict[str, str] = None):
-        """
-        Initialize the SQL Lineage Processor.
+# Your existing SQLLineageProcessor class here
+
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+app.layout = dbc.Container([
+    dcc.Input(id="folder-path", placeholder="Enter folder path", type="text"),
+    dbc.Button("Generate Lineage", id="process-btn", color="primary"),
+    html.Div(id="status-log", style={"whiteSpace": "pre-line"}),
+    dcc.Loading(
+        id="loading-spinner",
+        type="circle",
+        children=[dcc.Progress(id="progress-bar", value=0)]
+    ),
+    html.Div(id="dummy-div", style={"display": "none"}),  # For triggering downloads
+    dcc.Download(id="download-csv")
+])
+
+# Callback for processing + status updates
+@app.callback(
+    [Output("status-log", "children"),
+     Output("progress-bar", "value"),
+     Output("download-csv", "data")],
+    Input("process-btn", "n_clicks"),
+    State("folder-path", "value"),
+    prevent_initial_call=True
+)
+def process_and_update_status(n_clicks, folder_path):
+    if not folder_path:
+        return "Error: No folder path provided", 0, None
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    # Initialize processor
+    processor = SQLLineageProcessor()
+    status_log = []
+    
+    # Stage 1: File discovery
+    status_log.append("🔍 Scanning folder for SQL files...")
+    yield "\n".join(status_log), 10, None
+    
+    sql_files = [f for f in os.listdir(folder_path) if f.endswith('.sql')]
+    if not sql_files:
+        return "❌ No SQL files found!", 0, None
+    
+    status_log.append(f"📂 Found {len(sql_files)} files to process")
+    yield "\n".join(status_log), 20, None
+
+    # Stage 2: Parallel processing
+    status_log.append("\n⚙️ Processing files (0% complete)...")
+    yield "\n".join(status_log), 20, None
+
+    def update_progress(future):
+        nonlocal status_log
+        completed = sum(1 for f in futures if f.done())
+        progress = int(100 * (completed / len(sql_files)))
+        status_log[-1] = f"⚙️ Processing files ({progress}% complete)..."
+        return progress
+
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(processor.process_sql_file, os.path.join(folder_path, f)) 
+                  for f in sql_files]
         
-        Args:
-            replacements: Dictionary of string replacements to apply to SQL queries
-        """
-        self.replacements = replacements or {}
-        self.master_lineage_df = pd.DataFrame()
+        while not all(f.done() for f in futures):
+            progress = update_progress(futures)
+            yield "\n".join(status_log), 20 + (progress * 0.6), None
+            time.sleep(0.1)
+
+    # Stage 3: Compile results
+    status_log.append("\n🧩 Compiling master lineage...")
+    yield "\n".join(status_log), 90, None
+
+    master_lineage = processor.get_master_lineage()
+    status_log.append(f"✅ Done! Processed {len(sql_files)} files. Found {len(master_lineage)} lineage edges.")
     
-    @lru_cache(maxsize=100)
-    def parse_sql_cached(self, sql: str) -> exp.Expression:
-        """Cached SQL parsing function."""
-        return parse_one(sql, read='bigquery')
-    
-    def format_and_clean_sql(self, sql: str) -> str:
-        """Formats and cleans SQL query for better readability and consistency."""
-        try:
-            parsed = self.parse_sql_cached(sql)
-            formatted_sql = parsed.sql(pretty=True)
-            return re.sub(r'/\*.*?\*/', ' ', formatted_sql, flags=re.DOTALL)
-        except Exception as e:
-            print(f"Warning: Formatting failed - {str(e)}")
-            return sql
-    
-    @staticmethod
-    def normalize_sql(sql: str) -> List[str]:
-        """Normalizes SQL query by removing extra spaces and converting to lowercase."""
-        return [re.sub(r'\s+', ' ', line.strip()).lower() 
-                for line in sql.split('\n') if line.strip()]
-    
-    @staticmethod
-    def clean_lineage_tuple(variable: List[str]) -> List[str]:
-        """Cleans lineage tuples by removing default schema references."""
-        return [v.replace('<default>.', '') for v in variable]
-    
-    def extract_column_lineage(self, processed_sql: str) -> pd.DataFrame:
-        """Extracts column lineage from SQL query."""
-        try:       
-            # Extract lineage
-            lineage_mapping = []
-            for lineage_tuple in LineageRunner(processed_sql).get_column_lineage():
-                try:
-                    chain = [str(col) for col in lineage_tuple]
-                    cleaned_chain = self.clean_lineage_tuple(chain)
-                    
-                    for i in range(len(cleaned_chain) - 1):
-                        target = cleaned_chain[i]
-                        source = cleaned_chain[i + 1]
-                        
-                        lineage_mapping.append((
-                            target if len(target.split('.')) == 2 else f"<unknown>.{target}",
-                            source if len(source.split('.')) == 2 else f"<unknown>.{source}"
-                        ))
-                except Exception as e:
-                    print(f"Skipping lineage tuple due to error: {str(e)}")
-                    continue
-            
-            # Create DataFrame
-            lineage_df = pd.DataFrame(lineage_mapping, columns=["derived", "source"])
-            lineage_df[['derived_table', 'derived_column']] = lineage_df['derived'].str.split('.', expand=True)
-            lineage_df[['source_table', 'source_column']] = lineage_df['source'].str.split('.', expand=True)
-            
-            return lineage_df[['source_table', 'source_column', 'derived_table', 'derived_column']].drop_duplicates()
-        
-        except Exception as e:
-            print(f"Lineage extraction failed: {str(e)}")
-            return pd.DataFrame()
-    
-    def process_single_sql(self, sql: str, filename: str) -> Tuple[str, pd.DataFrame]:
-        """Process a single SQL query string."""
-        # Apply replacements
-        for old, new in self.replacements.items():
-            sql = sql.replace(old, new)
-        
-        # Clean and parse
-        cleaned_sql = self.format_and_clean_sql(sql)
-        ast = self.parse_sql_cached(cleaned_sql)
-        final_sql = ast.sql()
-        lineage_df = self.extract_column_lineage(final_sql)
-        
-        return final_sql, lineage_df
-    
-    def process_sql_file(self, file_path: str) -> pd.DataFrame:
-        """Processes a single SQL file and returns lineage DataFrame."""
-        try:
-            with open(file_path, 'r') as f:
-                sql = f.read().strip()
-                if not sql:
-                    print(f"Skipping empty file: {file_path}")
-                    return pd.DataFrame()
-                
-                # Get just the filename without path
-                filename = os.path.basename(file_path)
-                _, lineage_df = self.process_single_sql(sql, filename)
-                return lineage_df
-        except Exception as e:
-            print(f"Error processing {file_path}: {str(e)}")
-            return pd.DataFrame()
-    
-    def process_sql_folder(self, folder_path: str) -> pd.DataFrame:
-        """Processes all SQL files in a folder and returns combined lineage."""
-        # Get all SQL files in the folder
-        sql_files = [
-            os.path.join(folder_path, f) 
-            for f in os.listdir(folder_path) 
-            if f.endswith('.sql')
-        ]
-        
-        # Process files in parallel
-        with ThreadPoolExecutor() as executor:
-            results = list(executor.map(self.process_sql_file, sql_files))
-        
-        # Combine results and update master lineage
-        combined_df = pd.concat(results).drop_duplicates().reset_index(drop=True)
-        self.master_lineage_df = pd.concat([self.master_lineage_df, combined_df]).drop_duplicates().reset_index(drop=True)
-        
-        return self.master_lineage_df
-    
-    def get_master_lineage(self) -> pd.DataFrame:
-        """Returns the accumulated master lineage DataFrame."""
-        return self.master_lineage_df.copy()
-    
-    def reset_master_lineage(self) -> None:
-        """Resets the master lineage DataFrame."""
-        self.master_lineage_df = pd.DataFrame()
+    # Return final status + CSV download
+    return (
+        "\n".join(status_log),
+        100,
+        dict(content=master_lineage.to_csv(index=False), filename="lineage_results.csv")
+    )
+
+if __name__ == "__main__":
+    app.run_server(debug=True)

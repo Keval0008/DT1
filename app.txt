@@ -1,82 +1,92 @@
-import dash
-from dash import dcc, html, Input, Output, State, callback
-import dash_bootstrap_components as dbc
-from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
-import os
-import time
+import networkx as nx
+from typing import Tuple, List
 
-# Your existing SQLLineageProcessor class here
+class LineageTracer:
+    def __init__(self, lineage_df: pd.DataFrame):
+        """Initialize with pre-built graph"""
+        self.lineage_df = lineage_df
+        self.reverse_df = lineage_df.rename(columns={
+            'main_table_name': 'derivation_table_name',
+            'main_variable_name': 'derivation_variable_name',
+            'derivation_table_name': 'main_table_name',
+            'derivation_variable_name': 'main_variable_name'
+        })
+        self.G = self._build_graph()
 
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+    def _build_graph(self) -> nx.DiGraph:
+        """Build directed graph once during initialization"""
+        G = nx.DiGraph()
+        for _, row in self.lineage_df.iterrows():
+            source = f"{row['derivation_table_name']}.{row['derivation_variable_name']}"
+            target = f"{row['main_table_name']}.{row['main_variable_name']}"
+            G.add_edge(source, target)
+        return G
 
-app.layout = dbc.Container([
-    dcc.Input(id="folder-path", placeholder="Enter folder path", type="text"),
-    dbc.Button("Generate Lineage", id="process-btn", color="primary"),
-    html.Div(id="status-log", style={"whiteSpace": "pre-line", "margin": "10px"}),
-    dbc.Progress(id="progress-bar", value=0, style={"margin": "10px"}),
-    dcc.Loading(
-        id="loading-spinner",
-        type="circle",
-        children=[html.Div()]
-    ),
-    dcc.Download(id="download-csv")
-])
-
-# Callback for processing + status updates
-@app.callback(
-    [Output("status-log", "children"),
-     Output("progress-bar", "value"),
-     Output("download-csv", "data")],
-    Input("process-btn", "n_clicks"),
-    State("folder-path", "value"),
-    prevent_initial_call=True
-)
-def process_and_update_status(n_clicks, folder_path):
-    if not folder_path:
-        return "Error: No folder path provided", 0, None
-
-    # Initialize processor
-    processor = SQLLineageProcessor()
-    
-    # Stage 1: File discovery
-    yield "🔍 Scanning folder for SQL files...", 10, None
-    
-    sql_files = [f for f in os.listdir(folder_path) if f.endswith('.sql')]
-    if not sql_files:
-        return "❌ No SQL files found!", 0, None
-    
-    total_files = len(sql_files)
-    yield f"📂 Found {total_files} files to process", 20, None
-
-    # Stage 2: Parallel processing
-    processed_count = 0
-    yield f"⚙️ Processing files (0/{total_files})", 20, None
-
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(processor.process_sql_file, os.path.join(folder_path, f)) 
-                 for f in sql_files]
+    def trace_lineage(
+        self,
+        starting_tables: List[str],
+        starting_columns: List[str],
+        direction: str = 'downstream'  # 'upstream' or 'downstream'
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """
+        Trace lineage from starting points
         
-        while not all(f.done() for f in futures):
-            new_processed = sum(1 for f in futures if f.done())
-            if new_processed > processed_count:
-                processed_count = new_processed
-                progress = int(100 * (processed_count / total_files))
-                yield f"⚙️ Processing files ({processed_count}/{total_files})", 20 + (progress * 0.6), None
-            time.sleep(0.1)
+        Returns:
+            Tuple of (full_trace_df, source_nodes_df, dead_ends_df)
+        """
+        start_nodes = [f"{t}.{c}" for t, c in zip(starting_tables, starting_columns)]
+        
+        # Get relevant nodes
+        if direction == 'upstream':
+            relevant_nodes = set()
+            for node in start_nodes:
+                if node in self.G:
+                    relevant_nodes.update(nx.ancestors(self.G, node))
+            relevant_nodes.update(start_nodes)
+            df_to_use = self.reverse_df
+            id_cols = ['derivation_table_name', 'derivation_variable_name']
+        else:  # downstream
+            relevant_nodes = set()
+            for node in start_nodes:
+                if node in self.G:
+                    relevant_nodes.update(nx.descendants(self.G, node))
+            relevant_nodes.update(start_nodes)
+            df_to_use = self.lineage_df
+            id_cols = ['main_table_name', 'main_variable_name']
 
-    # Stage 3: Compile results
-    yield f"🧩 Compiling results from {total_files} files...", 90, None
+        # Filter DataFrame
+        mask = df_to_use[id_cols[0]] + '.' + df_to_use[id_cols[1]].isin(relevant_nodes)
+        traced_df = df_to_use[mask].copy()
 
-    master_lineage = processor.get_master_lineage()
-    result_message = f"✅ Done! Processed {total_files} files. Found {len(master_lineage)} lineage edges."
-    
-    # Return final status + CSV download
-    return (
-        result_message,
-        100,
-        dict(content=master_lineage.to_csv(index=False), filename="lineage_results.csv")
-    )
+        # Find dead ends
+        dead_ends = []
+        for node in relevant_nodes:
+            if direction == 'upstream' and self.G.in_degree(node) == 0:
+                dead_ends.append(node)
+            elif direction == 'downstream' and self.G.out_degree(node) == 0:
+                dead_ends.append(node)
 
-if __name__ == "__main__":
-    app.run_server(debug=True)
+        # Create output DataFrames
+        dead_ends_df = pd.DataFrame(
+            [n.split('.') for n in dead_ends],
+            columns=['Source Table', 'Source Column']
+        )
+
+        source_nodes_df = self._identify_source_nodes(traced_df, direction)
+        
+        return traced_df, source_nodes_df, dead_ends_df
+
+    def _identify_source_nodes(self, df: pd.DataFrame, direction: str) -> pd.DataFrame:
+        """Identify source tables based on naming patterns"""
+        keywords = ['source', 'repair', 'intra', 'detail', 'union']
+        pattern = '|'.join(keywords)
+        
+        if direction == 'upstream':
+            col = 'derivation_table_name'
+            return df[df[col].str.contains(pattern, case=False)][[col, 'derivation_variable_name']]\
+                .rename(columns={col: 'Source Table', 'derivation_variable_name': 'Source Column'})
+        else:
+            col = 'main_table_name'
+            return df[df[col].str.contains(pattern, case=False)][[col, 'main_variable_name']]\
+                .rename(columns={col: 'Source Table', 'main_variable_name': 'Source Column'})

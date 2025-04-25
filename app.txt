@@ -3,6 +3,7 @@ from dash import dcc, html, Input, Output, State, callback
 import dash_bootstrap_components as dbc
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
+import os
 import time
 
 # Your existing SQLLineageProcessor class here
@@ -12,13 +13,13 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = dbc.Container([
     dcc.Input(id="folder-path", placeholder="Enter folder path", type="text"),
     dbc.Button("Generate Lineage", id="process-btn", color="primary"),
-    html.Div(id="status-log", style={"whiteSpace": "pre-line"}),
+    html.Div(id="status-log", style={"whiteSpace": "pre-line", "margin": "10px"}),
+    dbc.Progress(id="progress-bar", value=0, style={"margin": "10px"}),
     dcc.Loading(
         id="loading-spinner",
         type="circle",
-        children=[dcc.Progress(id="progress-bar", value=0)]
+        children=[html.Div()]
     ),
-    html.Div(id="dummy-div", style={"display": "none"}),  # For triggering downloads
     dcc.Download(id="download-csv")
 ])
 
@@ -35,55 +36,44 @@ def process_and_update_status(n_clicks, folder_path):
     if not folder_path:
         return "Error: No folder path provided", 0, None
 
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return dash.no_update
-
     # Initialize processor
     processor = SQLLineageProcessor()
-    status_log = []
     
     # Stage 1: File discovery
-    status_log.append("🔍 Scanning folder for SQL files...")
-    yield "\n".join(status_log), 10, None
+    yield "🔍 Scanning folder for SQL files...", 10, None
     
     sql_files = [f for f in os.listdir(folder_path) if f.endswith('.sql')]
     if not sql_files:
         return "❌ No SQL files found!", 0, None
     
-    status_log.append(f"📂 Found {len(sql_files)} files to process")
-    yield "\n".join(status_log), 20, None
+    total_files = len(sql_files)
+    yield f"📂 Found {total_files} files to process", 20, None
 
     # Stage 2: Parallel processing
-    status_log.append("\n⚙️ Processing files (0% complete)...")
-    yield "\n".join(status_log), 20, None
-
-    def update_progress(future):
-        nonlocal status_log
-        completed = sum(1 for f in futures if f.done())
-        progress = int(100 * (completed / len(sql_files)))
-        status_log[-1] = f"⚙️ Processing files ({progress}% complete)..."
-        return progress
+    processed_count = 0
+    yield f"⚙️ Processing files (0/{total_files})", 20, None
 
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(processor.process_sql_file, os.path.join(folder_path, f)) 
-                  for f in sql_files]
+                 for f in sql_files]
         
         while not all(f.done() for f in futures):
-            progress = update_progress(futures)
-            yield "\n".join(status_log), 20 + (progress * 0.6), None
+            new_processed = sum(1 for f in futures if f.done())
+            if new_processed > processed_count:
+                processed_count = new_processed
+                progress = int(100 * (processed_count / total_files))
+                yield f"⚙️ Processing files ({processed_count}/{total_files})", 20 + (progress * 0.6), None
             time.sleep(0.1)
 
     # Stage 3: Compile results
-    status_log.append("\n🧩 Compiling master lineage...")
-    yield "\n".join(status_log), 90, None
+    yield f"🧩 Compiling results from {total_files} files...", 90, None
 
     master_lineage = processor.get_master_lineage()
-    status_log.append(f"✅ Done! Processed {len(sql_files)} files. Found {len(master_lineage)} lineage edges.")
+    result_message = f"✅ Done! Processed {total_files} files. Found {len(master_lineage)} lineage edges."
     
     # Return final status + CSV download
     return (
-        "\n".join(status_log),
+        result_message,
         100,
         dict(content=master_lineage.to_csv(index=False), filename="lineage_results.csv")
     )

@@ -1,261 +1,136 @@
-sql_lineage_explorer/
-├── app.py                  # Main app initialization
-├── layout/                 # UI layout components
-│   ├── __init__.py
-│   ├── upload.py           # File upload components
-│   ├── visualization.py    # Graph and table components
-│   └── controls.py         # Dropdowns, toggles, etc.
-├── callbacks/              # All callback functions
-│   ├── __init__.py
-│   ├── data_processing.py  # File upload/download
-│   ├── lineage.py          # Lineage computation
-│   └── dead_ends.py        # Dead-end analysis
-├── utils/                  # Helper functions
-│   ├── __init__.py
-│   ├── parser.py           # SQL parsing
-│   └── graph.py            # Graph utilities
-└── assets/
-    └── styles.css          # Custom styles
-
---------------------------------------------------------------------------
-app.py
-
-from dash import Dash
-import dash_bootstrap_components as dbc
-from layout import create_layout
-from callbacks import register_callbacks
-
-def create_app():
-    app = Dash(__name__, 
-               external_stylesheets=[dbc.themes.BOOTSTRAP],
-               suppress_callback_exceptions=True)
-    
-    # Set up layout
-    app.layout = create_layout()
-    
-    # Register all callbacks
-    register_callbacks(app)
-    
-    return app
-
-if __name__ == '__main__':
-    app = create_app()
-    app.run_server(debug=True)
-
---------------------------------------------------------------------------
-layout/__init__.py
-
-from dash import html
-import dash_bootstrap_components as dbc
-from .upload import upload_section
-from .controls import control_section
-from .visualization import visualization_section
-
-def create_layout():
-    return dbc.Container([
-        html.H1("SQL Lineage Explorer", className="mb-4"),
-        upload_section(),
-        control_section(),
-        visualization_section(),
-    ], fluid=True)
-
---------------------------------------------------------------------------
-layout/upload.py
-
-from dash import dcc, html
-import dash_bootstrap_components as dbc
-
-def upload_section():
-    return dbc.Card([
-        dbc.CardHeader("1. Upload SQL Files or Preprocessed Lineage"),
-        dbc.CardBody([
-            dcc.Upload(
-                id='upload-sql',
-                children=dbc.Button("Upload SQL Files", color="primary"),
-                multiple=True
-            ),
-            html.Div(id='upload-status'),
-            html.Hr(),
-            dcc.Upload(
-                id='upload-csv',
-                children=dbc.Button("Upload Lineage CSV", color="secondary"),
-                multiple=False
-            ),
-            html.Div(id='csv-status'),
-            html.Hr(),
-            dbc.Button("Download Lineage CSV", id="download-btn"),
-            dcc.Download(id="download-csv"),
-        ])
-    ], className="mb-4")
-
---------------------------------------------------------------------------
-layout/visualization.py
-
-from dash import html
-import dash_bootstrap_components as dbc
-import dash_cytoscape as cyto
-
-def visualization_section():
-    return dbc.Card([
-        dbc.CardHeader("2. Explore Lineage"),
-        dbc.CardBody([
-            dbc.Tabs([
-                dbc.Tab(label="Table-Level Lineage", tab_id="table-level"),
-                dbc.Tab(label="Column-Level Lineage", tab_id="column-level"),
-            ], id="lineage-tabs", active_tab="table-level"),
-            html.Div(id='lineage-content')
-        ])
-    ], className="mb-4")
-
---------------------------------------------------------------------------
-callbacks/__init__.py
-
-from .data_processing import register_data_callbacks
-from .lineage import register_lineage_callbacks
-from .dead_ends import register_dead_end_callbacks
-
-def register_callbacks(app):
-    register_data_callbacks(app)
-    register_lineage_callbacks(app)
-    register_dead_end_callbacks(app)
-
---------------------------------------------------------------------------
-callbacks/data_processing.py
-
-from dash import Input, Output, State
-import base64
-import io
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from typing import Dict, List, Tuple
 import pandas as pd
-from utils.parser import parse_sql_files
+from sqlglot import parse_one, exp
+from sqlglot.lineage import LineageRunner
 
-def register_data_callbacks(app):
-    @app.callback(
-        [Output('lineage-store', 'data'),
-         Output('upload-status', 'children'),
-         Output('table-dropdown', 'options'),
-         Output('csv-status', 'children')],
-        [Input('upload-sql', 'contents'),
-         Input('upload-csv', 'contents')],
-        [State('upload-sql', 'filename'),
-         State('upload-csv', 'filename')]
-    )
-    def update_lineage_data(sql_contents, csv_contents, sql_filenames, csv_filename):
-        ctx = dash.callback_context.triggered[0]['prop_id']
+class SQLLineageProcessor:
+    def __init__(self, replacements: Dict[str, str] = None):
+        """
+        Initialize the SQL Lineage Processor.
         
-        if 'upload-sql' in ctx and sql_contents:
-            # SQL processing logic
-            pass
+        Args:
+            replacements: Dictionary of string replacements to apply to SQL queries
+        """
+        self.replacements = replacements or {}
+        self.master_lineage_df = pd.DataFrame()
+    
+    @lru_cache(maxsize=100)
+    def parse_sql_cached(self, sql: str) -> exp.Expression:
+        """Cached SQL parsing function."""
+        return parse_one(sql, read='bigquery')
+    
+    def format_and_clean_sql(self, sql: str) -> str:
+        """Formats and cleans SQL query for better readability and consistency."""
+        try:
+            parsed = self.parse_sql_cached(sql)
+            formatted_sql = parsed.sql(pretty=True)
+            return re.sub(r'/\*.*?\*/', ' ', formatted_sql, flags=re.DOTALL)
+        except Exception as e:
+            print(f"Warning: Formatting failed - {str(e)}")
+            return sql
+    
+    @staticmethod
+    def normalize_sql(sql: str) -> List[str]:
+        """Normalizes SQL query by removing extra spaces and converting to lowercase."""
+        return [re.sub(r'\s+', ' ', line.strip()).lower() 
+                for line in sql.split('\n') if line.strip()]
+    
+    @staticmethod
+    def clean_lineage_tuple(variable: List[str]) -> List[str]:
+        """Cleans lineage tuples by removing default schema references."""
+        return [v.replace('<default>.', '') for v in variable]
+    
+    def extract_column_lineage(self, processed_sql: str) -> pd.DataFrame:
+        """Extracts column lineage from SQL query."""
+        try:       
+            # Extract lineage
+            lineage_mapping = []
+            for lineage_tuple in LineageRunner(processed_sql).get_column_lineage():
+                try:
+                    chain = [str(col) for col in lineage_tuple]
+                    cleaned_chain = self.clean_lineage_tuple(chain)
+                    
+                    for i in range(len(cleaned_chain) - 1):
+                        target = cleaned_chain[i]
+                        source = cleaned_chain[i + 1]
+                        
+                        lineage_mapping.append((
+                            target if len(target.split('.')) == 2 else f"<unknown>.{target}",
+                            source if len(source.split('.')) == 2 else f"<unknown>.{source}"
+                        ))
+                except Exception as e:
+                    print(f"Skipping lineage tuple due to error: {str(e)}")
+                    continue
+            
+            # Create DataFrame
+            lineage_df = pd.DataFrame(lineage_mapping, columns=["derived", "source"])
+            lineage_df[['derived_table', 'derived_column']] = lineage_df['derived'].str.split('.', expand=True)
+            lineage_df[['source_table', 'source_column']] = lineage_df['source'].str.split('.', expand=True)
+            
+            return lineage_df[['source_table', 'source_column', 'derived_table', 'derived_column']].drop_duplicates()
         
-        elif 'upload-csv' in ctx and csv_contents:
-            # CSV processing logic
-            pass
+        except Exception as e:
+            print(f"Lineage extraction failed: {str(e)}")
+            return pd.DataFrame()
+    
+    def process_single_sql(self, sql: str, filename: str) -> Tuple[str, pd.DataFrame]:
+        """Process a single SQL query string."""
+        # Apply replacements
+        for old, new in self.replacements.items():
+            sql = sql.replace(old, new)
         
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
-
-    @app.callback(
-        Output("download-csv", "data"),
-        [Input("download-btn", "n_clicks")],
-        [State('lineage-store', 'data')],
-        prevent_initial_call=True
-    )
-    def download_csv(n_clicks, lineage_data):
-        df = pd.DataFrame(lineage_data)
-        return dcc.send_data_frame(df.to_csv, "lineage_data.csv", index=False)
-
---------------------------------------------------------------------------
-callbacks/lineage.py
-
-from dash import Input, Output
-import pandas as pd
-from utils.graph import create_lineage_graph, graph_to_cytoscape
-
-def register_lineage_callbacks(app):
-    @app.callback(
-        Output('column-dropdown', 'options'),
-        [Input('table-dropdown', 'value')],
-        [State('lineage-store', 'data')]
-    )
-    def update_column_dropdown(selected_table, lineage_data):
-        # Column dropdown logic
-        pass
-
-    @app.callback(
-        Output('lineage-content', 'children'),
-        [Input('lineage-tabs', 'active_tab'),
-         Input('table-dropdown', 'value'),
-         Input('column-dropdown', 'value'),
-         Input('direction-toggle', 'value')],
-        [State('lineage-store', 'data')]
-    )
-    def update_lineage_visualization(tab, table, column, direction, lineage_data):
-        # Visualization logic
-        pass
-
---------------------------------------------------------------------------
-utils/graph.py
-
-import networkx as nx
-from typing import List, Dict, Optional
-
-def create_lineage_graph(df: pd.DataFrame, level: str = 'column') -> nx.DiGraph:
-    """Create a NetworkX graph from lineage data"""
-    G = nx.DiGraph()
+        # Clean and parse
+        cleaned_sql = self.format_and_clean_sql(sql)
+        ast = self.parse_sql_cached(cleaned_sql)
+        final_sql = ast.sql()
+        lineage_df = self.extract_column_lineage(final_sql)
+        
+        return final_sql, lineage_df
     
-    if level == 'column':
-        for _, row in df.iterrows():
-            source = f"{row['source_table']}.{row['source_column']}"
-            target = f"{row['derived_table']}.{row['derived_column']}"
-            G.add_node(source, label=source, type='column')
-            G.add_node(target, label=target, type='column')
-            G.add_edge(source, target)
-    else:  # table-level
-        for _, row in df.iterrows():
-            source = row['source_table']
-            target = row['derived_table']
-            G.add_node(source, label=source, type='table')
-            G.add_node(target, label=target, type='table')
-            if not G.has_edge(source, target):
-                G.add_edge(source, target)
+    def process_sql_file(self, file_path: str) -> pd.DataFrame:
+        """Processes a single SQL file and returns lineage DataFrame."""
+        try:
+            with open(file_path, 'r') as f:
+                sql = f.read().strip()
+                if not sql:
+                    print(f"Skipping empty file: {file_path}")
+                    return pd.DataFrame()
+                
+                # Get just the filename without path
+                filename = os.path.basename(file_path)
+                _, lineage_df = self.process_single_sql(sql, filename)
+                return lineage_df
+        except Exception as e:
+            print(f"Error processing {file_path}: {str(e)}")
+            return pd.DataFrame()
     
-    return G
-
-def graph_to_cytoscape(G: nx.DiGraph, selected: Optional[str] = None) -> List[Dict]:
-    """Convert NetworkX graph to Cytoscape elements"""
-    elements = []
+    def process_sql_folder(self, folder_path: str) -> pd.DataFrame:
+        """Processes all SQL files in a folder and returns combined lineage."""
+        # Get all SQL files in the folder
+        sql_files = [
+            os.path.join(folder_path, f) 
+            for f in os.listdir(folder_path) 
+            if f.endswith('.sql')
+        ]
+        
+        # Process files in parallel
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(self.process_sql_file, sql_files))
+        
+        # Combine results and update master lineage
+        combined_df = pd.concat(results).drop_duplicates().reset_index(drop=True)
+        self.master_lineage_df = pd.concat([self.master_lineage_df, combined_df]).drop_duplicates().reset_index(drop=True)
+        
+        return self.master_lineage_df
     
-    for node in G.nodes:
-        node_data = {
-            'data': {
-                'id': node,
-                'label': G.nodes[node]['label']
-            },
-            'classes': 'selected' if node == selected else 'unselected'
-        }
-        elements.append(node_data)
+    def get_master_lineage(self) -> pd.DataFrame:
+        """Returns the accumulated master lineage DataFrame."""
+        return self.master_lineage_df.copy()
     
-    for edge in G.edges:
-        edge_data = {
-            'data': {
-                'source': edge[0],
-                'target': edge[1]
-            },
-            'classes': 'highlight' if (edge[0] == selected or edge[1] == selected) else 'unselected'
-        }
-        elements.append(edge_data)
-    
-    return elements
-
---------------------------------------------------------------------------
-
-
-
---------------------------------------------------------------------------
-
-
-
---------------------------------------------------------------------------
-
-
-
---------------------------------------------------------------------------
-
+    def reset_master_lineage(self) -> None:
+        """Resets the master lineage DataFrame."""
+        self.master_lineage_df = pd.DataFrame()

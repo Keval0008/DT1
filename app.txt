@@ -1,22 +1,27 @@
 import dash_ag_grid as dag
 from dash import html
+import pandas as pd
+import numpy as np
 
 def create_ag_grid_table(
     dataframe, 
     table_id=None, 
     highlight_vars=None, 
     highlight_color='lightyellow',
-    default_col_def=None
+    default_col_def=None,
+    precision=2
 ):
     """
-    Convert a pandas DataFrame to a Dash AG Grid table with optional variable highlighting.
+    Convert a pandas DataFrame to a Dash AG Grid table with optional variable highlighting
+    and controlled precision for numerical columns.
     
     Args:
         dataframe: pandas DataFrame to display
         table_id: Optional ID for the table component
-        highlight_vars: Optional list of variables to highlight (future use)
+        highlight_vars: Optional list of variables to highlight
         highlight_color: Background color for highlighted cells
         default_col_def: Optional dictionary of default column definitions
+        precision: Number of decimal places to display for numerical columns
         
     Returns:
         A Dash AG Grid component
@@ -24,9 +29,16 @@ def create_ag_grid_table(
     if dataframe.empty:
         return html.Div("No data available")
     
+    # Make a copy to avoid modifying the original dataframe
+    df = dataframe.copy()
+    
+    # Apply precision to numerical columns
+    float_cols = df.select_dtypes(include=[np.number]).columns
+    for col in float_cols:
+        df[col] = df[col].round(precision)
+    
     # Convert dataframe to dictionary format for AG Grid
-    row_data = dataframe.to_dict('records')
-    column_defs = [{"field": col} for col in dataframe.columns]
+    row_data = df.to_dict('records')
     
     # Prepare default column definitions if not provided
     if default_col_def is None:
@@ -38,18 +50,20 @@ def create_ag_grid_table(
             "minWidth": 100
         }
     
-    # Apply highlighting if highlight_vars is provided
-    if highlight_vars:
-        # This will be used in the cellStyle to highlight specific variables
-        column_defs = [
-            {
-                "field": col,
-                "cellStyle": {"backgroundColor": highlight_color} 
-                if col in highlight_vars 
-                else None
-            } 
-            for col in dataframe.columns
-        ]
+    # Create column definitions with formatting and highlighting
+    column_defs = []
+    for col in df.columns:
+        col_def = {"field": col}
+        
+        # Apply number formatting for numerical columns
+        if col in float_cols:
+            col_def["valueFormatter"] = {"function": f"params.value != null ? params.value.toFixed({precision}) : ''"}
+        
+        # Apply highlighting if column is in highlight_vars
+        if highlight_vars and col in highlight_vars:
+            col_def["cellStyle"] = {"backgroundColor": highlight_color}
+            
+        column_defs.append(col_def)
     
     grid = dag.AgGrid(
         id=table_id,

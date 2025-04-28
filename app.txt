@@ -59,10 +59,16 @@ def create_ag_grid_table(
         
         # Apply cellStyle to highlight cells with values in highlight_vars
         if highlight_vars:
-            # Convert highlight_vars to a JavaScript-compatible string
-            # Handle different types (numbers, strings) safely
-            js_highlight_vars = [str(val) for val in highlight_vars]
-            js_highlight_array = f"[{', '.join(f'\"{val}\"' for val in js_highlight_vars)}]"
+            # Convert highlight_vars to a JavaScript-compatible array
+            js_highlight_vars = []
+            for val in highlight_vars:
+                if isinstance(val, (int, float)):
+                    js_highlight_vars.append(str(val))  # Numbers as-is
+                else:
+                    # Escape quotes and special characters for strings
+                    escaped_val = str(val).replace('"', '\\"').replace('\n', '\\n')
+                    js_highlight_vars.append(f'"{escaped_val}"')  # Strings with quotes
+            js_highlight_array = f"[{', '.join(js_highlight_vars)}]"
             col_def['cellStyle'] = {
                 'function': f"params => {{ return {js_highlight_array}.includes(String(params.value)) ? {{ backgroundColor: '{highlight_color}' }} : null; }}"
             }

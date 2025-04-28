@@ -1,37 +1,97 @@
-@app.callback(
-    Output("current-view-table", "children"),
-    Input("lineage-chart", "elements"),  # Triggers when graph updates
-    State("graph-store", "data"),        # Contains original full data
-    State("lineage-master-df", "data")  # Your original DataFrame
-)
-def update_current_view_table(current_elements, graph_data, master_df):
-    if not current_elements or not graph_data or not master_df:
-        return "No data to display"
+def create_ag_grid_table(
+    dataframe,
+    table_id=None,
+    highlight_vars=None,
+    highlight_color='lightyellow',
+    default_col_def=None,
+    precision=2,
+    enable_enterprise=False,
+    enable_download=False
+):
+    """
+    Creates an AG Grid table with cell highlighting for specified variables.
     
-    # Get visible node IDs from current elements
-    visible_nodes = set()
-    for element in current_elements:
-        if "source" not in element["data"]:  # It's a node
-            visible_nodes.add(element["data"]["id"])
+    Args:
+        dataframe: Input DataFrame
+        table_id: Unique ID for the table
+        highlight_vars: List of variable names to highlight anywhere in the table
+        highlight_color: Background color for highlighted cells
+        default_col_def: Custom column definitions
+        precision: Rounding for numeric columns
+        enable_enterprise: Enable enterprise features
+        enable_download: Show download button
+    """
+    if dataframe.empty:
+        return html.Div("No data available", style={'color': 'gray'})
     
-    # Convert node IDs back to table.variable format
-    visible_items = []
-    for node_id in visible_nodes:
-        table, variable = node_id.split(".", 1)
-        visible_items.append({"table": table, "variable": variable})
+    df = dataframe.copy()
     
-    # Filter the original DataFrame
-    visible_df = pd.DataFrame(visible_items)
-    merged_df = pd.merge(visible_df, master_df, 
-                        on=["table", "variable"], 
-                        how="left")
+    # Apply precision to numeric columns
+    float_cols = df.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        df[col] = df[col].round(precision)
     
-    # Return a Dash DataTable
-    return dash_table.DataTable(
-        columns=[{"name": col, "id": col} for col in merged_df.columns],
-        data=merged_df.to_dict("records"),
-        style_table={"overflowX": "auto"},
-        page_size=10,
-        filter_action="native",
-        sort_action="native"
+    # Custom cell style function for highlighting
+    def cell_style(params):
+        if highlight_vars and any(str(var) in str(params.value) for var in highlight_vars):
+            return {'backgroundColor': highlight_color}
+        return None
+    
+    # Generate column definitions
+    column_defs = []
+    for col in df.columns:
+        col_def = {
+            'field': col,
+            'headerName': col.replace('_', ' ').title(),
+            'filter': True,
+            'sortable': True,
+            'resizable': True,
+            'cellStyle': cell_style  # Apply highlighting to all columns
+        }
+            
+        # Special formatting for numeric columns
+        if col in float_cols:
+            col_def['type'] = 'numericColumn'
+            col_def['valueFormatter'] = {"function": f"params.value !== null ? params.value.toFixed({precision}) : ''"}
+            
+        column_defs.append(col_def)
+    
+    # Configure default column definitions
+    if default_col_def is None:
+        default_col_def = {
+            "flex": 1,
+            "minWidth": 100,
+            "filter": "agTextColumnFilter",
+            "floatingFilter": True,
+        }
+    
+    # Create the grid
+    grid = dag.AgGrid(
+        id=table_id or f"grid-{pd.Timestamp.now().value}",
+        rowData=df.to_dict('records'),
+        columnDefs=column_defs,
+        defaultColDef=default_col_def,
+        dashGridOptions={
+            "pagination": True,
+            "paginationPageSize": 10,
+            "animateRows": False,
+            "domLayout": "autoHeight"
+        },
+        columnSize="sizeToFit",
+        style={'width': '100%', 'height': None},
+        enableEnterpriseModules=enable_enterprise
     )
+    
+    # Add download button if enabled
+    if enable_download:
+        return html.Div([
+            grid,
+            html.Button(
+                "Download CSV",
+                id={"type": "download-button", "index": table_id},
+                style={"marginTop": "10px"}
+            ),
+            dcc.Download(id={"type": "download", "index": table_id})
+        ])
+    
+    return grid

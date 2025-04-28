@@ -1,120 +1,25 @@
-import dash_ag_grid as dag
-from dash import html
 import pandas as pd
+from dash import Dash
 
-def create_ag_grid_table(
-    dataframe,
-    table_id=None,
-    highlight_vars=None,
-    highlight_color='lightyellow',
-    default_col_def=None,
-    precision=2,
-    enable_enterprise=False,
-    enable_download=False
-):
-    """
-    Creates an AG Grid table from a pandas DataFrame with optional features.
-    
-    Args:
-        dataframe: Input DataFrame
-        table_id: Unique ID for the table
-        highlight_vars: List of columns to highlight
-        highlight_color: Color for highlighted columns
-        default_col_def: Custom column definitions
-        precision: Rounding for numeric columns
-        enable_enterprise: Enable enterprise features
-        enable_download: Show download button
-        
-    Returns:
-        AG Grid component
-    """
-    if dataframe.empty:
-        return html.Div("No data available", style={'color': 'gray'})
-    
-    # Make a copy to avoid modifying original
-    df = dataframe.copy()
-    
-    # Apply precision to numeric columns
-    float_cols = df.select_dtypes(include=['float64']).columns
-    for col in float_cols:
-        df[col] = df[col].round(precision)
-    
-    # Validate highlight_vars
-    if highlight_vars:
-        # Ensure highlight_vars only contains valid columns
-        highlight_vars = [col for col in highlight_vars if col in df.columns]
-        if not highlight_vars:
-            print("Warning: No valid columns in highlight_vars match DataFrame columns.")
-    
-    # Generate column definitions
-    column_defs = []
-    for col in df.columns:
-        col_def = {
-            'field': col,
-            'headerName': col.replace('_', ' ').title(),
-            'filter': True,
-            'sortable': True,
-            'resizable': True
-        }
-        
-        # Highlight specific columns if requested
-        if highlight_vars and col in highlight_vars:
-            # Use a function for cellStyle to ensure dynamic application
-            col_def['cellStyle'] = {
-                'function': f"params => {{ return {{ backgroundColor: '{highlight_color}' }}; }}"
-            }
-            
-        # Special formatting for numeric columns
-        if col in float_cols:
-            col_def['type'] = 'numericColumn'
-            col_def['valueFormatter'] = {"function": f"params.value !== null ? params.value.toFixed({precision}) : ''"}
-            
-        column_defs.append(col_def)
-    
-    # Configure default column definitions
-    if default_col_def is None:
-        default_col_def = {
-            "flex": 1,
-            "minWidth": 100,
-            "filter": "agTextColumnFilter",
-            "floatingFilter": True,
-        }
-    
-    # Enterprise features if enabled
-    if enable_enterprise:
-        enterprise_modules = ["clientsideFilter", "rowGrouping", "menu", "setFilter"]
-    else:
-        enterprise_modules = []
-    
-    # Create the grid
-    grid = dag.AgGrid(
-        id=table_id or f"grid-{pd.Timestamp.now().value}",
-        rowData=df.to_dict('records'),
-        columnDefs=column_defs,
-        defaultColDef=default_col_def,
-        dashGridOptions={
-            "pagination": True,
-            "paginationPageSize": 10,
-            "animateRows": False,
-            "domLayout": "autoHeight"
-        },
-        columnSize="sizeToFit",
-        style={'width': '100%', 'height': None},
-        enableEnterpriseModules=enterprise_modules,
-        # Ensure the grid uses a theme that doesn't conflict with styles
-        className="ag-theme-alpine"
-    )
-    
-    # Add download button if enabled
-    if enable_download:
-        return html.Div([
-            grid,
-            html.Button(
-                "Download CSV",
-                id={"type": "download-button", "index": table_id},
-                style={"marginTop": "10px"}
-            ),
-            dcc.Download(id={"type": "download", "index": table_id})
-        ])
-    
-    return grid
+app = Dash(__name__)
+
+# Sample DataFrame
+df = pd.DataFrame({
+    'Name': ['Alice', 'Bob', 'Charlie'],
+    'Age': [25.123, 30.456, 35.789],
+    'Salary': [50000, 60000, 70000]
+})
+
+# Create grid with highlighted 'Age' column
+grid = create_ag_grid_table(
+    dataframe=df,
+    table_id='test-grid',
+    highlight_vars=['Age'],
+    highlight_color='yellow',
+    precision=1
+)
+
+app.layout = html.Div([grid])
+
+if __name__ == '__main__':
+    app.run_server(debug=True)

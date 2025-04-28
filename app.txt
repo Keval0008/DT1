@@ -1,28 +1,43 @@
-from dash import Dash, html, Input, Output, State, callback_context, no_update
-from dash.exceptions import PreventUpdate
-from lineage_chart import LineageChart  # Import our new class
+# Add this method to the LineageChart class
+def get_empty_layout(self):
+    """Return the chart container with empty elements"""
+    return html.Div([
+        html.Div([
+            html.Button("Undo", id="undo-button", disabled=True),
+            html.Button("Redo", id="redo-button", disabled=True),
+            html.Button("Reset to Full Graph", id="reset-button"),
+        ], style={"margin-bottom": "10px"}),
+        cyto.Cytoscape(
+            id="lineage-chart",
+            elements=[],
+            layout={
+                "name": "breadthfirst",
+                "directed": True,
+                "spacingFactor": 1.5,
+                "transform": lambda node, pos: {"x": pos["y"], "y": -pos["x"]}
+            },
+            style={"width": "100%", "height": "600px"},
+            stylesheet=self.stylesheet
+        ),
+        html.Div(id="node-info", style={"margin-top": "20px"}),
+        dcc.Store(id="history-store"),
+        dcc.Store(id="graph-store")  # New store for graph data
+    ])
 
-# Initialize the chart component
-lineage_chart = LineageChart()
-
-app = Dash(__name__)
-
+# Initialize the app with chart container
 app.layout = html.Div([
     # Your existing components
     html.Div(id="lineage-result"),
     # ... other components ...
     
-    # Add a container for the chart
-    html.Div(id="lineage-chart-container")
+    # Initialize the chart container (empty at first)
+    lineage_chart.get_empty_layout()
 ])
-
-# Register the chart callbacks
-lineage_chart.register_callbacks(app)
 
 @app.callback(
     Output("lineage-result", "children"),
     Output("trace-button", "n_clicks"),
-    Output("lineage-chart-container", "children"),  # New output for chart
+    Output("graph-store", "data"),  # Output to store graph data
     Input("trace-button", "n_clicks"),
     State("table-dropdown", "value"),
     State('variable-dropdown', 'value'),
@@ -46,11 +61,14 @@ def update_lineage(n_clicks, table, variable, direction):
     deadends_table = create_ag_grid_table(deadends_df, table_id="deadends-grid")
     source_table = create_ag_grid_table(source_df, table_id="source-grid")
     
-    # Create the lineage chart if we have data
-    chart_layout = None
+    # Prepare graph data for storage
+    graph_data = None
     if not filtered_df.empty:
-        lineage_chart.create_from_dataframe(filtered_df)
-        chart_layout = lineage_chart.get_chart_layout()
+        elements = lineage_chart.create_from_dataframe(filtered_df)
+        graph_data = {
+            "elements": elements,
+            "initial_elements": elements
+        }
     
     return html.Div([
             html.H4("Lineage Data"),
@@ -59,4 +77,19 @@ def update_lineage(n_clicks, table, variable, direction):
             deadends_table,
             html.H4("Source Data"),
             source_table,
-        ]), 0, chart_layout  # Return chart as third output
+        ]), 0, graph_data
+
+# Add this new callback to update the chart when graph data changes
+@app.callback(
+    Output("lineage-chart", "elements"),
+    Output("history-store", "data"),
+    Input("graph-store", "data"),
+)
+def update_chart_elements(graph_data):
+    if graph_data is None:
+        return [], {"history": [], "index": 0}
+    
+    return graph_data["initial_elements"], {
+        "history": [{"node": None, "elements": graph_data["initial_elements"]}],
+        "index": 0
+    }

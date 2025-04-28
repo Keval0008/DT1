@@ -8,29 +8,26 @@ def create_data_table(
     table_id=None,
     highlight_vars=None,
     highlight_color='lightyellow',
-    default_col_def=None,
     precision=2,
     enable_download=False
 ):
     """
-    Creates a Dash DataTable from a pandas DataFrame with optional features.
+    Creates a Dash DataTable with cell highlighting for specified values.
     
     Args:
         dataframe: Input DataFrame
         table_id: Unique ID for the table
-        highlight_vars: List of values to highlight in any cell
-        highlight_color: Color for highlighted cells
-        default_col_def: Custom column definitions (optional, for compatibility)
+        highlight_vars: List of values to highlight anywhere in the table
+        highlight_color: Background color for highlighted cells
         precision: Rounding for numeric columns
         enable_download: Show download button
         
     Returns:
-        Dash DataTable component
+        Dash DataTable component with optional download button
     """
     if dataframe.empty:
         return html.Div("No data available", style={'color': 'gray'})
     
-    # Make a copy to avoid modifying original
     df = dataframe.copy()
     
     # Apply precision to numeric columns
@@ -38,61 +35,57 @@ def create_data_table(
     for col in float_cols:
         df[col] = df[col].round(precision)
     
-    # Validate highlight_vars
-    if highlight_vars:
-        highlight_vars = list(highlight_vars) if not isinstance(highlight_vars, list) else highlight_vars
-        if not highlight_vars:
-            print("Warning: highlight_vars is empty.")
-    
-    # Convert all highlight_vars values to strings for comparison
-    # This handles numbers and strings consistently
-    highlight_vars = [str(val) for val in highlight_vars] if highlight_vars else []
-    
-    # Generate column definitions
-    columns = [
-        {
-            'name': col.replace('_', ' ').title(),
-            'id': col,
-            'type': 'numeric' if col in float_cols else 'text',
-            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
-        }
-        for col in df.columns
-    ]
+    # Convert highlight_vars to strings and ensure it's a list
+    if highlight_vars is not None:
+        highlight_vars = [str(var) for var in highlight_vars] if not isinstance(highlight_vars, str) else [str(highlight_vars)]
+    else:
+        highlight_vars = []
     
     # Generate conditional styling for highlighted cells
     style_data_conditional = []
     if highlight_vars:
-        for col in df.columns:
-            # Highlight cells where the value (as string) matches any highlight_vars value
+        # Create one condition per highlight value that checks all columns
+        for val in highlight_vars:
             style_data_conditional.append({
                 'if': {
-                    'filter_query': '{{{col}}} = "{val}"'.format(col=col, val=str(val)),
-                    'column_id': col
+                    'filter_query': ' || '.join([f'{{{col}}} = "{val}"' for col in df.columns]),
                 },
-                'backgroundColor': highlight_color
-            } for val in highlight_vars)
-        # Flatten the list of styles (since the above creates a generator per column)
-        style_data_conditional = [style for sublist in style_data_conditional for style in sublist]
+                'backgroundColor': highlight_color,
+                'color': 'black'
+            })
     
     # Create the DataTable
     table = dash_table.DataTable(
         id=table_id or f"table-{pd.Timestamp.now().value}",
         data=df.to_dict('records'),
-        columns=columns,
-        style_table={'width': '100%', 'overflowX': 'auto'},
+        columns=[{
+            'name': col.replace('_', ' ').title(),
+            'id': col,
+            'type': 'numeric' if col in float_cols else 'text',
+            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
+        } for col in df.columns],
+        style_table={
+            'overflowX': 'auto',
+            'width': '100%',
+            'maxHeight': '500px'
+        },
         style_cell={
             'textAlign': 'left',
             'minWidth': '100px',
-            'padding': '5px'
+            'padding': '5px',
+            'whiteSpace': 'normal',
+            'height': 'auto'
         },
         style_header={
             'backgroundColor': 'lightgrey',
             'fontWeight': 'bold'
         },
-        page_size=10,  # Pagination
-        filter_action='native',  # Enable filtering
-        sort_action='native',  # Enable sorting
-        style_data_conditional=style_data_conditional
+        style_data_conditional=style_data_conditional,
+        page_size=10,
+        filter_action='native',
+        sort_action='native',
+        sort_mode='multi',
+        page_action='native',
     )
     
     # Add download button if enabled

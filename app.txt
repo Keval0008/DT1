@@ -1,32 +1,31 @@
-import dash_ag_grid as dag
+import dash_table
 from dash import html
 import pandas as pd
+import dash_core_components as dcc
 
-def create_ag_grid_table(
+def create_data_table(
     dataframe,
     table_id=None,
     highlight_vars=None,
     highlight_color='lightyellow',
     default_col_def=None,
     precision=2,
-    enable_enterprise=False,
     enable_download=False
 ):
     """
-    Creates an AG Grid table from a pandas DataFrame with optional features.
+    Creates a Dash DataTable from a pandas DataFrame with optional features.
     
     Args:
         dataframe: Input DataFrame
         table_id: Unique ID for the table
         highlight_vars: List of values to highlight in any cell
         highlight_color: Color for highlighted cells
-        default_col_def: Custom column definitions
+        default_col_def: Custom column definitions (optional, for compatibility)
         precision: Rounding for numeric columns
-        enable_enterprise: Enable enterprise features
         enable_download: Show download button
         
     Returns:
-        AG Grid component
+        Dash DataTable component
     """
     if dataframe.empty:
         return html.Div("No data available", style={'color': 'gray'})
@@ -41,76 +40,65 @@ def create_ag_grid_table(
     
     # Validate highlight_vars
     if highlight_vars:
-        # Convert highlight_vars to a list if it isn't already
         highlight_vars = list(highlight_vars) if not isinstance(highlight_vars, list) else highlight_vars
         if not highlight_vars:
             print("Warning: highlight_vars is empty.")
     
+    # Convert all highlight_vars values to strings for comparison
+    # This handles numbers and strings consistently
+    highlight_vars = [str(val) for val in highlight_vars] if highlight_vars else []
+    
     # Generate column definitions
-    column_defs = []
-    for col in df.columns:
-        col_def = {
-            'field': col,
-            'headerName': col.replace('_', ' ').title(),
-            'filter': True,
-            'sortable': True,
-            'resizable': True
+    columns = [
+        {
+            'name': col.replace('_', ' ').title(),
+            'id': col,
+            'type': 'numeric' if col in float_cols else 'text',
+            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
         }
-        
-        # Apply cellStyle to highlight cells with values in highlight_vars
-        if highlight_vars:
-            # Convert highlight_vars to a JavaScript-compatible array
-            js_highlight_vars = []
-            for val in highlight_vars:
-                if isinstance(val, (int, float)):
-                    js_highlight_vars.append(str(val))  # Numbers as-is
-                else:
-                    # Escape quotes and special characters for strings
-                    escaped_val = str(val).replace('"', '\\"').replace('\n', '\\n')
-                    js_highlight_vars.append(f'"{escaped_val}"')  # Strings with quotes
-            js_highlight_array = f"[{', '.join(js_highlight_vars)}]"
-            col_def['cellStyle'] = {
-                'function': f"params => {{ return {js_highlight_array}.includes(String(params.value)) ? {{ backgroundColor: '{highlight_color}' }} : null; }}"
-            }
-            
-        # Special formatting for numeric columns
-        if col in float_cols:
-            col_def['type'] = 'numericColumn'
-            col_def['valueFormatter'] = {"function": f"params.value !== null ? params.value.toFixed({precision}) : ''"}
-            
-        column_defs.append(col_def)
+        for col in df.columns
+    ]
     
-    # Configure default column definitions
-    if default_col_def is None:
-        default_col_def = {
-            "flex": 1,
-            "minWidth": 100,
-            "filter": "agTextColumnFilter",
-            "floatingFilter": True,
-        }
+    # Generate conditional styling for highlighted cells
+    style_data_conditional = []
+    if highlight_vars:
+        for col in df.columns:
+            # Highlight cells where the value (as string) matches any highlight_vars value
+            style_data_conditional.append({
+                'if': {
+                    'filter_query': '{{{col}}} = "{val}"'.format(col=col, val=str(val)),
+                    'column_id': col
+                },
+                'backgroundColor': highlight_color
+            } for val in highlight_vars)
+        # Flatten the list of styles (since the above creates a generator per column)
+        style_data_conditional = [style for sublist in style_data_conditional for style in sublist]
     
-    # Create the grid
-    grid = dag.AgGrid(
-        id=table_id or f"grid-{pd.Timestamp.now().value}",
-        rowData=df.to_dict('records'),
-        columnDefs=column_defs,
-        defaultColDef=default_col_def,
-        dashGridOptions={
-            "pagination": True,
-            "paginationPageSize": 10,
-            "animateRows": False,
-            "domLayout": "autoHeight"
+    # Create the DataTable
+    table = dash_table.DataTable(
+        id=table_id or f"table-{pd.Timestamp.now().value}",
+        data=df.to_dict('records'),
+        columns=columns,
+        style_table={'width': '100%', 'overflowX': 'auto'},
+        style_cell={
+            'textAlign': 'left',
+            'minWidth': '100px',
+            'padding': '5px'
         },
-        columnSize="sizeToFit",
-        style={'width': '100%', 'height': None},
-        enableEnterpriseModules=enable_enterprise,  # Use boolean
-        className="ag-theme-alpine"
+        style_header={
+            'backgroundColor': 'lightgrey',
+            'fontWeight': 'bold'
+        },
+        page_size=10,  # Pagination
+        filter_action='native',  # Enable filtering
+        sort_action='native',  # Enable sorting
+        style_data_conditional=style_data_conditional
     )
     
     # Add download button if enabled
     if enable_download:
         return html.Div([
-            grid,
+            table,
             html.Button(
                 "Download CSV",
                 id={"type": "download-button", "index": table_id},
@@ -119,4 +107,4 @@ def create_ag_grid_table(
             dcc.Download(id={"type": "download", "index": table_id})
         ])
     
-    return grid
+    return table

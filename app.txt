@@ -1,129 +1,267 @@
-import dash_ag_grid as dag
-from dash import html, dcc, Input, Output, State, no_update
+import networkx as nx
+import dash_cytoscape as cyto
 import pandas as pd
-import numpy as np
-from dash.exceptions import PreventUpdate
+from dash import html, dcc
 
-def create_ag_grid_table(
-    dataframe, 
-    table_id=None, 
-    highlight_vars=None, 
-    highlight_color='lightyellow',
-    default_col_def=None,
-    precision=2,
-    enable_download=True,
-    download_button_text="Download CSV",
-    download_file_name="data"
-):
-    """
-    Convert a pandas DataFrame to a Dash AG Grid table with download functionality.
-    
-    Args:
-        dataframe: pandas DataFrame to display
-        table_id: Optional ID for the table component
-        highlight_vars: Optional list of variables to highlight
-        highlight_color: Background color for highlighted cells
-        default_col_def: Optional dictionary of default column definitions
-        precision: Number of decimal places to display for numerical columns
-        enable_download: Whether to show download button
-        download_button_text: Text for download button
-        download_file_name: Base name for downloaded file
+class LineageChart:
+    def __init__(self):
+        self.G = nx.DiGraph()
+        self.initial_elements = []
         
-    Returns:
-        A Div containing the AG Grid and download button
-    """
-    if dataframe.empty:
-        return html.Div("No data available")
+        # Stylesheet configuration
+        self.stylesheet = [
+            {
+                "selector": "node",
+                "style": {
+                    "label": "data(label)",
+                    "shape": "rectangle",
+                    "width": 200,
+                    "height": 60,
+                    "background-color": "#ADD8E6",
+                    "text-valign": "center",
+                    "text-halign": "center",
+                    "font-size": 14,
+                    "text-wrap": "wrap",
+                    "text-max-width": 180
+                }
+            },
+            {
+                "selector": "edge",
+                "style": {
+                    "curve-style": "bezier",
+                    "width": 1,
+                    "control-point-distance": 10,
+                    "target-arrow-shape": "triangle",
+                    "line-color": "#ccc",
+                    "target-arrow-color": "#ccc"
+                }
+            },
+            {
+                "selector": ".selected",
+                "style": {
+                    "shape": "rectangle",
+                    "background-color": "#FF6347",
+                    "width": 240,
+                    "height": 72,
+                    "font-weight": "bold",
+                    "font-size": 16,
+                    "text-wrap": "wrap",
+                    "text-max-width": 220
+                }
+            },
+            {
+                "selector": ".highlight",
+                "style": {
+                    "shape": "rectangle",
+                    "background-color": "#FFD700",
+                    "line-color": "#FFD700",
+                    "target-arrow-color": "#FFD700",
+                    "width": 1,
+                    "control-point-distance": 10,
+                    "height": 60,
+                    "font-size": 14,
+                    "text-wrap": "wrap",
+                    "text-max-width": 180
+                }
+            }
+        ]
     
-    # Make a copy to avoid modifying the original dataframe
-    df = dataframe.copy()
-    
-    # Apply precision to numerical columns
-    float_cols = df.select_dtypes(include=[np.number]).columns
-    for col in float_cols:
-        df[col] = df[col].round(precision)
-    
-    # Generate unique IDs if not provided
-    if table_id is None:
-        table_id = f"grid-{pd.Timestamp.now().value}"
-    
-    download_id = f"download-{table_id}"
-    store_id = f"store-{table_id}"
-    
-    # Create column definitions with formatting and highlighting
-    column_defs = []
-    for col in df.columns:
-        col_def = {"field": col}
+    def create_from_dataframe(self, df):
+        """Initialize graph from DataFrame"""
+        self.G = nx.DiGraph()
         
-        if col in float_cols:
-            col_def["valueFormatter"] = {"function": f"params.value != null ? params.value.toFixed({precision}) : ''"}
-        
-        if highlight_vars and col in highlight_vars:
-            col_def["cellStyle"] = {"backgroundColor": highlight_color}
+        for _, row in df.iterrows():
+            main_node = f"{row['main_table_name']}.{row['main_variable_name']}"
+            derived_node = f"{row['derivation_table_name']}.{row['derivation_variable_name']}"
             
-        column_defs.append(col_def)
+            self.G.add_node(
+                main_node,
+                table=row["main_table_name"],
+                column=row["main_variable_name"],
+                label=main_node
+            )
+            self.G.add_node(
+                derived_node,
+                table=row["derivation_table_name"],
+                column=row["derivation_variable_name"],
+                label=derived_node
+            )
+            self.G.add_edge(main_node, derived_node)
+        
+        self.initial_elements = self._graph_to_cytoscape(self.G)
+        return self.initial_elements
     
-    # Prepare default column definitions if not provided
-    if default_col_def is None:
-        default_col_def = {
-            "resizable": True,
-            "sortable": True,
-            "filter": True,
-            "editable": False,
-            "minWidth": 100
-        }
+    def _graph_to_cytoscape(self, G, selected_node=None):
+        """Convert NetworkX graph to Cytoscape format"""
+        elements = []
+        for node in G.nodes:
+            classes = "unselected"
+            if selected_node and node == selected_node:
+                classes = "selected"
+            elif selected_node and node in list(G.predecessors(selected_node)):
+                classes = "highlight"
+            elements.append({
+                "data": {"id": node, "label": G.nodes[node]["label"]},
+                "classes": classes
+            })
+            
+        for edge in G.edges:
+            classes = "unselected"
+            if selected_node and edge[0] == selected_node and edge[1] in list(G.predecessors(selected_node)):
+                classes = "highlight"
+            elif selected_node and edge[0] in list(G.predecessors(selected_node)) and edge[1] == selected_node:
+                classes = "highlight"
+            elements.append({
+                "data": {"source": edge[0], "target": edge[1]},
+                "classes": classes
+            })
+        return elements
     
-    grid = dag.AgGrid(
-        id=table_id,
-        rowData=df.to_dict('records'),
-        columnDefs=column_defs,
-        defaultColDef=default_col_def,
-        dashGridOptions={
-            "pagination": True,
-            "paginationPageSize": 10,
-            "suppressCellFocus": True,
-            "animateRows": False,
-            "enableCellTextSelection": True,
-            "ensureDomOrder": True
-        },
-        style={"height": "400px", "width": "100%"},
-        columnSize="sizeToFit",
-    )
-    
-    components = [grid]
-    
-    if enable_download:
-        components.extend([
-            html.Div(style={"height": "10px"}),  # Spacer
-            html.Button(
-                download_button_text,
-                id=f"btn-download-{table_id}",
-                style={"margin-top": "10px"}
+    def get_chart_layout(self):
+        """Return the complete chart layout with controls"""
+        return html.Div([
+            html.Div([
+                html.Button("Undo", id="undo-button", disabled=True),
+                html.Button("Redo", id="redo-button", disabled=True),
+                html.Button("Reset to Full Graph", id="reset-button"),
+            ], style={"margin-bottom": "10px"}),
+            cyto.Cytoscape(
+                id="lineage-chart",
+                elements=self.initial_elements,
+                layout={
+                    "name": "breadthfirst",
+                    "directed": True,
+                    "spacingFactor": 1.5,
+                    "transform": lambda node, pos: {"x": pos["y"], "y": -pos["x"]}
+                },
+                style={"width": "100%", "height": "600px"},
+                stylesheet=self.stylesheet
             ),
-            dcc.Download(id=download_id),
-            dcc.Store(id=store_id, data=df.to_dict('records'))
+            html.Div(id="node-info", style={"margin-top": "20px"}),
+            dcc.Store(id="history-store", data={
+                "history": [{"node": None, "elements": self.initial_elements}], 
+                "index": 0
+            })
         ])
     
-    return html.Div(components)
-
-def register_download_callback(app, table_id):
-    """
-    Register the download callback for a specific table.
-    Call this for each table you create with download enabled.
-    """
-    @app.callback(
-        Output(f"download-{table_id}", "data"),
-        Input(f"btn-download-{table_id}", "n_clicks"),
-        State(f"store-{table_id}", "data"),
-        prevent_initial_call=True
-    )
-    def download_data(n_clicks, stored_data):
-        if n_clicks is None:
-            raise PreventUpdate
-        
-        df = pd.DataFrame.from_dict(stored_data)
-        return dcc.send_data_frame(
-            df.to_csv,
-            f"{table_id}-data.csv",
-            index=False
+    def register_callbacks(self, app):
+        """Register all necessary callbacks with the Dash app"""
+        @app.callback(
+            [
+                Output("lineage-chart", "elements"),
+                Output("node-info", "children"),
+                Output("history-store", "data"),
+                Output("undo-button", "disabled"),
+                Output("redo-button", "disabled")
+            ],
+            [
+                Input("lineage-chart", "tapNodeData"),
+                Input("undo-button", "n_clicks"),
+                Input("redo-button", "n_clicks"),
+                Input("reset-button", "n_clicks")
+            ],
+            [
+                State("history-store", "data"),
+                State("lineage-chart", "elements")
+            ]
         )
+        def update_graph(node_data, undo_clicks, redo_clicks, reset_clicks, history_data, current_elements):
+            ctx = dash.callback_context
+            if not ctx.triggered:
+                return (
+                    current_elements,
+                    "Click a node to see details",
+                    history_data,
+                    True,
+                    True
+                )
+
+            triggered_id = ctx.triggered[0]["prop_id"]
+            history = history_data["history"]
+            history_index = history_data["index"]
+
+            elements = current_elements
+            node_info = "Click a node to see details"
+            new_history = history[:history_index + 1]
+            new_index = history_index
+            undo_disabled = True
+            redo_disabled = True
+
+            if triggered_id == "reset-button.n_clicks":
+                elements = self.initial_elements
+                new_history = [{"node": None, "elements": self.initial_elements}]
+                new_index = 0
+                node_info = "Full graph restored. Click a node to see details"
+
+            elif triggered_id == "undo-button.n_clicks" and history_index > 0:
+                new_index = history_index - 1
+                elements = history[new_index]["elements"]
+                selected_node = history[new_index]["node"]
+                node_info = self._generate_node_info(selected_node) if selected_node else "Full graph displayed"
+
+            elif triggered_id == "redo-button.n_clicks" and history_index < len(history) - 1:
+                new_index = history_index + 1
+                elements = history[new_index]["elements"]
+                selected_node = history[new_index]["node"]
+                node_info = self._generate_node_info(selected_node) if selected_node else "Full graph displayed"
+
+            elif triggered_id == "lineage-chart.tapNodeData" and node_data:
+                selected_node = node_data["id"]
+                parents = list(self.G.predecessors(selected_node))
+                descendants = nx.descendants(self.G, selected_node)
+                subgraph_nodes = {selected_node}
+                if parents:
+                    subgraph_nodes.add(parents[0])
+                subgraph_nodes.update(descendants)
+                subgraph = self.G.subgraph(subgraph_nodes)
+                subgraph_elements = self._graph_to_cytoscape(subgraph, selected_node)
+                new_history.append({"node": selected_node, "elements": subgraph_elements})
+                new_index = len(new_history) - 1
+                elements = subgraph_elements
+                node_info = self._generate_node_info(selected_node)
+
+            undo_disabled = new_index <= 0
+            redo_disabled = new_index >= len(new_history) - 1
+
+            new_history_data = {"history": new_history, "index": new_index}
+            traversal_log = "Traversal Log: " + " -> ".join(
+                [state["node"] or "Full Graph" for state in new_history]
+            )
+            node_info = f"{node_info}\n\n{traversal_log}"
+
+            return (
+                elements,
+                node_info,
+                new_history_data,
+                undo_disabled,
+                redo_disabled
+            )
+    
+    def _generate_node_info(self, selected_node):
+        """Generate information about a node"""
+        selected_table = self.G.nodes[selected_node]["table"]
+        selected_column = self.G.nodes[selected_node]["column"]
+        node_info = (
+            f"Selected: {selected_node}\n"
+            f"Table: {selected_table}, Column: {selected_column}"
+        )
+        parents = list(self.G.predecessors(selected_node))
+        if parents:
+            parent = parents[0]
+            node_info += (
+                f"\nParent: {parent}\n"
+                f"Table: {self.G.nodes[parent]['table']}, "
+                f"Column: {self.G.nodes[parent]['column']}"
+            )
+        children = list(self.G.successors(selected_node))
+        if children:
+            node_info += "\nChildren:\n" + "\n".join(
+                [
+                    f"{child} (Table: {self.G.nodes[child]['table']}, "
+                    f"Column: {self.G.nodes[child]['column']})"
+                    for child in children
+                ]
+            )
+        else:
+            node_info += "\nChildren: None"
+        return node_info

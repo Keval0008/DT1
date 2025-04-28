@@ -1,25 +1,69 @@
-@callback(
-    Output('lineage-results', 'children'),
-    [Input('trace-button', 'n_clicks')],
-    [State('table-dropdown', 'value'),
-     State('column-dropdown', 'value'),
-     State('direction-radio', 'value')]
-)
-def update_lineage(n_clicks, tables, columns, direction):
-    tracer = app.lineage_tracer  # Store tracer in app
-    full_df, sources_df, dead_ends_df = tracer.trace_lineage(
-        starting_tables=tables,
-        starting_columns=columns,
-        direction=direction
+import dash_ag_grid as dag
+from dash import html
+
+def create_ag_grid_table(
+    dataframe, 
+    table_id=None, 
+    highlight_vars=None, 
+    highlight_color='lightyellow',
+    default_col_def=None
+):
+    """
+    Convert a pandas DataFrame to a Dash AG Grid table with optional variable highlighting.
+    
+    Args:
+        dataframe: pandas DataFrame to display
+        table_id: Optional ID for the table component
+        highlight_vars: Optional list of variables to highlight (future use)
+        highlight_color: Background color for highlighted cells
+        default_col_def: Optional dictionary of default column definitions
+        
+    Returns:
+        A Dash AG Grid component
+    """
+    if dataframe.empty:
+        return html.Div("No data available")
+    
+    # Convert dataframe to dictionary format for AG Grid
+    row_data = dataframe.to_dict('records')
+    column_defs = [{"field": col} for col in dataframe.columns]
+    
+    # Prepare default column definitions if not provided
+    if default_col_def is None:
+        default_col_def = {
+            "resizable": True,
+            "sortable": True,
+            "filter": True,
+            "editable": False,
+            "minWidth": 100
+        }
+    
+    # Apply highlighting if highlight_vars is provided
+    if highlight_vars:
+        # This will be used in the cellStyle to highlight specific variables
+        column_defs = [
+            {
+                "field": col,
+                "cellStyle": {"backgroundColor": highlight_color} 
+                if col in highlight_vars 
+                else None
+            } 
+            for col in dataframe.columns
+        ]
+    
+    grid = dag.AgGrid(
+        id=table_id,
+        rowData=row_data,
+        columnDefs=column_defs,
+        defaultColDef=default_col_def,
+        dashGridOptions={
+            "pagination": True,
+            "paginationPageSize": 10,
+            "suppressCellFocus": True,
+            "animateRows": False
+        },
+        style={"height": "400px", "width": "100%"},
+        columnSize="sizeToFit",
     )
     
-    return html.Div([
-        dcc.Markdown("### Full Lineage Trace"),
-        dash_table.DataTable(full_df.to_dict('records')),
-        
-        dcc.Markdown("### Source Tables"),
-        dash_table.DataTable(sources_df.to_dict('records')),
-        
-        dcc.Markdown("### Dead Ends"),
-        dash_table.DataTable(dead_ends_df.to_dict('records'))
-    ])
+    return grid

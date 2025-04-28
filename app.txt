@@ -1,108 +1,37 @@
-# 1. Primary callback for data processing
 @app.callback(
-    Output("lineage-result", "children"),
-    Output("trace-button", "n_clicks"),
-    Output("graph-store", "data"),
-    Input("trace-button", "n_clicks"),
-    [State(...)]  # Your existing states
+    Output("current-view-table", "children"),
+    Input("lineage-chart", "elements"),  # Triggers when graph updates
+    State("graph-store", "data"),        # Contains original full data
+    State("lineage-master-df", "data")  # Your original DataFrame
 )
-def update_lineage(n_clicks, table, variable, direction):
-    # Your existing processing logic
-    if not filtered_df.empty:
-        elements = lineage_chart.create_from_dataframe(filtered_df)
-        return ..., 0, {"elements": elements, "full_graph": elements}
-    return ..., 0, None
-
-# 2. Unified callback for all graph interactions
-@app.callback(
-    Output("lineage-chart", "elements"),
-    Output("history-store", "data"),
-    Output("node-info", "children"),
-    Input("lineage-chart", "tapNodeData"),
-    Input("undo-button", "n_clicks"),
-    Input("redo-button", "n_clicks"),
-    Input("reset-button", "n_clicks"),
-    State("history-store", "data"),
-    State("graph-store", "data"),
-    prevent_initial_call=True
-)
-def handle_graph_interactions(node_data, undo_clicks, redo_clicks, reset_clicks, history_data, graph_data):
-    ctx = callback_context
+def update_current_view_table(current_elements, graph_data, master_df):
+    if not current_elements or not graph_data or not master_df:
+        return "No data to display"
     
-    if not ctx.triggered:
-        raise PreventUpdate
+    # Get visible node IDs from current elements
+    visible_nodes = set()
+    for element in current_elements:
+        if "source" not in element["data"]:  # It's a node
+            visible_nodes.add(element["data"]["id"])
     
-    triggered_id = ctx.triggered[0]["prop_id"].split('.')[0]
+    # Convert node IDs back to table.variable format
+    visible_items = []
+    for node_id in visible_nodes:
+        table, variable = node_id.split(".", 1)
+        visible_items.append({"table": table, "variable": variable})
     
-    # Initialize default returns
-    elements = no_update
-    new_history = no_update
-    node_info = no_update
+    # Filter the original DataFrame
+    visible_df = pd.DataFrame(visible_items)
+    merged_df = pd.merge(visible_df, master_df, 
+                        on=["table", "variable"], 
+                        how="left")
     
-    # Handle node click
-    if triggered_id == "lineage-chart" and node_data:
-        selected_node = node_data["id"]
-        G = nx.DiGraph()
-        
-        # Rebuild graph from stored elements
-        for element in graph_data["full_graph"]:
-            if "source" in element["data"]:
-                G.add_edge(element["data"]["source"], element["data"]["target"])
-            else:
-                G.add_node(element["data"]["id"])
-        
-        # Get relevant nodes
-        relevant_nodes = {selected_node, *nx.descendants(G, selected_node)}
-        if list(G.predecessors(selected_node)):
-            relevant_nodes.add(list(G.predecessors(selected_node))[0])
-        
-        # Create filtered elements
-        new_elements = []
-        for element in graph_data["full_graph"]:
-            if "source" in element["data"]:
-                if element["data"]["source"] in relevant_nodes and element["data"]["target"] in relevant_nodes:
-                    new_elements.append({
-                        "data": element["data"],
-                        "classes": "highlight" if selected_node in [element["data"]["source"], element["data"]["target"]] else ""
-                    })
-            else:
-                if element["data"]["id"] in relevant_nodes:
-                    new_elements.append({
-                        "data": element["data"],
-                        "classes": "selected" if element["data"]["id"] == selected_node else ""
-                    })
-        
-        # Update history
-        current_history = history_data["history"][:history_data["index"]+1]
-        current_history.append({
-            "node": selected_node,
-            "elements": new_elements
-        })
-        
-        elements = new_elements
-        new_history = {"history": current_history, "index": len(current_history)-1}
-        node_info = f"Selected: {selected_node}"
-    
-    # Handle undo/redo/reset
-    elif triggered_id in ["undo-button", "redo-button", "reset-button"]:
-        history = history_data["history"]
-        index = history_data["index"]
-        
-        if triggered_id == "reset-button":
-            elements = graph_data["full_graph"]
-            new_history = {"history": [{"node": None, "elements": elements}], "index": 0}
-            node_info = "Full graph restored"
-        
-        elif triggered_id == "undo-button" and index > 0:
-            new_index = index - 1
-            elements = history[new_index]["elements"]
-            new_history = {"history": history, "index": new_index}
-            node_info = f"Undo to {history[new_index]['node'] or 'initial state'}"
-        
-        elif triggered_id == "redo-button" and index < len(history)-1:
-            new_index = index + 1
-            elements = history[new_index]["elements"]
-            new_history = {"history": history, "index": new_index}
-            node_info = f"Redo to {history[new_index]['node'] or 'initial state'}"
-    
-    return elements, new_history, node_info
+    # Return a Dash DataTable
+    return dash_table.DataTable(
+        columns=[{"name": col, "id": col} for col in merged_df.columns],
+        data=merged_df.to_dict("records"),
+        style_table={"overflowX": "auto"},
+        page_size=10,
+        filter_action="native",
+        sort_action="native"
+    )

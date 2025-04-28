@@ -1,3 +1,7 @@
+import dash_ag_grid as dag
+from dash import html
+import pandas as pd
+
 def create_ag_grid_table(
     dataframe,
     table_id=None,
@@ -9,21 +13,25 @@ def create_ag_grid_table(
     enable_download=False
 ):
     """
-    Creates an AG Grid table with cell highlighting for specified variables.
+    Creates an AG Grid table from a pandas DataFrame with optional features.
     
     Args:
         dataframe: Input DataFrame
         table_id: Unique ID for the table
-        highlight_vars: List of variable names to highlight anywhere in the table
-        highlight_color: Background color for highlighted cells
+        highlight_vars: List of columns to highlight
+        highlight_color: Color for highlighted columns
         default_col_def: Custom column definitions
         precision: Rounding for numeric columns
         enable_enterprise: Enable enterprise features
         enable_download: Show download button
+        
+    Returns:
+        AG Grid component
     """
     if dataframe.empty:
         return html.Div("No data available", style={'color': 'gray'})
     
+    # Make a copy to avoid modifying original
     df = dataframe.copy()
     
     # Apply precision to numeric columns
@@ -31,11 +39,12 @@ def create_ag_grid_table(
     for col in float_cols:
         df[col] = df[col].round(precision)
     
-    # Custom cell style function for highlighting
-    def cell_style(params):
-        if highlight_vars and any(str(var) in str(params.value) for var in highlight_vars):
-            return {'backgroundColor': highlight_color}
-        return None
+    # Validate highlight_vars
+    if highlight_vars:
+        # Ensure highlight_vars only contains valid columns
+        highlight_vars = [col for col in highlight_vars if col in df.columns]
+        if not highlight_vars:
+            print("Warning: No valid columns in highlight_vars match DataFrame columns.")
     
     # Generate column definitions
     column_defs = []
@@ -45,9 +54,15 @@ def create_ag_grid_table(
             'headerName': col.replace('_', ' ').title(),
             'filter': True,
             'sortable': True,
-            'resizable': True,
-            'cellStyle': cell_style  # Apply highlighting to all columns
+            'resizable': True
         }
+        
+        # Highlight specific columns if requested
+        if highlight_vars and col in highlight_vars:
+            # Use a function for cellStyle to ensure dynamic application
+            col_def['cellStyle'] = {
+                'function': f"params => {{ return {{ backgroundColor: '{highlight_color}' }}; }}"
+            }
             
         # Special formatting for numeric columns
         if col in float_cols:
@@ -65,6 +80,12 @@ def create_ag_grid_table(
             "floatingFilter": True,
         }
     
+    # Enterprise features if enabled
+    if enable_enterprise:
+        enterprise_modules = ["clientsideFilter", "rowGrouping", "menu", "setFilter"]
+    else:
+        enterprise_modules = []
+    
     # Create the grid
     grid = dag.AgGrid(
         id=table_id or f"grid-{pd.Timestamp.now().value}",
@@ -79,7 +100,9 @@ def create_ag_grid_table(
         },
         columnSize="sizeToFit",
         style={'width': '100%', 'height': None},
-        enableEnterpriseModules=enable_enterprise
+        enableEnterpriseModules=enterprise_modules,
+        # Ensure the grid uses a theme that doesn't conflict with styles
+        className="ag-theme-alpine"
     )
     
     # Add download button if enabled

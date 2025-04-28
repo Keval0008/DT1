@@ -1,7 +1,8 @@
 import dash_ag_grid as dag
-from dash import html
+from dash import html, dcc, Input, Output, State, no_update
 import pandas as pd
 import numpy as np
+from dash.exceptions import PreventUpdate
 
 def create_ag_grid_table(
     dataframe, 
@@ -9,11 +10,13 @@ def create_ag_grid_table(
     highlight_vars=None, 
     highlight_color='lightyellow',
     default_col_def=None,
-    precision=2
+    precision=2,
+    enable_download=True,
+    download_button_text="Download CSV",
+    download_file_name="data"
 ):
     """
-    Convert a pandas DataFrame to a Dash AG Grid table with optional variable highlighting
-    and controlled precision for numerical columns.
+    Convert a pandas DataFrame to a Dash AG Grid table with download functionality.
     
     Args:
         dataframe: pandas DataFrame to display
@@ -22,9 +25,12 @@ def create_ag_grid_table(
         highlight_color: Background color for highlighted cells
         default_col_def: Optional dictionary of default column definitions
         precision: Number of decimal places to display for numerical columns
+        enable_download: Whether to show download button
+        download_button_text: Text for download button
+        download_file_name: Base name for downloaded file
         
     Returns:
-        A Dash AG Grid component
+        A Div containing the AG Grid and download button
     """
     if dataframe.empty:
         return html.Div("No data available")
@@ -37,8 +43,25 @@ def create_ag_grid_table(
     for col in float_cols:
         df[col] = df[col].round(precision)
     
-    # Convert dataframe to dictionary format for AG Grid
-    row_data = df.to_dict('records')
+    # Generate unique IDs if not provided
+    if table_id is None:
+        table_id = f"grid-{pd.Timestamp.now().value}"
+    
+    download_id = f"download-{table_id}"
+    store_id = f"store-{table_id}"
+    
+    # Create column definitions with formatting and highlighting
+    column_defs = []
+    for col in df.columns:
+        col_def = {"field": col}
+        
+        if col in float_cols:
+            col_def["valueFormatter"] = {"function": f"params.value != null ? params.value.toFixed({precision}) : ''"}
+        
+        if highlight_vars and col in highlight_vars:
+            col_def["cellStyle"] = {"backgroundColor": highlight_color}
+            
+        column_defs.append(col_def)
     
     # Prepare default column definitions if not provided
     if default_col_def is None:
@@ -50,34 +73,57 @@ def create_ag_grid_table(
             "minWidth": 100
         }
     
-    # Create column definitions with formatting and highlighting
-    column_defs = []
-    for col in df.columns:
-        col_def = {"field": col}
-        
-        # Apply number formatting for numerical columns
-        if col in float_cols:
-            col_def["valueFormatter"] = {"function": f"params.value != null ? params.value.toFixed({precision}) : ''"}
-        
-        # Apply highlighting if column is in highlight_vars
-        if highlight_vars and col in highlight_vars:
-            col_def["cellStyle"] = {"backgroundColor": highlight_color}
-            
-        column_defs.append(col_def)
-    
     grid = dag.AgGrid(
         id=table_id,
-        rowData=row_data,
+        rowData=df.to_dict('records'),
         columnDefs=column_defs,
         defaultColDef=default_col_def,
         dashGridOptions={
             "pagination": True,
             "paginationPageSize": 10,
             "suppressCellFocus": True,
-            "animateRows": False
+            "animateRows": False,
+            "enableCellTextSelection": True,
+            "ensureDomOrder": True
         },
         style={"height": "400px", "width": "100%"},
         columnSize="sizeToFit",
     )
     
-    return grid
+    components = [grid]
+    
+    if enable_download:
+        components.extend([
+            html.Div(style={"height": "10px"}),  # Spacer
+            html.Button(
+                download_button_text,
+                id=f"btn-download-{table_id}",
+                style={"margin-top": "10px"}
+            ),
+            dcc.Download(id=download_id),
+            dcc.Store(id=store_id, data=df.to_dict('records'))
+        ])
+    
+    return html.Div(components)
+
+def register_download_callback(app, table_id):
+    """
+    Register the download callback for a specific table.
+    Call this for each table you create with download enabled.
+    """
+    @app.callback(
+        Output(f"download-{table_id}", "data"),
+        Input(f"btn-download-{table_id}", "n_clicks"),
+        State(f"store-{table_id}", "data"),
+        prevent_initial_call=True
+    )
+    def download_data(n_clicks, stored_data):
+        if n_clicks is None:
+            raise PreventUpdate
+        
+        df = pd.DataFrame.from_dict(stored_data)
+        return dcc.send_data_frame(
+            df.to_csv,
+            f"{table_id}-data.csv",
+            index=False
+        )

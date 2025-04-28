@@ -1,19 +1,4 @@
-# app.py
-from dash import Dash, html, Input, Output, State, callback_context, no_update
-from dash.exceptions import PreventUpdate
-import networkx as nx
-
-app = Dash(__name__)
-lineage_chart = LineageChart()
-
-# Layout (now with all callbacks registered in main app)
-app.layout = html.Div([
-    # Your existing components
-    html.Div(id="lineage-result"),
-    lineage_chart.get_chart_container(),
-])
-
-# 1. Main Data Processing Callback
+# 1. Primary callback for data processing
 @app.callback(
     Output("lineage-result", "children"),
     Output("trace-button", "n_clicks"),
@@ -28,73 +13,12 @@ def update_lineage(n_clicks, table, variable, direction):
         return ..., 0, {"elements": elements, "full_graph": elements}
     return ..., 0, None
 
-# 2. Node Click Interaction Callback
+# 2. Unified callback for all graph interactions
 @app.callback(
     Output("lineage-chart", "elements"),
     Output("history-store", "data"),
     Output("node-info", "children"),
     Input("lineage-chart", "tapNodeData"),
-    State("history-store", "data"),
-    State("graph-store", "data"),
-)
-def handle_node_click(node_data, history_data, graph_data):
-    ctx = callback_context
-    if not ctx.triggered or not node_data or not graph_data:
-        raise PreventUpdate
-    
-    selected_node = node_data["id"]
-    current_elements = graph_data["full_graph"]  # Use the stored full graph
-    
-    # Create subgraph for the selected node
-    G = nx.DiGraph()
-    for element in current_elements:
-        if "source" in element["data"]:
-            G.add_edge(element["data"]["source"], element["data"]["target"])
-        else:
-            G.add_node(element["data"]["id"])
-    
-    # Get relevant nodes
-    predecessors = list(G.predecessors(selected_node))
-    successors = list(G.successors(selected_node))
-    relevant_nodes = {selected_node, *predecessors, *successors}
-    
-    # Create filtered elements
-    new_elements = []
-    for element in current_elements:
-        if "source" in element["data"]:
-            if element["data"]["source"] in relevant_nodes and element["data"]["target"] in relevant_nodes:
-                new_elements.append({
-                    "data": element["data"],
-                    "classes": "highlight" if selected_node in element["data"].values() else ""
-                })
-        else:
-            if element["data"]["id"] in relevant_nodes:
-                new_elements.append({
-                    "data": element["data"],
-                    "classes": "selected" if element["data"]["id"] == selected_node else ""
-                })
-    
-    # Update history
-    new_history = history_data["history"][:history_data["index"]+1]
-    new_history.append({
-        "node": selected_node,
-        "elements": new_elements
-    })
-    
-    # Generate node info
-    node_info = f"Selected: {selected_node}"
-    if predecessors:
-        node_info += f"\nParent: {predecessors[0]}"
-    if successors:
-        node_info += f"\nChildren: {', '.join(successors)}"
-    
-    return new_elements, {"history": new_history, "index": len(new_history)-1}, node_info
-
-# 3. Undo/Redo/Reset Callbacks
-@app.callback(
-    Output("lineage-chart", "elements", allow_duplicate=True),
-    Output("history-store", "data", allow_duplicate=True),
-    Output("node-info", "children", allow_duplicate=True),
     Input("undo-button", "n_clicks"),
     Input("redo-button", "n_clicks"),
     Input("reset-button", "n_clicks"),
@@ -102,28 +26,83 @@ def handle_node_click(node_data, history_data, graph_data):
     State("graph-store", "data"),
     prevent_initial_call=True
 )
-def handle_history_actions(undo_clicks, redo_clicks, reset_clicks, history_data, graph_data):
+def handle_graph_interactions(node_data, undo_clicks, redo_clicks, reset_clicks, history_data, graph_data):
     ctx = callback_context
-    if not ctx.triggered or not graph_data:
+    
+    if not ctx.triggered:
         raise PreventUpdate
     
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    history = history_data["history"]
-    index = history_data["index"]
+    triggered_id = ctx.triggered[0]["prop_id"].split('.')[0]
     
-    if triggered_id == "reset-button":
-        elements = graph_data["full_graph"]
-        new_history = [{"node": None, "elements": elements}]
-        return elements, {"history": new_history, "index": 0}, "Full graph restored"
+    # Initialize default returns
+    elements = no_update
+    new_history = no_update
+    node_info = no_update
     
-    elif triggered_id == "undo-button" and index > 0:
-        new_index = index - 1
-        elements = history[new_index]["elements"]
-        return elements, {"history": history, "index": new_index}, f"Undo to {history[new_index]['node'] or 'initial state'}"
+    # Handle node click
+    if triggered_id == "lineage-chart" and node_data:
+        selected_node = node_data["id"]
+        G = nx.DiGraph()
+        
+        # Rebuild graph from stored elements
+        for element in graph_data["full_graph"]:
+            if "source" in element["data"]:
+                G.add_edge(element["data"]["source"], element["data"]["target"])
+            else:
+                G.add_node(element["data"]["id"])
+        
+        # Get relevant nodes
+        relevant_nodes = {selected_node, *nx.descendants(G, selected_node)}
+        if list(G.predecessors(selected_node)):
+            relevant_nodes.add(list(G.predecessors(selected_node))[0])
+        
+        # Create filtered elements
+        new_elements = []
+        for element in graph_data["full_graph"]:
+            if "source" in element["data"]:
+                if element["data"]["source"] in relevant_nodes and element["data"]["target"] in relevant_nodes:
+                    new_elements.append({
+                        "data": element["data"],
+                        "classes": "highlight" if selected_node in [element["data"]["source"], element["data"]["target"]] else ""
+                    })
+            else:
+                if element["data"]["id"] in relevant_nodes:
+                    new_elements.append({
+                        "data": element["data"],
+                        "classes": "selected" if element["data"]["id"] == selected_node else ""
+                    })
+        
+        # Update history
+        current_history = history_data["history"][:history_data["index"]+1]
+        current_history.append({
+            "node": selected_node,
+            "elements": new_elements
+        })
+        
+        elements = new_elements
+        new_history = {"history": current_history, "index": len(current_history)-1}
+        node_info = f"Selected: {selected_node}"
     
-    elif triggered_id == "redo-button" and index < len(history)-1:
-        new_index = index + 1
-        elements = history[new_index]["elements"]
-        return elements, {"history": history, "index": new_index}, f"Redo to {history[new_index]['node'] or 'initial state'}"
+    # Handle undo/redo/reset
+    elif triggered_id in ["undo-button", "redo-button", "reset-button"]:
+        history = history_data["history"]
+        index = history_data["index"]
+        
+        if triggered_id == "reset-button":
+            elements = graph_data["full_graph"]
+            new_history = {"history": [{"node": None, "elements": elements}], "index": 0}
+            node_info = "Full graph restored"
+        
+        elif triggered_id == "undo-button" and index > 0:
+            new_index = index - 1
+            elements = history[new_index]["elements"]
+            new_history = {"history": history, "index": new_index}
+            node_info = f"Undo to {history[new_index]['node'] or 'initial state'}"
+        
+        elif triggered_id == "redo-button" and index < len(history)-1:
+            new_index = index + 1
+            elements = history[new_index]["elements"]
+            new_history = {"history": history, "index": new_index}
+            node_info = f"Redo to {history[new_index]['node'] or 'initial state'}"
     
-    return no_update, no_update, no_update
+    return elements, new_history, node_info

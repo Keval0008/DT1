@@ -5,71 +5,145 @@ def create_data_table(
     highlight_color='lightyellow',
     precision=2,
     enable_download=False,
-    table_type=None
+    table_type=None  # 'main', 'secondary', or 'source'
 ):
-    # ... (previous code remains the same until conditional styling) ...
+    """
+    Creates a Dash DataTable with precise row/column highlighting.
+    """
+    if dataframe.empty:
+        return html.Div("No data available", style={'color': 'gray'})
     
+    df = dataframe.copy()
+    
+    # Apply precision to numeric columns
+    float_cols = df.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        df[col] = df[col].round(precision)
+    
+    # Initialize conditional styles
     style_data_conditional = []
     
     if highlight_df is not None and not highlight_df.empty:
-        # Convert highlight_df to a set of (table, column) pairs
+        # Create set of (table, column) pairs to highlight
         highlight_pairs = set(zip(
-            highlight_df['Table Name'].astype(str), 
+            highlight_df['Table Name'].astype(str),
             highlight_df['Variable Name'].astype(str)
         ))
         
-        # Find exact row indices that need highlighting
-        for idx, row in dataframe.iterrows():
+        # Process each row for exact matches
+        for idx, row in df.iterrows():
             if table_type == 'main':
-                # Check both main and derived columns
+                # Check main columns
                 if (str(row['main_table_name']), str(row['main_column_name'])) in highlight_pairs:
-                    style_data_conditional.append({
-                        'if': {
-                            'row_index': idx,
-                            'column_id': 'main_table_name'
+                    style_data_conditional.extend([
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'main_table_name'
+                            },
+                            'backgroundColor': highlight_color
                         },
-                        'backgroundColor': highlight_color
-                    })
-                    style_data_conditional.append({
-                        'if': {
-                            'row_index': idx,
-                            'column_id': 'main_column_name'
-                        },
-                        'backgroundColor': highlight_color
-                    })
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'main_column_name'
+                            },
+                            'backgroundColor': highlight_color
+                        }
+                    ])
                 
+                # Check derived columns
                 if (str(row['derived_table_name']), str(row['derived_column_name'])) in highlight_pairs:
-                    style_data_conditional.append({
-                        'if': {
-                            'row_index': idx,
-                            'column_id': 'derived_table_name'
+                    style_data_conditional.extend([
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'derived_table_name'
+                            },
+                            'backgroundColor': highlight_color
                         },
-                        'backgroundColor': highlight_color
-                    })
-                    style_data_conditional.append({
-                        'if': {
-                            'row_index': idx,
-                            'column_id': 'derived_column_name'
-                        },
-                        'backgroundColor': highlight_color
-                    })
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'derived_column_name'
+                            },
+                            'backgroundColor': highlight_color
+                        }
+                    ])
             
             elif table_type == 'secondary':
-                # Similar logic for other table types
-                pass
+                if (str(row['Table Name']), str(row['Column Name'])) in highlight_pairs:
+                    style_data_conditional.extend([
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'Table Name'
+                            },
+                            'backgroundColor': highlight_color
+                        },
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'Column Name'
+                            },
+                            'backgroundColor': highlight_color
+                        }
+                    ])
             
             elif table_type == 'source':
-                # Similar logic for source table
-                pass
+                if (str(row['Source Table']), str(row['Source Column'])) in highlight_pairs:
+                    style_data_conditional.extend([
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'Source Table'
+                            },
+                            'backgroundColor': highlight_color
+                        },
+                        {
+                            'if': {
+                                'row_index': idx,
+                                'column_id': 'Source Column'
+                            },
+                            'backgroundColor': highlight_color
+                        }
+                    ])
     
-    # Create the table with page_size
+    # Create the table
     table = dash_table.DataTable(
-        id=table_id,
-        data=dataframe.to_dict('records'),
-        columns=[...],  # Your column definitions
+        id=table_id or f"table-{pd.Timestamp.now().value}",
+        data=df.to_dict('records'),
+        columns=[{
+            'name': col.replace('_', ' ').title(),
+            'id': col,
+            'type': 'numeric' if col in float_cols else 'text',
+            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
+        } for col in df.columns],
+        style_table={'overflowX': 'auto', 'width': '100%'},
+        style_cell={
+            'textAlign': 'left',
+            'minWidth': '100px',
+            'padding': '5px',
+            'whiteSpace': 'normal'
+        },
+        style_header={
+            'backgroundColor': 'lightgrey',
+            'fontWeight': 'bold'
+        },
         style_data_conditional=style_data_conditional,
-        page_size=10,  # Or whatever your page size is
-        # ... other parameters ...
+        page_size=10,
+        filter_action='native',
+        sort_action='native',
     )
     
+    if enable_download:
+        return html.Div([
+            table,
+            html.Button(
+                "Download CSV",
+                id={"type": "download-button", "index": table_id},
+                style={"marginTop": "10px"}
+            ),
+            dcc.Download(id={"type": "download", "index": table_id})
+        ])
     return table

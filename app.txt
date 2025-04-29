@@ -1,29 +1,23 @@
-import dash_table
-from dash import html
-import pandas as pd
-import dash_core_components as dcc
-
 def create_data_table(
     dataframe,
     table_id=None,
-    highlight_vars=None,
+    highlight_df=None,  # Now accepts a highlight DataFrame
     highlight_color='lightyellow',
     precision=2,
-    enable_download=False
+    enable_download=False,
+    table_type=None  # To identify which table we're creating
 ):
     """
-    Creates a Dash DataTable with cell highlighting for specified values.
+    Creates a Dash DataTable with highlighting for table-column pairs.
     
     Args:
-        dataframe: Input DataFrame
+        dataframe: Input DataFrame to display
         table_id: Unique ID for the table
-        highlight_vars: List of values to highlight anywhere in the table
-        highlight_color: Background color for highlighted cells
+        highlight_df: DataFrame with 'Table Name' and 'Variable Name' columns for highlighting
+        highlight_color: Color for highlighted cells
         precision: Rounding for numeric columns
         enable_download: Show download button
-        
-    Returns:
-        Dash DataTable component with optional download button
+        table_type: Type of table ('main', 'secondary', 'source') for column mapping
     """
     if dataframe.empty:
         return html.Div("No data available", style={'color': 'gray'})
@@ -35,24 +29,55 @@ def create_data_table(
     for col in float_cols:
         df[col] = df[col].round(precision)
     
-    # Convert highlight_vars to strings and ensure it's a list
-    if highlight_vars is not None:
-        highlight_vars = [str(var) for var in highlight_vars] if not isinstance(highlight_vars, str) else [str(highlight_vars)]
-    else:
-        highlight_vars = []
-    
-    # Generate conditional styling for highlighted cells
+    # Generate conditional styling
     style_data_conditional = []
-    if highlight_vars:
-        # Create one condition per highlight value that checks all columns
-        for val in highlight_vars:
-            style_data_conditional.append({
-                'if': {
-                    'filter_query': ' || '.join([f'{{{col}}} = "{val}"' for col in df.columns]),
-                },
-                'backgroundColor': highlight_color,
-                'color': 'black'
-            })
+    
+    if highlight_df is not None and not highlight_df.empty:
+        # Create a set of (table, column) tuples for fast lookup
+        highlight_pairs = set(zip(
+            highlight_df['Table Name'].astype(str), 
+            highlight_df['Variable Name'].astype(str)
+        ))
+        
+        # Determine which columns to check based on table type
+        if table_type == 'main':
+            # For main table with both main and derived columns
+            col_pairs = [
+                ('main_table_name', 'main_column_name'),
+                ('derived_table_name', 'derived_column_name')
+            ]
+        elif table_type == 'secondary':
+            # For second table with single pair
+            col_pairs = [('Table Name', 'Column Name')]
+        elif table_type == 'source':
+            # For third table with source columns
+            col_pairs = [('Source Table', 'Source Column')]
+        else:
+            col_pairs = []
+        
+        # Create conditions for each column pair
+        for table_col, column_col in col_pairs:
+            if table_col in df.columns and column_col in df.columns:
+                for idx, row in df.iterrows():
+                    table_val = str(row[table_col])
+                    column_val = str(row[column_col])
+                    if (table_val, column_val) in highlight_pairs:
+                        style_data_conditional.extend([
+                            {
+                                'if': {
+                                    'row_index': idx,
+                                    'column_id': table_col
+                                },
+                                'backgroundColor': highlight_color
+                            },
+                            {
+                                'if': {
+                                    'row_index': idx,
+                                    'column_id': column_col
+                                },
+                                'backgroundColor': highlight_color
+                            }
+                        ])
     
     # Create the DataTable
     table = dash_table.DataTable(
@@ -64,40 +89,19 @@ def create_data_table(
             'type': 'numeric' if col in float_cols else 'text',
             'format': {'specifier': f'.{precision}f'} if col in float_cols else None
         } for col in df.columns],
-        style_table={
-            'overflowX': 'auto',
-            'width': '100%',
-            'maxHeight': '500px'
-        },
-        style_cell={
-            'textAlign': 'left',
-            'minWidth': '100px',
-            'padding': '5px',
-            'whiteSpace': 'normal',
-            'height': 'auto'
-        },
-        style_header={
-            'backgroundColor': 'lightgrey',
-            'fontWeight': 'bold'
-        },
+        style_table={'overflowX': 'auto', 'width': '100%'},
+        style_cell={'textAlign': 'left', 'minWidth': '100px', 'padding': '5px'},
+        style_header={'backgroundColor': 'lightgrey', 'fontWeight': 'bold'},
         style_data_conditional=style_data_conditional,
         page_size=10,
         filter_action='native',
         sort_action='native',
-        sort_mode='multi',
-        page_action='native',
     )
     
-    # Add download button if enabled
     if enable_download:
         return html.Div([
             table,
-            html.Button(
-                "Download CSV",
-                id={"type": "download-button", "index": table_id},
-                style={"marginTop": "10px"}
-            ),
-            dcc.Download(id={"type": "download", "index": table_id})
+            html.Button("Download CSV", id=f"download-{table_id}", style={"marginTop": "10px"}),
+            dcc.Download(id=f"download-data-{table_id}")
         ])
-    
     return table

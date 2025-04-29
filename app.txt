@@ -1,3 +1,50 @@
+def add_highlight_flags(df, highlight_df, table_type):
+    """
+    Adds highlight flag columns to the DataFrame based on highlight rules.
+    
+    Args:
+        df: Input DataFrame
+        highlight_df: DataFrame with 'Table Name' and 'Variable Name' columns
+        table_type: 'main', 'secondary', or 'source'
+    
+    Returns:
+        DataFrame with added highlight columns
+    """
+    df = df.copy()
+    
+    # Create set of (table, column) pairs for fast lookup
+    highlight_pairs = set(zip(
+        highlight_df['Table Name'].astype(str),
+        highlight_df['Variable Name'].astype(str)
+    )) if highlight_df is not None else set()
+    
+    if table_type == 'main':
+        # Add flags for main columns
+        df['main_highlight'] = df.apply(
+            lambda row: 'Y' if (str(row['main_table_name']), str(row['main_column_name'])) in highlight_pairs else 'N',
+            axis=1
+        )
+        # Add flags for derived columns
+        df['derived_highlight'] = df.apply(
+            lambda row: 'Y' if (str(row['derived_table_name']), str(row['derived_column_name'])) in highlight_pairs else 'N',
+            axis=1
+        )
+    
+    elif table_type == 'secondary':
+        df['highlight'] = df.apply(
+            lambda row: 'Y' if (str(row['Table Name']), str(row['Column Name'])) in highlight_pairs else 'N',
+            axis=1
+        )
+    
+    elif table_type == 'source':
+        df['highlight'] = df.apply(
+            lambda row: 'Y' if (str(row['Source Table']), str(row['Source Column'])) in highlight_pairs else 'N',
+            axis=1
+        )
+    
+    return df
+
+
 def create_data_table(
     dataframe,
     table_id=None,
@@ -8,90 +55,64 @@ def create_data_table(
     table_type=None
 ):
     """
-    Creates a Dash DataTable with proper highlighting that works across pagination.
-    Uses filter queries to match against highlight rules.
+    Creates a Dash DataTable using highlight flag columns for styling.
     """
-    if dataframe.empty:
-        return html.Div("No data available", style={'color': 'gray'})
+    # Add highlight flags
+    df = add_highlight_flags(dataframe, highlight_df, table_type)
     
-    df = dataframe.copy()
+    if df.empty:
+        return html.Div("No data available", style={'color': 'gray'})
     
     # Apply precision to numeric columns
     float_cols = df.select_dtypes(include=['float64']).columns
     for col in float_cols:
         df[col] = df[col].round(precision)
     
+    # Generate conditional styling based on flag columns
     style_data_conditional = []
     
-    if highlight_df is not None and not highlight_df.empty:
-        # Create filter conditions for each table type
-        if table_type == 'main':
-            # Create combined filter for main columns
-            main_filters = []
-            derived_filters = []
-            
-            for _, row in highlight_df.iterrows():
-                table = str(row['Table Name'])
-                column = str(row['Variable Name'])
-                
-                # For main columns
-                main_filters.append(
-                    f"{{main_table_name}} = '{table}' && {{main_column_name}} = '{column}'"
-                )
-                # For derived columns
-                derived_filters.append(
-                    f"{{derived_table_name}} = '{table}' && {{derived_column_name}} = '{column}'"
-                )
-            
-            # Add main column highlighting
-            if main_filters:
-                style_data_conditional.append({
-                    'if': {
-                        'filter_query': ' || '.join(main_filters),
-                        'column_id': ['main_table_name', 'main_column_name']
-                    },
-                    'backgroundColor': highlight_color
-                })
-            
-            # Add derived column highlighting
-            if derived_filters:
-                style_data_conditional.append({
-                    'if': {
-                        'filter_query': ' || '.join(derived_filters),
-                        'column_id': ['derived_table_name', 'derived_column_name']
-                    },
-                    'backgroundColor': highlight_color
-                })
-        
-        elif table_type == 'secondary':
-            filters = [
-                f"{{Table Name}} = '{str(row['Table Name'])}' && {{Column Name}} = '{str(row['Variable Name'])}'"
-                for _, row in highlight_df.iterrows()
-            ]
-            
-            if filters:
-                style_data_conditional.append({
-                    'if': {
-                        'filter_query': ' || '.join(filters),
-                        'column_id': ['Table Name', 'Column Name']
-                    },
-                    'backgroundColor': highlight_color
-                })
-        
-        elif table_type == 'source':
-            filters = [
-                f"{{Source Table}} = '{str(row['Table Name'])}' && {{Source Column}} = '{str(row['Variable Name'])}'"
-                for _, row in highlight_df.iterrows()
-            ]
-            
-            if filters:
-                style_data_conditional.append({
-                    'if': {
-                        'filter_query': ' || '.join(filters),
-                        'column_id': ['Source Table', 'Source Column']
-                    },
-                    'backgroundColor': highlight_color
-                })
+    if table_type == 'main':
+        style_data_conditional.extend([
+            {
+                'if': {
+                    'filter_query': '{main_highlight} = "Y"',
+                    'column_id': 'main_table_name'
+                },
+                'backgroundColor': highlight_color
+            },
+            {
+                'if': {
+                    'filter_query': '{main_highlight} = "Y"',
+                    'column_id': 'main_column_name'
+                },
+                'backgroundColor': highlight_color
+            },
+            {
+                'if': {
+                    'filter_query': '{derived_highlight} = "Y"',
+                    'column_id': 'derived_table_name'
+                },
+                'backgroundColor': highlight_color
+            },
+            {
+                'if': {
+                    'filter_query': '{derived_highlight} = "Y"',
+                    'column_id': 'derived_column_name'
+                },
+                'backgroundColor': highlight_color
+            }
+        ])
+    elif table_type in ['secondary', 'source']:
+        style_data_conditional.append({
+            'if': {
+                'filter_query': '{highlight} = "Y"',
+                'column_id': ['Table Name', 'Column Name'] if table_type == 'secondary' else ['Source Table', 'Source Column']
+            },
+            'backgroundColor': highlight_color
+        })
+    
+    # Columns to display (exclude highlight flags)
+    display_columns = [col for col in df.columns if not col.endswith('_highlight')]
     
     # Create the table
     table = dash_table.DataTable(
@@ -102,7 +123,7 @@ def create_data_table(
             'id': col,
             'type': 'numeric' if col in float_cols else 'text',
             'format': {'specifier': f'.{precision}f'} if col in float_cols else None
-        } for col in df.columns],
+        } for col in display_columns],
         style_table={'overflowX': 'auto', 'width': '100%'},
         style_cell={
             'textAlign': 'left',
@@ -115,7 +136,7 @@ def create_data_table(
             'fontWeight': 'bold'
         },
         style_data_conditional=style_data_conditional,
-        page_size=10,  # Your preferred page size
+        page_size=10,
         filter_action='native',
         sort_action='native',
     )
@@ -131,3 +152,5 @@ def create_data_table(
             dcc.Download(id={"type": "download", "index": table_id})
         ])
     return table
+
+s

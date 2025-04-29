@@ -1,107 +1,97 @@
-def create_data_table(
-    dataframe,
-    table_id=None,
-    highlight_df=None,  # Now accepts a highlight DataFrame
-    highlight_color='lightyellow',
-    precision=2,
-    enable_download=False,
-    table_type=None  # To identify which table we're creating
-):
-    """
-    Creates a Dash DataTable with highlighting for table-column pairs.
+import dash
+from dash import Dash, html, Input, Output, State, callback_context
+import dash_table
+import pandas as pd
+import dash_core_components as dcc
+from dash.exceptions import PreventUpdate
+
+# Sample test data
+highlight_df = pd.DataFrame({
+    'Table Name': ['customers', 'products', 'orders'],
+    'Variable Name': ['customer_id', 'product_name', 'order_date']
+})
+
+df1 = pd.DataFrame({
+    'main_table_name': ['customers', 'products', 'transactions', 'customers'],
+    'main_column_name': ['customer_id', 'product_name', 'txn_amount', 'customer_name'],
+    'derived_table_name': ['customer_stats', 'product_stats', 'txn_stats', 'customer_segments'],
+    'derived_column_name': ['total_spend', 'avg_rating', 'txn_count', 'segment_type']
+})
+
+df2 = pd.DataFrame({
+    'Table Name': ['customers', 'products', 'orders', 'inventory'],
+    'Column Name': ['customer_id', 'product_name', 'order_total', 'stock_level']
+})
+
+df3 = pd.DataFrame({
+    'Source Table': ['customers', 'products', 'external_systems', 'customers'],
+    'Source Column': ['customer_id', 'product_name', 'api_data', 'join_date']
+})
+
+# Initialize the Dash app
+app = Dash(__name__)
+
+app.layout = html.Div([
+    html.H1("Table Highlighting Test", style={'textAlign': 'center'}),
     
-    Args:
-        dataframe: Input DataFrame to display
-        table_id: Unique ID for the table
-        highlight_df: DataFrame with 'Table Name' and 'Variable Name' columns for highlighting
-        highlight_color: Color for highlighted cells
-        precision: Rounding for numeric columns
-        enable_download: Show download button
-        table_type: Type of table ('main', 'secondary', 'source') for column mapping
-    """
-    if dataframe.empty:
-        return html.Div("No data available", style={'color': 'gray'})
+    html.Div([
+        html.H3("Highlighter Table (Reference)"),
+        dash_table.DataTable(
+            data=highlight_df.to_dict('records'),
+            columns=[{'name': col, 'id': col} for col in highlight_df.columns],
+            style_table={'width': '50%', 'margin': 'auto'}
+        )
+    ], style={'margin': '20px'}),
     
-    df = dataframe.copy()
+    html.Hr(),
     
-    # Apply precision to numeric columns
-    float_cols = df.select_dtypes(include=['float64']).columns
-    for col in float_cols:
-        df[col] = df[col].round(precision)
+    html.Div([
+        html.H3("1. Main Table (Lineage Relationships)"),
+        create_data_table(
+            df1,
+            table_id="main-table",
+            highlight_df=highlight_df,
+            highlight_color='#FFEEAA',
+            table_type='main',
+            enable_download=True
+        )
+    ], style={'margin': '20px'}),
     
-    # Generate conditional styling
-    style_data_conditional = []
+    html.Div([
+        html.H3("2. Secondary Table (Table/Column Pairs)"),
+        create_data_table(
+            df2,
+            table_id="secondary-table",
+            highlight_df=highlight_df,
+            highlight_color='#AADDFF',
+            table_type='secondary'
+        )
+    ], style={'margin': '20px'}),
     
-    if highlight_df is not None and not highlight_df.empty:
-        # Create a set of (table, column) tuples for fast lookup
-        highlight_pairs = set(zip(
-            highlight_df['Table Name'].astype(str), 
-            highlight_df['Variable Name'].astype(str)
-        ))
-        
-        # Determine which columns to check based on table type
-        if table_type == 'main':
-            # For main table with both main and derived columns
-            col_pairs = [
-                ('main_table_name', 'main_column_name'),
-                ('derived_table_name', 'derived_column_name')
-            ]
-        elif table_type == 'secondary':
-            # For second table with single pair
-            col_pairs = [('Table Name', 'Column Name')]
-        elif table_type == 'source':
-            # For third table with source columns
-            col_pairs = [('Source Table', 'Source Column')]
-        else:
-            col_pairs = []
-        
-        # Create conditions for each column pair
-        for table_col, column_col in col_pairs:
-            if table_col in df.columns and column_col in df.columns:
-                for idx, row in df.iterrows():
-                    table_val = str(row[table_col])
-                    column_val = str(row[column_col])
-                    if (table_val, column_val) in highlight_pairs:
-                        style_data_conditional.extend([
-                            {
-                                'if': {
-                                    'row_index': idx,
-                                    'column_id': table_col
-                                },
-                                'backgroundColor': highlight_color
-                            },
-                            {
-                                'if': {
-                                    'row_index': idx,
-                                    'column_id': column_col
-                                },
-                                'backgroundColor': highlight_color
-                            }
-                        ])
-    
-    # Create the DataTable
-    table = dash_table.DataTable(
-        id=table_id or f"table-{pd.Timestamp.now().value}",
-        data=df.to_dict('records'),
-        columns=[{
-            'name': col.replace('_', ' ').title(),
-            'id': col,
-            'type': 'numeric' if col in float_cols else 'text',
-            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
-        } for col in df.columns],
-        style_table={'overflowX': 'auto', 'width': '100%'},
-        style_cell={'textAlign': 'left', 'minWidth': '100px', 'padding': '5px'},
-        style_header={'backgroundColor': 'lightgrey', 'fontWeight': 'bold'},
-        style_data_conditional=style_data_conditional,
-        page_size=10,
-        filter_action='native',
-        sort_action='native',
-    )
-    
-    if enable_download:
-        return html.Div([
-            table,
-            html.Button("Download CSV", id=f"download-{table_id}", style={"marginTop": "10px"}),
-            dcc.Download(id=f"download-data-{table_id}")
-        ])
-    return table
+    html.Div([
+        html.H3("3. Source Table (Source References)"),
+        create_data_table(
+            df3,
+            table_id="source-table",
+            highlight_df=highlight_df,
+            highlight_color='#FFAAAA',
+            table_type='source'
+        )
+    ], style={'margin': '20px'})
+])
+
+# Download callback
+@app.callback(
+    Output({"type": "download-data", "index": "main-table"}, "data"),
+    Input("download-main-table", "n_clicks"),
+    State("main-table", "data"),
+    prevent_initial_call=True
+)
+def download_main_table(n_clicks, data):
+    if n_clicks:
+        df = pd.DataFrame(data)
+        return dcc.send_data_frame(df.to_csv, "main_table.csv")
+    raise PreventUpdate
+
+if __name__ == '__main__':
+    app.run_server(debug=True)

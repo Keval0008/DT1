@@ -1,156 +1,42 @@
-def add_highlight_flags(df, highlight_df, table_type):
+from sqlglot import parse_one, transpile
+from sqlglot.expressions import Table, Subquery, Create
+from typing import List, Tuple
+
+def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> List[Tuple[str, str]]:
     """
-    Adds highlight flag columns to the DataFrame based on highlight rules.
-    
-    Args:
-        df: Input DataFrame
-        highlight_df: DataFrame with 'Table Name' and 'Variable Name' columns
-        table_type: 'main', 'secondary', or 'source'
-    
+    Extracts table-level lineage (source → target) from SQL code using sqlglot for BigQuery.
+
+    Parameters:
+        sql_code (str): The SQL code containing one or more CREATE/INSERT statements.
+        dialect (str): SQL dialect, default is "bigquery".
+
     Returns:
-        DataFrame with added highlight columns
+        List of tuples representing (source_table, target_table).
     """
-    df = df.copy()
-    
-    # Create set of (table, column) pairs for fast lookup
-    highlight_pairs = set(zip(
-        highlight_df['Table Name'].astype(str),
-        highlight_df['Variable Name'].astype(str)
-    )) if highlight_df is not None else set()
-    
-    if table_type == 'main':
-        # Add flags for main columns
-        df['main_highlight'] = df.apply(
-            lambda row: 'Y' if (str(row['main_table_name']), str(row['main_column_name'])) in highlight_pairs else 'N',
-            axis=1
-        )
-        # Add flags for derived columns
-        df['derived_highlight'] = df.apply(
-            lambda row: 'Y' if (str(row['derived_table_name']), str(row['derived_column_name'])) in highlight_pairs else 'N',
-            axis=1
-        )
-    
-    elif table_type == 'secondary':
-        df['highlight'] = df.apply(
-            lambda row: 'Y' if (str(row['Table Name']), str(row['Column Name'])) in highlight_pairs else 'N',
-            axis=1
-        )
-    
-    elif table_type == 'source':
-        df['highlight'] = df.apply(
-            lambda row: 'Y' if (str(row['Source Table']), str(row['Source Column'])) in highlight_pairs else 'N',
-            axis=1
-        )
-    
-    return df
+    lineage = []
 
+    # Parse the SQL string into individual statements
+    parsed_statements = sqlglot.parse(sql_code, read=dialect)
 
-def create_data_table(
-    dataframe,
-    table_id=None,
-    highlight_df=None,
-    highlight_color='lightyellow',
-    precision=2,
-    enable_download=False,
-    table_type=None
-):
-    """
-    Creates a Dash DataTable using highlight flag columns for styling.
-    """
-    # Add highlight flags
-    df = add_highlight_flags(dataframe, highlight_df, table_type)
-    
-    if df.empty:
-        return html.Div("No data available", style={'color': 'gray'})
-    
-    # Apply precision to numeric columns
-    float_cols = df.select_dtypes(include=['float64']).columns
-    for col in float_cols:
-        df[col] = df[col].round(precision)
-    
-    # Generate conditional styling based on flag columns
-    style_data_conditional = []
-    
-    if table_type == 'main':
-        style_data_conditional.extend([
-            {
-                'if': {
-                    'filter_query': '{main_highlight} = "Y"',
-                    'column_id': 'main_table_name'
-                },
-                'backgroundColor': highlight_color
-            },
-            {
-                'if': {
-                    'filter_query': '{main_highlight} = "Y"',
-                    'column_id': 'main_column_name'
-                },
-                'backgroundColor': highlight_color
-            },
-            {
-                'if': {
-                    'filter_query': '{derived_highlight} = "Y"',
-                    'column_id': 'derived_table_name'
-                },
-                'backgroundColor': highlight_color
-            },
-            {
-                'if': {
-                    'filter_query': '{derived_highlight} = "Y"',
-                    'column_id': 'derived_column_name'
-                },
-                'backgroundColor': highlight_color
-            }
-        ])
-    elif table_type in ['secondary', 'source']:
-        style_data_conditional.append({
-            'if': {
-                'filter_query': '{highlight} = "Y"',
-                'column_id': ['Table Name', 'Column Name'] if table_type == 'secondary' else ['Source Table', 'Source Column']
-            },
-            'backgroundColor': highlight_color
-        })
-    
-    # Columns to display (exclude highlight flags)
-    display_columns = [col for col in df.columns if not col.endswith('_highlight')]
-    
-    # Create the table
-    table = dash_table.DataTable(
-        id=table_id or f"table-{pd.Timestamp.now().value}",
-        data=df.to_dict('records'),
-        columns=[{
-            'name': col.replace('_', ' ').title(),
-            'id': col,
-            'type': 'numeric' if col in float_cols else 'text',
-            'format': {'specifier': f'.{precision}f'} if col in float_cols else None
-        } for col in display_columns],
-        style_table={'overflowX': 'auto', 'width': '100%'},
-        style_cell={
-            'textAlign': 'left',
-            'minWidth': '100px',
-            'padding': '5px',
-            'whiteSpace': 'normal'
-        },
-        style_header={
-            'backgroundColor': 'lightgrey',
-            'fontWeight': 'bold'
-        },
-        style_data_conditional=style_data_conditional,
-        page_size=10,
-        filter_action='native',
-        sort_action='native',
-    )
-    
-    if enable_download:
-        return html.Div([
-            table,
-            html.Button(
-                "Download CSV",
-                id={"type": "download-button", "index": table_id},
-                style={"marginTop": "10px"}
-            ),
-            dcc.Download(id={"type": "download", "index": table_id})
-        ])
-    return table
+    for statement in parsed_statements:
+        target_table = None
+        source_tables = set()
 
-s
+        # Identify the target table (CREATE TABLE or INSERT INTO)
+        if isinstance(statement, Create) and statement.this:
+            target_table = statement.this.name
+        elif statement.args.get("expression") and isinstance(statement.args["expression"], Table):
+            target_table = statement.args["expression"].name
+
+        # Collect all source tables used in the statement
+        for node in statement.find_all(Table):
+            if not node.is_temp:
+                source_tables.add(node.name)
+
+        # Generate lineage tuples
+        if target_table:
+            for source in source_tables:
+                if source != target_table:  # Avoid self-dependency
+                    lineage.append((source, target_table))
+
+    return lineage

@@ -1,42 +1,39 @@
-from sqlglot import parse_one, transpile
-from sqlglot.expressions import Table, Subquery, Create
+from sqlglot import parse
+from sqlglot.expressions import Table, Create
 from typing import List, Tuple
 
 def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> List[Tuple[str, str]]:
     """
-    Extracts table-level lineage (source → target) from SQL code using sqlglot for BigQuery.
+    Extracts table-level lineage (source → target) from SQL code using sqlglot.
 
     Parameters:
-        sql_code (str): The SQL code containing one or more CREATE/INSERT statements.
+        sql_code (str): SQL code with one or more statements.
         dialect (str): SQL dialect, default is "bigquery".
 
     Returns:
-        List of tuples representing (source_table, target_table).
+        List[Tuple[str, str]]: List of (source_table, target_table) lineage edges.
     """
     lineage = []
+    statements = parse(sql_code, read=dialect)
 
-    # Parse the SQL string into individual statements
-    parsed_statements = sqlglot.parse(sql_code, read=dialect)
-
-    for statement in parsed_statements:
+    for statement in statements:
         target_table = None
         source_tables = set()
 
-        # Identify the target table (CREATE TABLE or INSERT INTO)
+        # Identify the target table for CREATE TABLE AS SELECT or INSERT INTO
         if isinstance(statement, Create) and statement.this:
-            target_table = statement.this.name
-        elif statement.args.get("expression") and isinstance(statement.args["expression"], Table):
-            target_table = statement.args["expression"].name
+            target_table = statement.this.sql(dialect=dialect)
 
-        # Collect all source tables used in the statement
-        for node in statement.find_all(Table):
-            if not node.is_temp:
-                source_tables.add(node.name)
+        # Collect all source tables from the statement
+        for table_node in statement.find_all(Table):
+            table_name = table_node.sql(dialect=dialect)
+            source_tables.add(table_name)
 
-        # Generate lineage tuples
+        # Add lineage edges (source → target)
         if target_table:
             for source in source_tables:
-                if source != target_table:  # Avoid self-dependency
+                if source != target_table:
                     lineage.append((source, target_table))
 
     return lineage
+

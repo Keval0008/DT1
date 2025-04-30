@@ -1,98 +1,123 @@
-from collections import defaultdict
+import sqlglot
+from sqlglot import exp
+from typing import Dict, List, Tuple
 
-def analyze_table_lineage(lineage_data: dict) -> dict:
+def extract_column_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str, Dict[str, List[str]]]:
     """
-    Analyze table lineage to identify:
-    - Input tables (sources with no dependencies)
-    - Output tables (final targets)
-    - Intermediate tables (both sources and targets)
+    Extract column-level information from SQL code.
     
     Args:
-        lineage_data: Output from extract_table_lineage function
+        sql_code: The SQL code to analyze
+        dialect: The SQL dialect (defaults to 'bigquery')
         
     Returns:
-        Dictionary with:
+        A nested dictionary with:
         {
-            'input_tables': [],
-            'output_tables': [],
-            'intermediate_tables': []
+            "table_name": {
+                "columns": ["col1", "col2", ...],
+                "source_columns": {"col1": ["source_col1", ...], ...}
+            },
+            ...
         }
     """
-    # Build dependency graph
-    graph = defaultdict(set)
-    all_tables = set()
+    try:
+        parsed = sqlglot.parse_one(sql_code, dialect=dialect)
+        result = {}
+        
+        # Process each statement
+        for statement in parsed.find_all(exp.Expression):
+            if isinstance(statement.parent, exp.Select) and statement.parent is not None:
+                continue
+                
+            # Handle CREATE/INSERT/MERGE statements
+            if isinstance(statement, (exp.Create, exp.Insert, exp.Merge)):
+                target_table = _get_full_table_name(statement.this)
+                if not target_table:
+                    continue
+                    
+                if isinstance(statement, exp.Create) and statement.expression:
+                    columns = _extract_columns_from_select(statement.expression)
+                elif isinstance(statement, exp.Insert) and statement.expression:
+                    columns = _extract_columns_from_select(statement.expression)
+                else:
+                    columns = {}
+                
+                if target_table not in result:
+                    result[target_table] = {"columns": [], "source_columns": {}}
+                
+                for col, src_cols in columns.items():
+                    if col not in result[target_table]["columns"]:
+                        result[target_table]["columns"].append(col)
+                    result[target_table]["source_columns"][col] = src_cols
+            
+            # Handle CTEs
+            elif isinstance(statement, exp.With):
+                for cte in statement.expressions:
+                    cte_name = cte.alias
+                    columns = _extract_columns_from_select(cte.this)
+                    
+                    if cte_name not in result:
+                        result[cte_name] = {"columns": [], "source_columns": {}}
+                    
+                    for col, src_cols in columns.items():
+                        if col not in result[cte_name]["columns"]:
+                            result[cte_name]["columns"].append(col)
+                        result[cte_name]["source_columns"][col] = src_cols
+        
+        return result
     
-    # Process CTEs
-    for cte, sources in lineage_data.get('ctes', {}).items():
-        all_tables.add(cte)
-        for source in sources:
-            graph[source].add(cte)
-            all_tables.add(source)
-    
-    # Process target tables
-    for target, sources in lineage_data.get('target_tables', {}).items():
-        all_tables.add(target)
-        for source in sources:
-            # If source is a CTE, we already have its dependencies
-            if source in lineage_data.get('ctes', {}):
-                for cte_source in lineage_data['ctes'][source]:
-                    graph[cte_source].add(target)
-            else:
-                graph[source].add(target)
-    
-    # Identify table types
-    input_tables = set()
-    output_tables = set()
-    
-    # Tables that appear as sources but never as targets
-    input_tables = {table for table in all_tables 
-                   if table not in [target for targets in graph.values() for target in targets]}
-    
-    # Tables that appear as targets but not as sources
-    output_tables = {table for table in all_tables 
-                    if table not in graph or not graph[table]}
-    
-    # Intermediate tables are all others
-    intermediate_tables = all_tables - input_tables - output_tables
-    
-    return {
-        'input_tables': sorted(input_tables),
-        'output_tables': sorted(output_tables),
-        'intermediate_tables': sorted(intermediate_tables)
-    }
+    except Exception as e:
+        raise ValueError(f"Error parsing SQL: {str(e)}")
 
-# Example usage:
-if __name__ == "__main__":
-    # Your SQL code
-    sql_code = """
-    WITH user_data AS (
-        SELECT * FROM project1.dataset1.users
-        WHERE active = TRUE
-    ),
+def _extract_columns_from_select(select_expr: exp.Select) -> Dict[str, List[str]]:
+    """Extract columns from a SELECT expression."""
+    columns = {}
     
-    order_summary AS (
-        SELECT 
-            u.user_id,
-            COUNT(o.order_id) as order_count
-        FROM user_data u
-        JOIN project1.dataset2.orders o ON u.user_id = o.user_id
-        GROUP BY 1
-    )
+    for select in select_expr.find_all(exp.Select):
+        for expr in select.expressions:
+            # Get the output column name (alias or derived name)
+            if isinstance(expr, exp.Alias):
+                col_name = expr.alias
+            elif isinstance(expr, exp.Column):
+                col_name = expr.name
+            elif isinstance(expr, exp.Identifier):
+                col_name = expr.name
+            else:
+                col_name = _generate_column_name(expr)
+            
+            # Get source columns
+            source_cols = set()
+            for col in expr.find_all(exp.Column):
+                source_cols.add(col.name)
+            
+            columns[col_name] = list(source_cols)
     
-    INSERT INTO project2.analytics.user_metrics
-    SELECT 
-        user_id,
-        order_count,
-        CURRENT_DATE() as snapshot_date
-    FROM order_summary;
-    """
+    return columns
+
+def _generate_column_name(expr: exp.Expression) -> str:
+    """Generate a name for derived columns."""
+    if isinstance(expr, exp.Literal):
+        return f"literal_{expr.this}"
+    elif isinstance(expr, exp.Func):
+        return f"{expr.name}_fn"
+    elif isinstance(expr, exp.Binary):
+        return f"{_generate_column_name(expr.left)}_{expr.keyword}_{_generate_column_name(expr.right)}"
+    return "derived_column"
+
+def _get_full_table_name(table_ref) -> str:
+    """Get the fully qualified table name."""
+    if not table_ref or not isinstance(table_ref, exp.Table):
+        return ""
     
-    # Step 1: Extract lineage
-    lineage_data = extract_table_lineage(sql_code)
+    parts = []
+    if hasattr(table_ref, 'catalog') and table_ref.catalog:
+        parts.append(table_ref.catalog)
+    if hasattr(table_ref, 'db') and table_ref.db:
+        parts.append(table_ref.db)
+    if hasattr(table_ref, 'name') and table_ref.name:
+        parts.append(table_ref.name)
     
-    # Step 2: Analyze lineage
-    analysis = analyze_table_lineage(lineage_data)
+    if any("unnest" in part.lower() for part in parts if isinstance(part, str)):
+        return ""
     
-    print("Input Tables (Sources):", analysis['input_tables'])
-    print("Output Tables (Targets):", analysis['output_tables'])
-    print("Intermediate Tables:", analysis['intermediate_tables'])
+    return ".".join(parts) if parts else ""

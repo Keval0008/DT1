@@ -1,6 +1,6 @@
 import sqlglot
 from sqlglot import exp
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set
 
 def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str, Dict[str, List[str]]]:
     """
@@ -31,24 +31,31 @@ def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str,
         }
         
         # Process each statement in the SQL
-        for statement in parsed.find_all(exp.Statement):
+        for statement in parsed.find_all(exp.Expression):
+            # Skip sub-expressions that aren't top-level statements
+            if not isinstance(statement.parent, exp.Select) and statement.parent is not None:
+                continue
+                
             # Handle CREATE TABLE/VIEW statements
             if isinstance(statement, exp.Create):
                 target_table = _get_full_table_name(statement.this)
                 sources = _extract_source_tables(statement)
-                lineage["target_tables"][target_table] = sources
+                if target_table:
+                    lineage["target_tables"][target_table] = sources
             
             # Handle INSERT statements
             elif isinstance(statement, exp.Insert):
                 target_table = _get_full_table_name(statement.this)
                 sources = _extract_source_tables(statement)
-                lineage["target_tables"][target_table] = sources
+                if target_table:
+                    lineage["target_tables"][target_table] = sources
             
             # Handle MERGE statements
             elif isinstance(statement, exp.Merge):
                 target_table = _get_full_table_name(statement.this)
                 sources = _extract_source_tables(statement)
-                lineage["target_tables"][target_table] = sources
+                if target_table:
+                    lineage["target_tables"][target_table] = sources
             
             # Handle CTEs (WITH clauses)
             elif isinstance(statement, exp.With):
@@ -56,7 +63,15 @@ def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str,
                     cte_name = cte.alias
                     sources = _extract_source_tables(cte)
                     lineage["ctes"][cte_name] = sources
-        
+            
+            # Handle regular SELECT statements that might create tables in BQ scripts
+            elif isinstance(statement, exp.Select) and not statement.parent:
+                # Check if this is part of a CREATE TABLE AS SELECT pattern
+                if isinstance(statement.parent, exp.Create):
+                    continue  # Already handled by Create case
+                sources = _extract_source_tables(statement)
+                # For standalone SELECTs, we can't determine a target table
+                
         return lineage
     
     except Exception as e:
@@ -69,7 +84,7 @@ def _extract_source_tables(expression: exp.Expression) -> List[str]:
     # Find all table references in the expression
     for table in expression.find_all(exp.Table):
         # Skip subqueries and nested selects
-        if not isinstance(table.parent, exp.From) and not isinstance(table.parent, exp.Join):
+        if not _is_direct_table_reference(table):
             continue
             
         full_name = _get_full_table_name(table)
@@ -78,25 +93,30 @@ def _extract_source_tables(expression: exp.Expression) -> List[str]:
     
     return sorted(sources)
 
-def _get_full_table_name(table_ref: exp.Table) -> str:
+def _is_direct_table_reference(table: exp.Table) -> bool:
+    """Check if this table is a direct reference (not in a subquery)."""
+    parent = table.parent
+    while parent:
+        if isinstance(parent, exp.Subquery):
+            return False
+        parent = parent.parent
+    return True
+
+def _get_full_table_name(table_ref) -> str:
     """Get the fully qualified table name."""
-    if not table_ref:
+    if not table_ref or not isinstance(table_ref, exp.Table):
         return ""
     
-    # Handle different types of table references
-    if isinstance(table_ref, exp.Table):
-        parts = []
-        if table_ref.catalog:
-            parts.append(table_ref.catalog)
-        if table_ref.db:
-            parts.append(table_ref.db)
-        if table_ref.name:
-            parts.append(table_ref.name)
-        
-        # Handle unnest operations (skip them in lineage)
-        if any("unnest" in part.lower() for part in parts):
-            return ""
-        
-        return ".".join(parts)
+    parts = []
+    if hasattr(table_ref, 'catalog') and table_ref.catalog:
+        parts.append(table_ref.catalog)
+    if hasattr(table_ref, 'db') and table_ref.db:
+        parts.append(table_ref.db)
+    if hasattr(table_ref, 'name') and table_ref.name:
+        parts.append(table_ref.name)
     
-    return ""
+    # Handle unnest operations (skip them in lineage)
+    if any("unnest" in part.lower() for part in parts if isinstance(part, str)):
+        return ""
+    
+    return ".".join(parts) if parts else ""

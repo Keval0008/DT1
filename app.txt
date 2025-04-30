@@ -1,122 +1,98 @@
-import sqlglot
-from sqlglot import exp
-from typing import Dict, List, Set
+from collections import defaultdict
 
-def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str, Dict[str, List[str]]]:
+def analyze_table_lineage(lineage_data: dict) -> dict:
     """
-    Extract table-level lineage from BigQuery SQL code.
+    Analyze table lineage to identify:
+    - Input tables (sources with no dependencies)
+    - Output tables (final targets)
+    - Intermediate tables (both sources and targets)
     
     Args:
-        sql_code: The SQL code to analyze
-        dialect: The SQL dialect (defaults to 'bigquery')
+        lineage_data: Output from extract_table_lineage function
         
     Returns:
-        A dictionary with lineage information in the format:
+        Dictionary with:
         {
-            "target_tables": {
-                "table_name": ["source_table1", "source_table2"]
-            },
-            "ctes": {
-                "cte_name": ["source_table1", "source_table2"]
-            }
+            'input_tables': [],
+            'output_tables': [],
+            'intermediate_tables': []
         }
     """
-    try:
-        # Parse the SQL code
-        parsed = sqlglot.parse_one(sql_code, dialect=dialect)
-        
-        lineage = {
-            "target_tables": {},
-            "ctes": {}
-        }
-        
-        # Process each statement in the SQL
-        for statement in parsed.find_all(exp.Expression):
-            # Skip sub-expressions that aren't top-level statements
-            if not isinstance(statement.parent, exp.Select) and statement.parent is not None:
-                continue
-                
-            # Handle CREATE TABLE/VIEW statements
-            if isinstance(statement, exp.Create):
-                target_table = _get_full_table_name(statement.this)
-                sources = _extract_source_tables(statement)
-                if target_table:
-                    lineage["target_tables"][target_table] = sources
-            
-            # Handle INSERT statements
-            elif isinstance(statement, exp.Insert):
-                target_table = _get_full_table_name(statement.this)
-                sources = _extract_source_tables(statement)
-                if target_table:
-                    lineage["target_tables"][target_table] = sources
-            
-            # Handle MERGE statements
-            elif isinstance(statement, exp.Merge):
-                target_table = _get_full_table_name(statement.this)
-                sources = _extract_source_tables(statement)
-                if target_table:
-                    lineage["target_tables"][target_table] = sources
-            
-            # Handle CTEs (WITH clauses)
-            elif isinstance(statement, exp.With):
-                for cte in statement.expressions:
-                    cte_name = cte.alias
-                    sources = _extract_source_tables(cte)
-                    lineage["ctes"][cte_name] = sources
-            
-            # Handle regular SELECT statements that might create tables in BQ scripts
-            elif isinstance(statement, exp.Select) and not statement.parent:
-                # Check if this is part of a CREATE TABLE AS SELECT pattern
-                if isinstance(statement.parent, exp.Create):
-                    continue  # Already handled by Create case
-                sources = _extract_source_tables(statement)
-                # For standalone SELECTs, we can't determine a target table
-                
-        return lineage
+    # Build dependency graph
+    graph = defaultdict(set)
+    all_tables = set()
     
-    except Exception as e:
-        raise ValueError(f"Error parsing SQL: {str(e)}")
+    # Process CTEs
+    for cte, sources in lineage_data.get('ctes', {}).items():
+        all_tables.add(cte)
+        for source in sources:
+            graph[source].add(cte)
+            all_tables.add(source)
+    
+    # Process target tables
+    for target, sources in lineage_data.get('target_tables', {}).items():
+        all_tables.add(target)
+        for source in sources:
+            # If source is a CTE, we already have its dependencies
+            if source in lineage_data.get('ctes', {}):
+                for cte_source in lineage_data['ctes'][source]:
+                    graph[cte_source].add(target)
+            else:
+                graph[source].add(target)
+    
+    # Identify table types
+    input_tables = set()
+    output_tables = set()
+    
+    # Tables that appear as sources but never as targets
+    input_tables = {table for table in all_tables 
+                   if table not in [target for targets in graph.values() for target in targets]}
+    
+    # Tables that appear as targets but not as sources
+    output_tables = {table for table in all_tables 
+                    if table not in graph or not graph[table]}
+    
+    # Intermediate tables are all others
+    intermediate_tables = all_tables - input_tables - output_tables
+    
+    return {
+        'input_tables': sorted(input_tables),
+        'output_tables': sorted(output_tables),
+        'intermediate_tables': sorted(intermediate_tables)
+    }
 
-def _extract_source_tables(expression: exp.Expression) -> List[str]:
-    """Extract all source tables referenced in an expression."""
-    sources = set()
+# Example usage:
+if __name__ == "__main__":
+    # Your SQL code
+    sql_code = """
+    WITH user_data AS (
+        SELECT * FROM project1.dataset1.users
+        WHERE active = TRUE
+    ),
     
-    # Find all table references in the expression
-    for table in expression.find_all(exp.Table):
-        # Skip subqueries and nested selects
-        if not _is_direct_table_reference(table):
-            continue
-            
-        full_name = _get_full_table_name(table)
-        if full_name:
-            sources.add(full_name)
+    order_summary AS (
+        SELECT 
+            u.user_id,
+            COUNT(o.order_id) as order_count
+        FROM user_data u
+        JOIN project1.dataset2.orders o ON u.user_id = o.user_id
+        GROUP BY 1
+    )
     
-    return sorted(sources)
-
-def _is_direct_table_reference(table: exp.Table) -> bool:
-    """Check if this table is a direct reference (not in a subquery)."""
-    parent = table.parent
-    while parent:
-        if isinstance(parent, exp.Subquery):
-            return False
-        parent = parent.parent
-    return True
-
-def _get_full_table_name(table_ref) -> str:
-    """Get the fully qualified table name."""
-    if not table_ref or not isinstance(table_ref, exp.Table):
-        return ""
+    INSERT INTO project2.analytics.user_metrics
+    SELECT 
+        user_id,
+        order_count,
+        CURRENT_DATE() as snapshot_date
+    FROM order_summary;
+    """
     
-    parts = []
-    if hasattr(table_ref, 'catalog') and table_ref.catalog:
-        parts.append(table_ref.catalog)
-    if hasattr(table_ref, 'db') and table_ref.db:
-        parts.append(table_ref.db)
-    if hasattr(table_ref, 'name') and table_ref.name:
-        parts.append(table_ref.name)
+    # Step 1: Extract lineage
+    lineage_data = extract_table_lineage(sql_code)
     
-    # Handle unnest operations (skip them in lineage)
-    if any("unnest" in part.lower() for part in parts if isinstance(part, str)):
-        return ""
+    # Step 2: Analyze lineage
+    analysis = analyze_table_lineage(lineage_data)
     
-    return ".".join(parts) if parts else ""
+    print("Input Tables (Sources):", analysis['input_tables'])
+    print("Output Tables (Targets):", analysis['output_tables'])
+    print("Intermediate Tables:", analysis['intermediate_tables'])

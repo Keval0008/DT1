@@ -1,39 +1,102 @@
-from sqlglot import parse
-from sqlglot.expressions import Table, Create
-from typing import List, Tuple
+import sqlglot
+from sqlglot import exp
+from typing import Dict, List, Set, Tuple
 
-def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> List[Tuple[str, str]]:
+def extract_table_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str, Dict[str, List[str]]]:
     """
-    Extracts table-level lineage (source → target) from SQL code using sqlglot.
-
-    Parameters:
-        sql_code (str): SQL code with one or more statements.
-        dialect (str): SQL dialect, default is "bigquery".
-
+    Extract table-level lineage from BigQuery SQL code.
+    
+    Args:
+        sql_code: The SQL code to analyze
+        dialect: The SQL dialect (defaults to 'bigquery')
+        
     Returns:
-        List[Tuple[str, str]]: List of (source_table, target_table) lineage edges.
+        A dictionary with lineage information in the format:
+        {
+            "target_tables": {
+                "table_name": ["source_table1", "source_table2"]
+            },
+            "ctes": {
+                "cte_name": ["source_table1", "source_table2"]
+            }
+        }
     """
-    lineage = []
-    statements = parse(sql_code, read=dialect)
+    try:
+        # Parse the SQL code
+        parsed = sqlglot.parse_one(sql_code, dialect=dialect)
+        
+        lineage = {
+            "target_tables": {},
+            "ctes": {}
+        }
+        
+        # Process each statement in the SQL
+        for statement in parsed.find_all(exp.Statement):
+            # Handle CREATE TABLE/VIEW statements
+            if isinstance(statement, exp.Create):
+                target_table = _get_full_table_name(statement.this)
+                sources = _extract_source_tables(statement)
+                lineage["target_tables"][target_table] = sources
+            
+            # Handle INSERT statements
+            elif isinstance(statement, exp.Insert):
+                target_table = _get_full_table_name(statement.this)
+                sources = _extract_source_tables(statement)
+                lineage["target_tables"][target_table] = sources
+            
+            # Handle MERGE statements
+            elif isinstance(statement, exp.Merge):
+                target_table = _get_full_table_name(statement.this)
+                sources = _extract_source_tables(statement)
+                lineage["target_tables"][target_table] = sources
+            
+            # Handle CTEs (WITH clauses)
+            elif isinstance(statement, exp.With):
+                for cte in statement.expressions:
+                    cte_name = cte.alias
+                    sources = _extract_source_tables(cte)
+                    lineage["ctes"][cte_name] = sources
+        
+        return lineage
+    
+    except Exception as e:
+        raise ValueError(f"Error parsing SQL: {str(e)}")
 
-    for statement in statements:
-        target_table = None
-        source_tables = set()
+def _extract_source_tables(expression: exp.Expression) -> List[str]:
+    """Extract all source tables referenced in an expression."""
+    sources = set()
+    
+    # Find all table references in the expression
+    for table in expression.find_all(exp.Table):
+        # Skip subqueries and nested selects
+        if not isinstance(table.parent, exp.From) and not isinstance(table.parent, exp.Join):
+            continue
+            
+        full_name = _get_full_table_name(table)
+        if full_name:
+            sources.add(full_name)
+    
+    return sorted(sources)
 
-        # Identify the target table for CREATE TABLE AS SELECT or INSERT INTO
-        if isinstance(statement, Create) and statement.this:
-            target_table = statement.this.sql(dialect=dialect)
-
-        # Collect all source tables from the statement
-        for table_node in statement.find_all(Table):
-            table_name = table_node.sql(dialect=dialect)
-            source_tables.add(table_name)
-
-        # Add lineage edges (source → target)
-        if target_table:
-            for source in source_tables:
-                if source != target_table:
-                    lineage.append((source, target_table))
-
-    return lineage
-
+def _get_full_table_name(table_ref: exp.Table) -> str:
+    """Get the fully qualified table name."""
+    if not table_ref:
+        return ""
+    
+    # Handle different types of table references
+    if isinstance(table_ref, exp.Table):
+        parts = []
+        if table_ref.catalog:
+            parts.append(table_ref.catalog)
+        if table_ref.db:
+            parts.append(table_ref.db)
+        if table_ref.name:
+            parts.append(table_ref.name)
+        
+        # Handle unnest operations (skip them in lineage)
+        if any("unnest" in part.lower() for part in parts):
+            return ""
+        
+        return ".".join(parts)
+    
+    return ""

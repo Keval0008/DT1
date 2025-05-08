@@ -1,11 +1,13 @@
-The following steps outline the testing performed to validate the Headroom Utilisation functionality of the tool for Q1’25:
+The current Excel-based methodology is highly manual and error-prone, especially when cross-linking data across multiple sheets. This increases the risk of calculation errors and inconsistencies.
 
-In the Headroom Utilisation tab, the scenario was executed with the target headroom set to zero.
+Sensitivity Analysis:
+Supports a limited number of scenarios and does not easily accommodate complex, multi-variable scenarios. Building such scenarios requires manual adjustments, limiting flexibility.
 
-For CIB, the results indicated that the discount rate would need to increase from 9.29% to 11.49% in order to achieve a headroom of zero, assuming only the discount rate is adjusted.
+Headroom Utilisation:
+Relies on a hit-and-trial approach, requiring multiple iterations to achieve the desired headroom. Running and testing multiple presets is time-consuming and inefficient.
 
-The input template was then updated with the revised discount rate for CIB in the Discount Rate sheet.
+Contribution to Movement:
+Identifying which variables contribute to changes in headroom is a manual and time-intensive process. It requires repetitive effort to isolate and quantify the impact of individual inputs.
 
-The modified input file was uploaded, and the calculation was re-executed in the tool.
+These limitations make the process slow, rigid, and less scalable for broader or more advanced impairment assessments.
 
-The calculated headroom value for CIB was verified as zero, confirming the tool's accuracy in reverse-calculating input adjustments to meet target headroom.

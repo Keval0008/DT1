@@ -1,123 +1,14 @@
-import sqlglot
-from sqlglot import exp
-from typing import Dict, List, Tuple
+The following steps outline the back-testing process conducted to validate the sensitivity analysis feature of the tool for Q1’25:
 
-def extract_column_lineage(sql_code: str, dialect: str = "bigquery") -> Dict[str, Dict[str, List[str]]]:
-    """
-    Extract column-level information from SQL code.
-    
-    Args:
-        sql_code: The SQL code to analyze
-        dialect: The SQL dialect (defaults to 'bigquery')
-        
-    Returns:
-        A nested dictionary with:
-        {
-            "table_name": {
-                "columns": ["col1", "col2", ...],
-                "source_columns": {"col1": ["source_col1", ...], ...}
-            },
-            ...
-        }
-    """
-    try:
-        parsed = sqlglot.parse_one(sql_code, dialect=dialect)
-        result = {}
-        
-        # Process each statement
-        for statement in parsed.find_all(exp.Expression):
-            if isinstance(statement.parent, exp.Select) and statement.parent is not None:
-                continue
-                
-            # Handle CREATE/INSERT/MERGE statements
-            if isinstance(statement, (exp.Create, exp.Insert, exp.Merge)):
-                target_table = _get_full_table_name(statement.this)
-                if not target_table:
-                    continue
-                    
-                if isinstance(statement, exp.Create) and statement.expression:
-                    columns = _extract_columns_from_select(statement.expression)
-                elif isinstance(statement, exp.Insert) and statement.expression:
-                    columns = _extract_columns_from_select(statement.expression)
-                else:
-                    columns = {}
-                
-                if target_table not in result:
-                    result[target_table] = {"columns": [], "source_columns": {}}
-                
-                for col, src_cols in columns.items():
-                    if col not in result[target_table]["columns"]:
-                        result[target_table]["columns"].append(col)
-                    result[target_table]["source_columns"][col] = src_cols
-            
-            # Handle CTEs
-            elif isinstance(statement, exp.With):
-                for cte in statement.expressions:
-                    cte_name = cte.alias
-                    columns = _extract_columns_from_select(cte.this)
-                    
-                    if cte_name not in result:
-                        result[cte_name] = {"columns": [], "source_columns": {}}
-                    
-                    for col, src_cols in columns.items():
-                        if col not in result[cte_name]["columns"]:
-                            result[cte_name]["columns"].append(col)
-                        result[cte_name]["source_columns"][col] = src_cols
-        
-        return result
-    
-    except Exception as e:
-        raise ValueError(f"Error parsing SQL: {str(e)}")
+In the Sensitivity tab of the tool, a 10% increase in RWA was applied in the % Change in RWA table.
+The corresponding changes appeared in the Modified RWA (mn LCY) table and were highlighted in blue.
 
-def _extract_columns_from_select(select_expr: exp.Select) -> Dict[str, List[str]]:
-    """Extract columns from a SELECT expression."""
-    columns = {}
-    
-    for select in select_expr.find_all(exp.Select):
-        for expr in select.expressions:
-            # Get the output column name (alias or derived name)
-            if isinstance(expr, exp.Alias):
-                col_name = expr.alias
-            elif isinstance(expr, exp.Column):
-                col_name = expr.name
-            elif isinstance(expr, exp.Identifier):
-                col_name = expr.name
-            else:
-                col_name = _generate_column_name(expr)
-            
-            # Get source columns
-            source_cols = set()
-            for col in expr.find_all(exp.Column):
-                source_cols.add(col.name)
-            
-            columns[col_name] = list(source_cols)
-    
-    return columns
+Based on this scenario, the Modified Headroom values were generated.
+Since the % change in headroom remained below 10%, all values were highlighted in green, indicating low risk.
 
-def _generate_column_name(expr: exp.Expression) -> str:
-    """Generate a name for derived columns."""
-    if isinstance(expr, exp.Literal):
-        return f"literal_{expr.this}"
-    elif isinstance(expr, exp.Func):
-        return f"{expr.name}_fn"
-    elif isinstance(expr, exp.Binary):
-        return f"{_generate_column_name(expr.left)}_{expr.keyword}_{_generate_column_name(expr.right)}"
-    return "derived_column"
+The input template was then updated by manually incorporating the increased RWA values into the Latest FRP RWA sheet.
 
-def _get_full_table_name(table_ref) -> str:
-    """Get the fully qualified table name."""
-    if not table_ref or not isinstance(table_ref, exp.Table):
-        return ""
-    
-    parts = []
-    if hasattr(table_ref, 'catalog') and table_ref.catalog:
-        parts.append(table_ref.catalog)
-    if hasattr(table_ref, 'db') and table_ref.db:
-        parts.append(table_ref.db)
-    if hasattr(table_ref, 'name') and table_ref.name:
-        parts.append(table_ref.name)
-    
-    if any("unnest" in part.lower() for part in parts if isinstance(part, str)):
-        return ""
-    
-    return ".".join(parts) if parts else ""
+The updated input file was uploaded back into the tool, and the calculation was re-run.
+
+The calculated headroom values matched the modified headroom results generated by the sensitivity analysis, confirming the accuracy of the tool's logic.
+

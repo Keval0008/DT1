@@ -1,11 +1,9 @@
-The following steps outline the testing conducted to validate the Contribution to Movement feature within the tool:
+I hope this message finds you well.
 
-In the Historical Comparison tab, under Contribution to Movement, the previous input file was selected to analyze the movement between two reporting periods.
+We have successfully completed the reconciliation for the HBUK tool and are currently working on automating the input template population, as per the ongoing requirements.
 
-For CIB, the results indicated that the change in PBT | Opening from the previous value to the current value resulted in a VIU decrease of –6.92 mn LCY.
+Attached is the proposed timeline outlining the key phases ahead – including UAT, incorporation of UAT feedback, and the go-live plan. We would appreciate it if you could review the timeline and confirm if it aligns with your expectations, or if there are any changes you would suggest.
 
-To validate this, the PBT | Opening value was manually updated in the Sensitivity tab from 93 (previous reporting) to 103 (current reporting).
+Subject to your agreement on the proposed plan, we would also like to confirm if we can proceed with a parallel run during the Q2 2025 reporting cycle (June), with a view to go live from Q3 2025 reporting (September), post sign-off.
 
-Upon running the tool with the adjusted input, the resulting VIU value was 8,151, which aligns with the value derived from the Contribution to Movement tab.
-
-This confirms that the tool accurately quantifies the impact of individual variables on VIU movement between reporting periods.
+Looking forward to your feedback and confirmation.

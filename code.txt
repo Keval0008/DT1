@@ -1,47 +1,26 @@
-Operational Guidelines
+import re
 
-These guidelines are intended to help users operate the Impairment Analysis Tool effectively and ensure accurate results across all CGUs and markets.
+# Function to sanitize names
+def sanitize(sheet_name):
+    return re.sub(r'\W|^(?=\d)', '_', sheet_name)
 
-Input Preparation
+# Required sanitized sheet names
+required_sheets = ['abc_yy', 'hh_ui', 'ht_ui']
 
-Ensure all required input templates (e.g., discount rate, growth rate, PBT, RWA, CET1%) are populated as per the formats mentioned in the Assumptions and Data Sources sections.
-Validate source data against the latest available extracts from Saracen, SP\&ST, BIS, and other teams.
+# Get actual sheet names
+available_sheets = pd.ExcelFile(file_path).sheet_names
 
-Data Upload
+# Map sanitized names to actual ones
+sanitized_map = {sanitize(name): name for name in available_sheets}
 
-Upload completed input sheets to the tool using the designated input tab or data upload interface.
-Use only the latest version of the tool template to avoid compatibility issues.
+# Check if all required sanitized names are in the file
+missing_sheets = [s for s in required_sheets if s not in sanitized_map]
 
-Running Calculations
+if missing_sheets:
+    raise ValueError(f"Missing required sheets: {', '.join(missing_sheets)}")
 
-Trigger the calculation process by selecting the appropriate CGU or group of CGUs.
-Review key calculated outputs: VIU, CV, Headroom/Shortfall, Tax Adjustments, and Free Cash Flow.
-
-Sensitivity Analysis
-
-Use the Sensitivity Tab to simulate changes in key parameters such as growth rate, discount rate, RWA, and PBT.
-Enter percentage changes or modified values directly, and refer to color-coded outputs for interpretation (RAG scale).
-
-Reviewing Outputs
-
-Review all outputs in summary tabs, including valuation outputs, validation flags, and scenario summaries.
-Validate final results against prior period values or expected ranges, especially for significant deviations.
-
-Version Control
-
-Save a version of the completed workbook with CGU name and run date.
-Maintain a backup of all source inputs used for each run.
-
-Error Handling
-
-In case of errors or discrepancies, check:
-
-Input formatting and completeness
-Formula integrity in output tabs
-Compatibility with system version
-If unresolved, escalate to the tool support team with screenshots and input files.
-
-Audit and Documentation
-
-Retain input files, output sheets, and calculation summaries for audit trail.
-Document any manual overrides or changes to assumptions in a separate comments tab.
+# Read them using the actual names
+sheet_dfs = {
+    s: pd.read_excel(file_path, sheet_name=sanitized_map[s])
+    for s in required_sheets
+}

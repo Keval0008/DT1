@@ -1,22 +1,42 @@
 import pandas as pd
 import re
 
-# Load Excel file
-file_path = 'your_file.xlsx'
-xls = pd.ExcelFile(file_path)
+# Input and output file paths
+input_file = 'your_file.xlsx'
+output_file = 'updated_file.xlsx'
 
-# Dictionary to hold DataFrames
-sheet_dfs = {}
+# Step 1: Required sheet names (sanitized names you want to use in code)
+required_sheets = ['abc_yy', 'hh_ui', 'ht_ui']
 
-for sheet_name in xls.sheet_names:
-    # Replace non-alphanumeric characters with underscores
-    safe_name = re.sub(r'\W|^(?=\d)', '_', sheet_name)
-    # Read the sheet into a DataFrame
-    sheet_dfs[safe_name] = pd.read_excel(xls, sheet_name=sheet_name)
+# Step 2: Load actual sheet names from the Excel file
+xls = pd.ExcelFile(input_file)
+actual_sheet_names = xls.sheet_names
 
-# Optional: assign each df as a variable dynamically (not recommended for most use cases)
-globals().update(sheet_dfs)
+# Step 3: Create a mapping of sanitized -> actual sheet names
+def sanitize(name):
+    return re.sub(r'\W|^(?=\d)', '_', name)
 
-# Now you can access, for example:
-# sheet_dfs['abc_yy']
-# sheet_dfs['ht_ui']  (even if the sheet name was 'ht-ui')
+sanitized_map = {sanitize(name): name for name in actual_sheet_names}
+
+# Step 4: Validate required sheets
+missing_sheets = [s for s in required_sheets if s not in sanitized_map]
+if missing_sheets:
+    raise ValueError(f"Missing required sheets: {', '.join(missing_sheets)}")
+
+# Step 5: Read required sheets into DataFrames
+sheet_dfs = {
+    s: pd.read_excel(input_file, sheet_name=sanitized_map[s])
+    for s in required_sheets
+}
+
+# Step 6: Apply your data transformation/fill logic
+for name, df in sheet_dfs.items():
+    # Example: fill NaN with 0
+    df.fillna(0, inplace=True)
+    # You can also add new columns, modify data, etc.
+    # df['new_col'] = 'updated'
+
+# Step 7: Write all modified DataFrames to a new Excel file with original sheet names
+with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+    for s in required_sheets:
+        sheet_dfs[s].to_excel(writer, sheet_name=sanitized_map[s], index=False)

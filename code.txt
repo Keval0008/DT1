@@ -1,26 +1,22 @@
+import pandas as pd
 import re
 
-# Function to sanitize names
-def sanitize(sheet_name):
-    return re.sub(r'\W|^(?=\d)', '_', sheet_name)
+# Load Excel file
+file_path = 'your_file.xlsx'
+xls = pd.ExcelFile(file_path)
 
-# Required sanitized sheet names
-required_sheets = ['abc_yy', 'hh_ui', 'ht_ui']
+# Dictionary to hold DataFrames
+sheet_dfs = {}
 
-# Get actual sheet names
-available_sheets = pd.ExcelFile(file_path).sheet_names
+for sheet_name in xls.sheet_names:
+    # Replace non-alphanumeric characters with underscores
+    safe_name = re.sub(r'\W|^(?=\d)', '_', sheet_name)
+    # Read the sheet into a DataFrame
+    sheet_dfs[safe_name] = pd.read_excel(xls, sheet_name=sheet_name)
 
-# Map sanitized names to actual ones
-sanitized_map = {sanitize(name): name for name in available_sheets}
+# Optional: assign each df as a variable dynamically (not recommended for most use cases)
+globals().update(sheet_dfs)
 
-# Check if all required sanitized names are in the file
-missing_sheets = [s for s in required_sheets if s not in sanitized_map]
-
-if missing_sheets:
-    raise ValueError(f"Missing required sheets: {', '.join(missing_sheets)}")
-
-# Read them using the actual names
-sheet_dfs = {
-    s: pd.read_excel(file_path, sheet_name=sanitized_map[s])
-    for s in required_sheets
-}
+# Now you can access, for example:
+# sheet_dfs['abc_yy']
+# sheet_dfs['ht_ui']  (even if the sheet name was 'ht-ui')

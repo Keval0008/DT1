@@ -1,25 +1,20 @@
+import msoffcrypto
 import pandas as pd
+from io import BytesIO
 
-# Inputs
-L1 = ['A', 'B', 'C']
-L2 = ['G', 'H', 'I', 'J']
-entity_name = 'MyEntity'
+# Step 1: Read the password from pass.txt
+with open('pass.txt', 'r') as f:
+    password = f.read().strip()
 
-# Prepare data rows
-rows = []
-for bl in L1:
-    for at in L2:
-        row = {
-            'entity': entity_name,
-            'bl': bl,
-            'at': at,
-            'Open': 0,
-            '2024': 0,
-            '2025': 0
-        }
-        rows.append(row)
+# Step 2: Decrypt the Excel file
+decrypted = BytesIO()
+with open('your_file.xlsx', 'rb') as file:
+    office_file = msoffcrypto.OfficeFile(file)
+    office_file.load_key(password=password)
+    office_file.decrypt(decrypted)
 
-# Create DataFrame
-df = pd.DataFrame(rows, columns=['entity', 'bl', 'at', 'Open', '2024', '2025'])
+# Step 3: Read decrypted content into a DataFrame
+decrypted.seek(0)  # Reset pointer to start
+df = pd.read_excel(decrypted, engine='openpyxl')
 
-print(df)
+print(df.head())

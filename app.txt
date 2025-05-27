@@ -1,24 +1,49 @@
 import os
 import xlwings as xw
+import pandas as pd
 
-folder_path = os.path.dirname(os.path.abspath(__file__))
-excel_file = os.path.join(folder_path, 'your_file.xlsx')
+# File paths
+folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder
+excel_file = os.path.join(folder_path, 'your_file.xlsx')  # change to your filename
 password_file = os.path.join(folder_path, 'password.txt')
+sheet_name = "Sheet1"  # Change this to your sheet name
 
+# Read password
 with open(password_file, 'r') as f:
     password = f.read().strip()
 
-app = xw.App(visible=False)
-wb = app.books.open(excel_file, password=password)
-sheet = wb.sheets[0]
+# Open Excel file
+app = xw.App(visible=False)  # Set visible=True to see Excel
 
-# Read data
-print(sheet.range('A1').value)
+try:
+    # Open workbook with password
+    wb = app.books.open(excel_file, password=password)
+    
+    # Access specific sheet
+    sheet = wb.sheets[sheet_name]
+    
+    # Get the entire used range as a DataFrame
+    # First get the address of the used range
+    last_cell = sheet.used_range.last_cell
+    range_address = f"A1:{last_cell.address}"
+    
+    # Read all data into DataFrame
+    df = sheet.range(range_address).options(pd.DataFrame, index=False, header=True).value
+    
+    # Display the DataFrame
+    print("DataFrame created successfully:")
+    print(df.head())
+    
+    # If you want to see all data without truncation
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+        print(df)
+        
+    return df  # Return the DataFrame if using in a function
 
-# Read entire used range
-data = sheet.used_range.value
-for row in data:
-    print(row)
-
-wb.close()
-app.quit()
+except Exception as e:
+    print(f"Error: {e}")
+    
+finally:
+    # Clean up - close workbook and quit Excel
+    wb.close()
+    app.quit()

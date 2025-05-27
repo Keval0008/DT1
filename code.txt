@@ -1,33 +1,21 @@
 import pandas as pd
 
-# Load the Excel file
-file_path = 'your_file.xlsx'
-df = pd.read_excel(file_path, header=None)  # No header, so we can read all raw data
+dictA = {'A1': 20, 'B1': 30, 'C1': 40}
+dictB = {'l1': ['AOB1', 'BOT1'], 'l2': ['CAB1']}
+dictC = {'A1': 'AOB1', 'B1': 'BOT1', 'C1': 'CAB1'}
 
-# Step 1: Find the cell with "Return To Index"
-match = df.isin(["Return To Index"])
-row_idx, col_idx = match.stack()[match.stack()].index[0]
+# Step 1: Reverse dictC to map AOB1 -> A1, etc.
+reverse_dictC = {v: k for k, v in dictC.items()}
 
-# Step 2: Find the columns with years from 1990 to 2054 in the same row
-year_range = list(map(str, range(1990, 2055)))
-year_cols = df.loc[row_idx].isin(year_range)
-year_col_indices = df.loc[row_idx][year_cols].index.tolist()
-year_labels = df.loc[row_idx, year_col_indices].tolist()
+# Step 2: Build rows using dictB
+rows = []
+for key, codes in dictB.items():
+    for code in codes:
+        id_key = reverse_dictC.get(code)
+        value = dictA.get(id_key)
+        rows.append((key, code, value))
 
-# Step 3: Find the row index of "UAE" in the same column as "Return To Index"
-uae_col = col_idx
-uae_row_idx = df[df[uae_col] == "UAE"].index[0]
+# Step 3: Create DataFrame
+df = pd.DataFrame(rows, columns=['col1', 'col2', 'col3'])
 
-# Step 4: Extract values from UAE row under each year column
-values = []
-for col in year_col_indices:
-    val = df.at[uae_row_idx, col]
-    values.append(val)
-
-# Step 5: Create the final DataFrame
-result_df = pd.DataFrame({
-    'entity': ['UAE'],
-    **{year: [val] for year, val in zip(year_labels, values)}
-})
-
-print(result_df)
+print(df)

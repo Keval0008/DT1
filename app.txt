@@ -1,17 +1,33 @@
 import os
-import pandas as pd
+import msoffcrypto
+import io
 from openpyxl import load_workbook
+import pandas as pd
 
-folder_path = os.path.dirname(os.path.abspath(__file__))
+# File paths
+folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder
 excel_file = os.path.join(folder_path, 'your_file.xlsx')
 password_file = os.path.join(folder_path, 'password.txt')
 
+# Read password
 with open(password_file, 'r') as f:
     password = f.read().strip()
 
-# Load the workbook first to handle password
-wb = load_workbook(filename=excel_file, read_only=True, password=password)
+# Decrypt the file
+decrypted = io.BytesIO()
+with open(excel_file, 'rb') as f:
+    office_file = msoffcrypto.OfficeFile(f)
+    office_file.load_key(password=password)
+    office_file.decrypt(decrypted)
 
-# Then read with pandas
-df = pd.read_excel(excel_file, engine='openpyxl', password=password)
+# Option 1: Use with openpyxl
+decrypted.seek(0)  # Reset pointer to start
+wb = load_workbook(filename=decrypted)
+sheet = wb.active
+for row in sheet.iter_rows(values_only=True):
+    print(row)
+
+# Option 2: Use with pandas
+decrypted.seek(0)  # Reset pointer to start
+df = pd.read_excel(decrypted, engine='openpyxl')
 print(df.head())

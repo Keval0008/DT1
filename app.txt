@@ -1,28 +1,17 @@
 import os
+import pandas as pd
 from openpyxl import load_workbook
 
-# Get the directory path
-folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder path
-
-# Path to files
-excel_file = os.path.join(folder_path, 'your_file.xlsx')  # change to your Excel filename
+folder_path = os.path.dirname(os.path.abspath(__file__))
+excel_file = os.path.join(folder_path, 'your_file.xlsx')
 password_file = os.path.join(folder_path, 'password.txt')
 
-# Read the password from the text file
 with open(password_file, 'r') as f:
-    password = f.read().strip()  # .strip() removes any extra whitespace or newlines
+    password = f.read().strip()
 
-# Load the Excel file with the password
-try:
-    wb = load_workbook(filename=excel_file, read_only=True, password=password)
-    
-    # Access worksheets
-    sheet = wb.active  # or wb['SheetName']
-    
-    # Read data - example: print all values in first column
-    for row in sheet.iter_rows(values_only=True):
-        print(row[0])  # prints first column value of each row
-        
-    wb.close()
-except Exception as e:
-    print(f"Error opening Excel file: {e}")
+# Load the workbook first to handle password
+wb = load_workbook(filename=excel_file, read_only=True, password=password)
+
+# Then read with pandas
+df = pd.read_excel(excel_file, engine='openpyxl', password=password)
+print(df.head())

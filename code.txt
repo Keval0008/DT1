@@ -1,20 +1,42 @@
-import msoffcrypto
 import pandas as pd
-from io import BytesIO
 
-# Step 1: Read the password from pass.txt
-with open('pass.txt', 'r') as f:
-    password = f.read().strip()
+# df = your Excel data loaded with pd.read_excel(...)
 
-# Step 2: Decrypt the Excel file
-decrypted = BytesIO()
-with open('your_file.xlsx', 'rb') as file:
-    office_file = msoffcrypto.OfficeFile(file)
-    office_file.load_key(password=password)
-    office_file.decrypt(decrypted)
+# Sample structure assumptions
+# Let's say these are the CGUs and their starting column indices
+cgu_positions = {
+    'WPB': 1,
+    'CMB': 7,
+    'CC': 13
+}
 
-# Step 3: Read decrypted content into a DataFrame
-decrypted.seek(0)  # Reset pointer to start
-df = pd.read_excel(decrypted, engine='openpyxl')
+# These are the row indices for labels
+row_actual_forecast_frp = 1  # Row under CGU name
+row_time_labels = 2          # Row under 'Actual', 'OCT Forecast', 'FRP'
 
-print(df.head())
+available_labels_by_cgu = {}
+
+for cgu, start_col in cgu_positions.items():
+    labels = []
+    col = start_col
+    
+    # Loop through columns from this CGU block until you hit an empty cell or known break
+    while True:
+        header = df.iloc[row_actual_forecast_frp, col]
+        
+        if pd.isna(header):
+            break  # Stop at gap or end
+        
+        header = str(header).strip().lower()
+        
+        if header in ['actual', 'frp']:  # We want to include these only
+            time_label = df.iloc[row_time_labels, col]
+            if not pd.isna(time_label):
+                labels.append(str(time_label).strip())
+        
+        col += 1  # Move to next column in this CGU block
+    
+    available_labels_by_cgu[cgu] = labels
+
+# Now available_labels_by_cgu is a dict like:
+# {'WPB': ['1Q24', '2Q24', ..., '2029'], 'CMB': [...], ...}

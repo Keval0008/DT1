@@ -1,33 +1,29 @@
 import os
-import msoffcrypto
-import io
-from openpyxl import load_workbook
-import pandas as pd
+import win32com.client as win32
 
-# File paths
-folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder
-excel_file = os.path.join(folder_path, 'your_file.xlsx')
+folder_path = os.path.dirname(os.path.abspath(__file__))
+excel_file = os.path.join(folder_path, 'your_file.xlsx')  # or .xls
 password_file = os.path.join(folder_path, 'password.txt')
 
-# Read password
 with open(password_file, 'r') as f:
     password = f.read().strip()
 
-# Decrypt the file
-decrypted = io.BytesIO()
-with open(excel_file, 'rb') as f:
-    office_file = msoffcrypto.OfficeFile(f)
-    office_file.load_key(password=password)
-    office_file.decrypt(decrypted)
+excel = win32.Dispatch('Excel.Application')
+excel.Visible = False  # Set to True to see Excel
 
-# Option 1: Use with openpyxl
-decrypted.seek(0)  # Reset pointer to start
-wb = load_workbook(filename=decrypted)
-sheet = wb.active
-for row in sheet.iter_rows(values_only=True):
-    print(row)
-
-# Option 2: Use with pandas
-decrypted.seek(0)  # Reset pointer to start
-df = pd.read_excel(decrypted, engine='openpyxl')
-print(df.head())
+try:
+    wb = excel.Workbooks.Open(excel_file, False, True, None, password)
+    ws = wb.Worksheets(1)
+    
+    # Read data - example: print cell A1
+    print(ws.Range("A1").Value)
+    
+    # Or get all used range data
+    used_range = ws.UsedRange
+    data = used_range.Value
+    for row in data:
+        print(row)
+        
+finally:
+    wb.Close(False)
+    excel.Quit()

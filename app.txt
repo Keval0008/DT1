@@ -1,49 +1,106 @@
+GROK
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
 import os
-import xlwings as xw
-import pandas as pd
+import threading
 
-# File paths
-folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder
-excel_file = os.path.join(folder_path, 'your_file.xlsx')  # change to your filename
-password_file = os.path.join(folder_path, 'password.txt')
-sheet_name = "Sheet1"  # Change this to your sheet name
+def backend_logic(folder_path):
+    try:
+        if not os.path.isdir(folder_path):
+            return {'status': 'error', 'message': 'Invalid folder path.'}
+        if not os.listdir(folder_path):
+            return {'status': 'error', 'message': 'Folder is empty.'}
+        return {'status': 'success', 'message': 'Input template generated successfully.', 'output_path': os.path.join(folder_path, 'output_template.xlsx')}
+    except PermissionError:
+        return {'status': 'error', 'message': 'Permission denied accessing folder.'}
+    except Exception as e:
+        return {'status': 'error', 'message': f'Unexpected error: {str(e)}'}
 
-# Read password
-with open(password_file, 'r') as f:
-    password = f.read().strip()
+class InputAutomationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Input Automation")
+        self.root.geometry("500x300")
+        self.root.resizable(False, False)
 
-# Open Excel file
-app = xw.App(visible=False)  # Set visible=True to see Excel
+        self.folder_path = tk.StringVar()
+        self.output_path = None
 
-try:
-    # Open workbook with password
-    wb = app.books.open(excel_file, password=password)
-    
-    # Access specific sheet
-    sheet = wb.sheets[sheet_name]
-    
-    # Get the entire used range as a DataFrame
-    # First get the address of the used range
-    last_cell = sheet.used_range.last_cell
-    range_address = f"A1:{last_cell.address}"
-    
-    # Read all data into DataFrame
-    df = sheet.range(range_address).options(pd.DataFrame, index=False, header=True).value
-    
-    # Display the DataFrame
-    print("DataFrame created successfully:")
-    print(df.head())
-    
-    # If you want to see all data without truncation
-    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-        print(df)
-        
-    return df  # Return the DataFrame if using in a function
+        self.build_ui()
+        self.root.attributes('-topmost', True)
+        self.root.after_idle(lambda: self.root.attributes('-topmost', False))
 
-except Exception as e:
-    print(f"Error: {e}")
-    
-finally:
-    # Clean up - close workbook and quit Excel
-    wb.close()
-    app.quit()
+    def build_ui(self):
+        tk.Label(self.root, text="Input Automation", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        folder_frame = tk.Frame(self.root)
+        folder_frame.pack(pady=5)
+
+        tk.Entry(folder_frame, textvariable=self.folder_path, width=40, state='readonly').pack(side=tk.LEFT, padx=5)
+        tk.Button(folder_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
+
+        self.status_label = tk.Label(self.root, text="", fg="red", font=("Helvetica", 10))
+        self.status_label.pack(pady=5)
+
+        self.run_button = tk.Button(self.root, text="Run Input Population", command=self.run_input_population)
+        self.run_button.pack(pady=10)
+
+        self.download_button = tk.Button(self.root, text="Download Input Template", state='disabled', command=self.download_file)
+        self.download_button.pack(side=tk.BOTTOM, pady=20)
+
+    def browse_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.folder_path.set(folder)
+            self.status_label.config(text="")
+
+    def run_input_population(self):
+        folder = self.folder_path.get()
+        if not folder:
+            messagebox.showwarning("No Folder", "Please select a folder first.")
+            return
+        if not os.path.isdir(folder):
+            messagebox.showwarning("Invalid Folder", "Selected path is not a valid folder.")
+            return
+
+        self.run_button.config(state='disabled')
+        self.status_label.config(text="Processing...", fg="blue")
+
+        def run_backend():
+            result = backend_logic(folder)
+            self.root.after(0, lambda: self.update_ui_after_backend(result))
+
+        threading.Thread(target=run_backend, daemon=True).start()
+
+    def update_ui_after_backend(self, result):
+        self.run_button.config(state='normal')
+        if result['status'] == 'error':
+            self.status_label.config(text=f"Error: {result['message']}", fg="red")
+            self.download_button.config(state='disabled')
+        elif result['status'] == 'success':
+            self.status_label.config(text=result['message'], fg="green")
+            self.output_path = result['output_path']
+            self.download_button.config(state='normal')
+        else:
+            self.status_label.config(text="Unexpected result.", fg="orange")
+            self.download_button.config(state='disabled')
+
+    def download_file(self):
+        if not self.output_path or not os.path.exists(self.output_path):
+            messagebox.showerror("Download Failed", "Output file does not exist.")
+            return
+
+        save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
+        if save_path:
+            try:
+                with open(self.output_path, 'rb') as src, open(save_path, 'wb') as dst:
+                    dst.write(src.read())
+                messagebox.showinfo("Download Complete", f"File saved to: {save_path}")
+            except Exception as e:
+                messagebox.showerror("Download Failed", str(e))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = InputAutomationApp(root)
+    root.mainloop()

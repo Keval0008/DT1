@@ -1,42 +1,84 @@
-import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import os
 
-# df = your Excel data loaded with pd.read_excel(...)
+# Simulated backend function
+def backend_logic(folder_path):
+    # Replace with real logic
+    if not os.listdir(folder_path):  # Example error: folder empty
+        return {'status': 'error', 'message': 'Folder is empty.'}
+    # Simulate warning and success
+    return {'status': 'success', 'message': 'Input template generated successfully.', 'output_path': os.path.join(folder_path, 'output_template.xlsx')}
 
-# Sample structure assumptions
-# Let's say these are the CGUs and their starting column indices
-cgu_positions = {
-    'WPB': 1,
-    'CMB': 7,
-    'CC': 13
-}
 
-# These are the row indices for labels
-row_actual_forecast_frp = 1  # Row under CGU name
-row_time_labels = 2          # Row under 'Actual', 'OCT Forecast', 'FRP'
+class InputAutomationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Input Automation")
+        self.root.geometry("500x300")
+        self.root.resizable(False, False)
 
-available_labels_by_cgu = {}
+        self.folder_path = tk.StringVar()
 
-for cgu, start_col in cgu_positions.items():
-    labels = []
-    col = start_col
-    
-    # Loop through columns from this CGU block until you hit an empty cell or known break
-    while True:
-        header = df.iloc[row_actual_forecast_frp, col]
-        
-        if pd.isna(header):
-            break  # Stop at gap or end
-        
-        header = str(header).strip().lower()
-        
-        if header in ['actual', 'frp']:  # We want to include these only
-            time_label = df.iloc[row_time_labels, col]
-            if not pd.isna(time_label):
-                labels.append(str(time_label).strip())
-        
-        col += 1  # Move to next column in this CGU block
-    
-    available_labels_by_cgu[cgu] = labels
+        self.build_ui()
 
-# Now available_labels_by_cgu is a dict like:
-# {'WPB': ['1Q24', '2Q24', ..., '2029'], 'CMB': [...], ...}
+    def build_ui(self):
+        tk.Label(self.root, text="Input Automation", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        folder_frame = tk.Frame(self.root)
+        folder_frame.pack(pady=5)
+
+        tk.Entry(folder_frame, textvariable=self.folder_path, width=40, state='readonly').pack(side=tk.LEFT, padx=5)
+        tk.Button(folder_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
+
+        self.status_label = tk.Label(self.root, text="", fg="red", font=("Helvetica", 10))
+        self.status_label.pack(pady=5)
+
+        self.run_button = tk.Button(self.root, text="Run Input Population", command=self.run_input_population)
+        self.run_button.pack(pady=10)
+
+        self.download_button = tk.Button(self.root, text="Download Input Template", state='disabled', command=self.download_file)
+        self.download_button.pack(side=tk.BOTTOM, pady=20)
+
+    def browse_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.folder_path.set(folder)
+            self.status_label.config(text="")
+
+    def run_input_population(self):
+        folder = self.folder_path.get()
+        if not folder:
+            messagebox.showwarning("No Folder", "Please select a folder first.")
+            return
+
+        # Simulate backend call
+        result = backend_logic(folder)
+
+        if result['status'] == 'error':
+            self.status_label.config(text=f"Error: {result['message']}", fg="red")
+            self.download_button.config(state='disabled')
+        elif result['status'] == 'success':
+            self.status_label.config(text=result['message'], fg="green")
+            self.output_path = result['output_path']
+            self.download_button.config(state='normal')
+        else:
+            self.status_label.config(text="Unexpected result.", fg="orange")
+            self.download_button.config(state='disabled')
+
+    def download_file(self):
+        save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
+        if save_path:
+            try:
+                # Simulate saving (in real use case, copy the actual output file)
+                with open(self.output_path, 'rb') as src, open(save_path, 'wb') as dst:
+                    dst.write(src.read())
+                messagebox.showinfo("Download Complete", f"File saved to: {save_path}")
+            except Exception as e:
+                messagebox.showerror("Download Failed", str(e))
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = InputAutomationApp(root)
+    root.mainloop()

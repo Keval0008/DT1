@@ -1,21 +1,25 @@
 import pandas as pd
 
-dictA = {'A1': 20, 'B1': 30, 'C1': 40}
-dictB = {'l1': ['AOB1', 'BOT1'], 'l2': ['CAB1']}
-dictC = {'A1': 'AOB1', 'B1': 'BOT1', 'C1': 'CAB1'}
+# Inputs
+L1 = ['A', 'B', 'C']
+L2 = ['G', 'H', 'I', 'J']
+entity_name = 'MyEntity'
 
-# Step 1: Reverse dictC to map AOB1 -> A1, etc.
-reverse_dictC = {v: k for k, v in dictC.items()}
-
-# Step 2: Build rows using dictB
+# Prepare data rows
 rows = []
-for key, codes in dictB.items():
-    for code in codes:
-        id_key = reverse_dictC.get(code)
-        value = dictA.get(id_key)
-        rows.append((key, code, value))
+for bl in L1:
+    for at in L2:
+        row = {
+            'entity': entity_name,
+            'bl': bl,
+            'at': at,
+            'Open': 0,
+            '2024': 0,
+            '2025': 0
+        }
+        rows.append(row)
 
-# Step 3: Create DataFrame
-df = pd.DataFrame(rows, columns=['col1', 'col2', 'col3'])
+# Create DataFrame
+df = pd.DataFrame(rows, columns=['entity', 'bl', 'at', 'Open', '2024', '2025'])
 
 print(df)

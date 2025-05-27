@@ -1,29 +1,24 @@
 import os
-import win32com.client as win32
+import xlwings as xw
 
 folder_path = os.path.dirname(os.path.abspath(__file__))
-excel_file = os.path.join(folder_path, 'your_file.xlsx')  # or .xls
+excel_file = os.path.join(folder_path, 'your_file.xlsx')
 password_file = os.path.join(folder_path, 'password.txt')
 
 with open(password_file, 'r') as f:
     password = f.read().strip()
 
-excel = win32.Dispatch('Excel.Application')
-excel.Visible = False  # Set to True to see Excel
+app = xw.App(visible=False)
+wb = app.books.open(excel_file, password=password)
+sheet = wb.sheets[0]
 
-try:
-    wb = excel.Workbooks.Open(excel_file, False, True, None, password)
-    ws = wb.Worksheets(1)
-    
-    # Read data - example: print cell A1
-    print(ws.Range("A1").Value)
-    
-    # Or get all used range data
-    used_range = ws.UsedRange
-    data = used_range.Value
-    for row in data:
-        print(row)
-        
-finally:
-    wb.Close(False)
-    excel.Quit()
+# Read data
+print(sheet.range('A1').value)
+
+# Read entire used range
+data = sheet.used_range.value
+for row in data:
+    print(row)
+
+wb.close()
+app.quit()

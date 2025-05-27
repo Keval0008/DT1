@@ -1,9 +1,28 @@
-I hope this message finds you well.
+import os
+from openpyxl import load_workbook
 
-We have successfully completed the reconciliation for the HBUK tool and are currently working on automating the input template population, as per the ongoing requirements.
+# Get the directory path
+folder_path = os.path.dirname(os.path.abspath(__file__))  # or specify your folder path
 
-Attached is the proposed timeline outlining the key phases ahead – including UAT, incorporation of UAT feedback, and the go-live plan. We would appreciate it if you could review the timeline and confirm if it aligns with your expectations, or if there are any changes you would suggest.
+# Path to files
+excel_file = os.path.join(folder_path, 'your_file.xlsx')  # change to your Excel filename
+password_file = os.path.join(folder_path, 'password.txt')
 
-Subject to your agreement on the proposed plan, we would also like to confirm if we can proceed with a parallel run during the Q2 2025 reporting cycle (June), with a view to go live from Q3 2025 reporting (September), post sign-off.
+# Read the password from the text file
+with open(password_file, 'r') as f:
+    password = f.read().strip()  # .strip() removes any extra whitespace or newlines
 
-Looking forward to your feedback and confirmation.
+# Load the Excel file with the password
+try:
+    wb = load_workbook(filename=excel_file, read_only=True, password=password)
+    
+    # Access worksheets
+    sheet = wb.active  # or wb['SheetName']
+    
+    # Read data - example: print all values in first column
+    for row in sheet.iter_rows(values_only=True):
+        print(row[0])  # prints first column value of each row
+        
+    wb.close()
+except Exception as e:
+    print(f"Error opening Excel file: {e}")

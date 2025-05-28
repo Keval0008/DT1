@@ -1,24 +1,41 @@
-opening_raw_values = {'TOTAL CC': 199, 'CIB': 47, 'iWPB': 544, 'BSM': 89}
-bsm_ratio = {'IWPB': 0.56, 'CIB': 0.44}
+label_dict = {
+    'TOTAL CC': ['1Q24','2Q24','3Q24','4Q24','Jan-25',....'Dec-25','2026','2027','2028'],
+    'iWPB': ['1Q24','2Q24','3Q24','4Q24','Jan-25',....'Dec-25','2026','2027','2028'],
+    'CIB': ['1Q24','2Q24','3Q24','4Q24','Jan-25',....'Dec-25','2026','2027','2028'],
+    'BSM': ['1Q24','2Q24','3Q24','4Q24','Jan-25',....'Dec-25','2026','2027','2028']
+}
 
-def distribute_bsm_values(raw_values, ratios):
-    # Get the BSM value and remove it from the raw values
-    bsm_value = raw_values.pop('BSM', 0)
+required_year_list = [2025, 2026, 2027, 2028, 2029, 2030, 2031]
+
+def create_year_mapping(label_dict, required_year_list):
+    output_dict = {}
     
-    # Initialize result with original values (excluding BSM)
-    result = raw_values.copy()
-    
-    # Distribute BSM value according to ratios
-    for key, ratio in ratios.items():
-        # Handle case-insensitive key matching
-        normalized_key = key.lower()
-        matching_keys = [k for k in raw_values.keys() if k.lower() == normalized_key]
+    for key, labels in label_dict.items():
+        output_dict[key] = {}
         
-        if matching_keys:
-            actual_key = matching_keys[0]  # Use the original case from raw_values
-            result[actual_key] = raw_values[actual_key] + (bsm_value * ratio)
+        for year in required_year_list:
+            # First try to find 'Dec-XX' format
+            dec_pattern = f"Dec-{str(year)[-2:]}"  # 'Dec-25' for 2025
+            year_str = str(year)
+            
+            # Search for Dec pattern first
+            found = None
+            for label in labels:
+                if label == dec_pattern:
+                    found = label
+                    break
+            
+            # If Dec pattern not found, search for year string
+            if not found:
+                for label in labels:
+                    if label == year_str:
+                        found = label
+                        break
+            
+            if found:
+                output_dict[key][year] = found
     
-    return result
+    return output_dict
 
-final_values = distribute_bsm_values(opening_raw_values, bsm_ratio)
-print(final_values)
+output_dict = create_year_mapping(label_dict, required_year_list)
+print(output_dict)

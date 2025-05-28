@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 
 def find_subheader_ranges(df):
     # Identify header columns (assuming 0-indexed columns)
@@ -6,6 +7,11 @@ def find_subheader_ranges(df):
     
     # Dictionary to store results
     subheader_ranges = {}
+    
+    # Compile regex patterns for case-insensitive matching
+    actual_pattern = re.compile(r'actual', re.IGNORECASE)
+    forecast_pattern = re.compile(r'forecast', re.IGNORECASE)
+    frp_pattern = re.compile(r'frp', re.IGNORECASE)
     
     for header_col in header_cols:
         # Get the header name from row 0
@@ -18,10 +24,21 @@ def find_subheader_ranges(df):
         row_to_search = 1
         current_row = df.iloc[row_to_search, :]
         
-        # Find positions of our keywords
-        actual_positions = current_row[current_row == 'Actual'].index.tolist()
-        forecast_positions = current_row[current_row == 'Forecast'].index.tolist()
-        frp_positions = current_row[current_row == 'FRP'].index.tolist()
+        # Find positions of our keywords with flexible matching
+        actual_positions = [
+            idx for idx, val in enumerate(current_row) 
+            if isinstance(val, str) and actual_pattern.search(val)
+        ]
+        
+        forecast_positions = [
+            idx for idx, val in enumerate(current_row) 
+            if isinstance(val, str) and forecast_pattern.search(val)
+        ]
+        
+        frp_positions = [
+            idx for idx, val in enumerate(current_row) 
+            if isinstance(val, str) and frp_pattern.search(val)
+        ]
         
         # For each header, find the first keyword occurrence after the header column
         # Actual range

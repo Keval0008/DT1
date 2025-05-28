@@ -1,7 +1,24 @@
-Dear Team,
+opening_raw_values = {'TOTAL CC': 199, 'CIB': 47, 'iWPB': 544, 'BSM': 89}
+bsm_ratio = {'IWPB': 0.56, 'CIB': 0.44}
 
-I hope you're all doing well. I’ve reviewed and tested the feedback shared by you, and I’ll be working on incorporating those changes throughout this week.
+def distribute_bsm_values(raw_values, ratios):
+    # Get the BSM value and remove it from the raw values
+    bsm_value = raw_values.pop('BSM', 0)
+    
+    # Initialize result with original values (excluding BSM)
+    result = raw_values.copy()
+    
+    # Distribute BSM value according to ratios
+    for key, ratio in ratios.items():
+        # Handle case-insensitive key matching
+        normalized_key = key.lower()
+        matching_keys = [k for k in raw_values.keys() if k.lower() == normalized_key]
+        
+        if matching_keys:
+            actual_key = matching_keys[0]  # Use the original case from raw_values
+            result[actual_key] = raw_values[actual_key] + (bsm_value * ratio)
+    
+    return result
 
-As I’m also tied up with some other high-priority tasks, I may not be able to proceed with the full testing right away. Hence, would it be possible to start the testing early next week instead? I’ll ensure everything is ready from my end by then.
-
-Thank you for your understanding and support.
+final_values = distribute_bsm_values(opening_raw_values, bsm_ratio)
+print(final_values)

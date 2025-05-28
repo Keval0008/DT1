@@ -1,6 +1,8 @@
-result = deepcopy(pbt_frp)
+tax_calculation = {}
 
-for key in opening_pbt:
-    if key in result and result[key]:  # Check if key exists and dict isn't empty
-        min_year = min(result[key].keys())  # Find the minimum year dynamically
-        result[key][min_year] -= opening_pbt[key]  # Subtract from the earliest year
+for cgu, years in pbt_dict.items():
+    tax_calculation[cgu] = {}
+    for year, pbt in years.items():
+        # Get the tax rate for the year, fallback to Opening if year not found
+        tax_rate = tax_dict.get(year, tax_dict['Opening']).get('tax rate', 0)
+        tax_calculation[cgu][year] = pbt * tax_rate

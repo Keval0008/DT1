@@ -1,40 +1,6 @@
-label_dict = {
-    'TOTAL CC': ['1Q24','2Q24','3Q24','4Q24','Jan-25',...,'Dec-25','2026.0','2027.0','2028.0'],
-    'iWPB': ['1Q24','2Q24','3Q24','4Q24','Jan-25',...,'Dec-25','2026.0','2027.0','2028.0'],
-    'CIB': ['1Q24','2Q24','3Q24','4Q24','Jan-25',...,'Dec-25','2026.0','2027.0','2028.0'],
-    'BSM': ['1Q24','2Q24','3Q24','4Q24','Jan-25',...,'Dec-25','2026.0','2027.0','2028.0']
-}
+result = deepcopy(pbt_frp)
 
-required_year_list = [2025, 2026, 2027, 2028, 2029, 2030, 2031]
-
-def create_year_mapping(label_dict, required_year_list):
-    output_dict = {}
-    
-    for key, labels in label_dict.items():
-        output_dict[key] = {}
-        
-        for year in required_year_list:
-            # First try to find 'Dec-XX' format
-            dec_pattern = f"Dec-{str(year)[-2:]}"  # 'Dec-25' for 2025
-            
-            # Then try year as string with .0 (2026.0) and without (2026)
-            year_str1 = str(year)
-            year_str2 = f"{year}.0"
-            
-            found = None
-            for label in labels:
-                label_str = str(label)  # Convert all labels to string for comparison
-                if label_str == dec_pattern:
-                    found = label
-                    break
-                elif label_str in (year_str1, year_str2):
-                    found = label
-                    break
-            
-            if found:
-                output_dict[key][year] = found if isinstance(found, str) else str(found)
-    
-    return output_dict
-
-output_dict = create_year_mapping(label_dict, required_year_list)
-print(output_dict)
+for key in opening_pbt:
+    if key in result and result[key]:  # Check if key exists and dict isn't empty
+        min_year = min(result[key].keys())  # Find the minimum year dynamically
+        result[key][min_year] -= opening_pbt[key]  # Subtract from the earliest year

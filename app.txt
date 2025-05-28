@@ -1,94 +1,39 @@
 import pandas as pd
-import re
 
-def find_subheader_variables(df):
-    # Identify header columns (assuming 0-indexed columns)
-    header_cols = [97, 65, 33, 129]
+def find_variable_positions(df, variable_to_find, header_cols=[97, 65, 33, 129]):
+    """
+    Find all occurrences of a variable after each header's starting column
     
-    # Dictionary to store results
-    header_data = {}
+    Args:
+        df: Your DataFrame
+        variable_to_find: The value you're searching for (col_idx)
+        header_cols: List of header starting columns
+        
+    Returns:
+        Dictionary {header_name: [list of column indices where variable appears]}
+    """
+    result = {}
     
-    # Compile regex patterns for case-insensitive matching
-    actual_pattern = re.compile(r'actual', re.IGNORECASE)
-    forecast_pattern = re.compile(r'forecast', re.IGNORECASE)
-    frp_pattern = re.compile(r'frp', re.IGNORECASE)
-    
-    # Row with subheaders (row 1) and row with variables (row 2)
-    subheader_row = 1
-    variable_row = 2
+    # Get all matches across the entire DataFrame
+    matches = df.isin([variable_to_find])
     
     for header_col in header_cols:
-        # Get the header name from row 0
+        # Get header name from row 0
         header_name = df.iloc[0, header_col]
+        result[header_name] = []
         
-        # Initialize dictionary for this header
-        header_data[header_name] = {
-            'Actual': [],
-            'Forecast': [],
-            'FRP': []
-        }
-        
-        # Get the subheader and variable rows
-        subheaders = df.iloc[subheader_row, :]
-        variables = df.iloc[variable_row, :]
-        
-        # Find positions of our keywords with flexible matching
-        actual_positions = [
-            idx for idx, val in enumerate(subheaders) 
-            if isinstance(val, str) and actual_pattern.search(val)
-        ]
-        
-        forecast_positions = [
-            idx for idx, val in enumerate(subheaders) 
-            if isinstance(val, str) and forecast_pattern.search(val)
-        ]
-        
-        frp_positions = [
-            idx for idx, val in enumerate(subheaders) 
-            if isinstance(val, str) and frp_pattern.search(val)
-        ]
-        
-        # Process Actual section
-        actual_start = next((x for x in actual_positions if x > header_col), None)
-        if actual_start:
-            # Find end (either before Forecast or FRP)
-            end_candidates = [x for x in forecast_positions + frp_positions if x > actual_start]
-            actual_end = min(end_candidates) - 1 if end_candidates else None
-            
-            if actual_end:
-                header_data[header_name]['Actual'] = [
-                    str(variables[col]) for col in range(actual_start, actual_end + 1) 
-                    if pd.notna(variables[col]) and str(variables[col]).strip() != ''
-                ]
-        
-        # Process Forecast section
-        forecast_start = next((x for x in forecast_positions if x > header_col), None)
-        if forecast_start:
-            # Find end (before FRP)
-            end_candidates = [x for x in frp_positions if x > forecast_start]
-            forecast_end = min(end_candidates) - 1 if end_candidates else None
-            
-            if forecast_end:
-                header_data[header_name]['Forecast'] = [
-                    str(variables[col]) for col in range(forecast_start, forecast_end + 1) 
-                    if pd.notna(variables[col]) and str(variables[col]).strip() != ''
-                ]
-        
-        # Process FRP section
-        frp_start = next((x for x in frp_positions if x > header_col), None)
-        if frp_start:
-            # Collect until empty cell
-            frp_values = []
-            col = frp_start
-            while col < len(variables) and pd.notna(variables[col]) and str(variables[col]).strip() != '':
-                frp_values.append(str(variables[col]))
-                col += 1
-            
-            header_data[header_name]['FRP'] = frp_values
+        # Find all column indices where variable appears AFTER header_col
+        for col in range(header_col + 1, len(df.columns)):
+            if matches.any().iloc[col]:  # Check if any row in this column has the value
+                for row in range(len(df)):
+                    if matches.iloc[row, col]:
+                        result[header_name].append(col)
+                        break  # Only need one match per column
     
-    return header_data
+    # Remove headers with no matches
+    return {k: v for k, v in result.items() if v}
 
 # Example usage:
 # df = pd.read_excel('your_file.xlsx', header=None)
-# variable_data = find_subheader_variables(df)
-# print(variable_data)
+# variable_positions = find_variable_positions(df, col_idx)
+# print(variable_positions)

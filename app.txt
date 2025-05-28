@@ -1,39 +1,7 @@
-import pandas as pd
+Dear Team,
 
-def find_variable_positions(df, variable_to_find, header_cols=[97, 65, 33, 129]):
-    """
-    Find all occurrences of a variable after each header's starting column
-    
-    Args:
-        df: Your DataFrame
-        variable_to_find: The value you're searching for (col_idx)
-        header_cols: List of header starting columns
-        
-    Returns:
-        Dictionary {header_name: [list of column indices where variable appears]}
-    """
-    result = {}
-    
-    # Get all matches across the entire DataFrame
-    matches = df.isin([variable_to_find])
-    
-    for header_col in header_cols:
-        # Get header name from row 0
-        header_name = df.iloc[0, header_col]
-        result[header_name] = []
-        
-        # Find all column indices where variable appears AFTER header_col
-        for col in range(header_col + 1, len(df.columns)):
-            if matches.any().iloc[col]:  # Check if any row in this column has the value
-                for row in range(len(df)):
-                    if matches.iloc[row, col]:
-                        result[header_name].append(col)
-                        break  # Only need one match per column
-    
-    # Remove headers with no matches
-    return {k: v for k, v in result.items() if v}
+I hope you're all doing well. I’ve reviewed and tested the feedback shared by you, and I’ll be working on incorporating those changes throughout this week.
 
-# Example usage:
-# df = pd.read_excel('your_file.xlsx', header=None)
-# variable_positions = find_variable_positions(df, col_idx)
-# print(variable_positions)
+As I’m also tied up with some other high-priority tasks, I may not be able to proceed with the full testing right away. Hence, would it be possible to start the testing early next week instead? I’ll ensure everything is ready from my end by then.
+
+Thank you for your understanding and support.

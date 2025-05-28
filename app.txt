@@ -1,8 +1,116 @@
-tax_calculation = {}
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import threading
+import os
+import shutil
 
-for cgu, years in pbt_dict.items():
-    tax_calculation[cgu] = {}
-    for year, pbt in years.items():
-        # Get the tax rate for the year, fallback to Opening if year not found
-        tax_rate = tax_dict.get(year, tax_dict['Opening']).get('tax rate', 0)
-        tax_calculation[cgu][year] = pbt * tax_rate
+def input_automation(folder_path):
+    """Your actual processing function that generates the Excel output"""
+    try:
+        # Replace this with your actual processing logic
+        # This is just a placeholder implementation
+        output_path = os.path.join(folder_path, 'output_template.xlsx')
+        
+        # Create a dummy Excel file for demonstration
+        import pandas as pd
+        df = pd.DataFrame({'Data': ['Sample', 'Output']})
+        df.to_excel(output_path, index=False)
+        
+        return {
+            'status': 'success',
+            'message': 'Input template generated successfully.',
+            'output_path': output_path
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'message': f'Error: {str(e)}'
+        }
+
+class InputAutomationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Input Automation")
+        self.root.geometry("500x300")
+        self.root.resizable(False, False)
+
+        self.folder_path = tk.StringVar()
+        self.output_path = None
+
+        self.build_ui()
+        self.root.attributes('-topmost', True)
+        self.root.after_idle(lambda: self.root.attributes('-topmost', False))
+
+    def build_ui(self):
+        tk.Label(self.root, text="Input Automation", font=("Helvetica", 16, "bold")).pack(pady=10)
+
+        folder_frame = tk.Frame(self.root)
+        folder_frame.pack(pady=5)
+
+        tk.Entry(folder_frame, textvariable=self.folder_path, width=40, state='readonly').pack(side=tk.LEFT, padx=5)
+        tk.Button(folder_frame, text="Browse", command=self.browse_folder).pack(side=tk.LEFT)
+
+        self.status_label = tk.Label(self.root, text="", fg="red", font=("Helvetica", 10))
+        self.status_label.pack(pady=5)
+
+        self.run_button = tk.Button(self.root, text="Generate Excel", command=self.run_automation)
+        self.run_button.pack(pady=10)
+
+        self.download_button = tk.Button(self.root, text="Save Excel File", state='disabled', command=self.save_excel)
+        self.download_button.pack(side=tk.BOTTOM, pady=20)
+
+    def browse_folder(self):
+        folder = filedialog.askdirectory()
+        if folder:
+            self.folder_path.set(folder)
+            self.status_label.config(text="")
+            self.download_button.config(state='disabled')
+
+    def run_automation(self):
+        folder = self.folder_path.get()
+        if not folder:
+            messagebox.showwarning("Warning", "Please select a folder first")
+            return
+        
+        self.run_button.config(state='disabled')
+        self.status_label.config(text="Processing...", fg="blue")
+        self.root.update()
+
+        def execute_automation():
+            result = input_automation(folder)
+            self.root.after(0, lambda: self.handle_result(result))
+
+        threading.Thread(target=execute_automation, daemon=True).start()
+
+    def handle_result(self, result):
+        self.run_button.config(state='normal')
+        if result['status'] == 'success':
+            self.status_label.config(text=result['message'], fg="green")
+            self.output_path = result['output_path']
+            self.download_button.config(state='normal')
+        else:
+            self.status_label.config(text=result['message'], fg="red")
+            self.download_button.config(state='disabled')
+
+    def save_excel(self):
+        if not self.output_path:
+            messagebox.showerror("Error", "No output file generated")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Save output Excel file"
+        )
+        
+        if save_path:
+            try:
+                shutil.copyfile(self.output_path, save_path)
+                messagebox.showinfo("Success", f"File saved successfully to:\n{save_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save file:\n{str(e)}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = InputAutomationApp(root)
+    root.mainloop()

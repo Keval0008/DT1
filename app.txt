@@ -1,24 +1,20 @@
-def input_automation(folder_path):
-    try:
-        # Ask user where to save the file
-        output_file = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            filetypes=[("Excel files", "*.xlsx")],
-            title="Save output Excel file"
-        )
-        
-        if not output_file:  # User cancelled
-            return {'status': 'cancelled', 'message': 'Operation cancelled by user'}
-        
-        # Your sheet processing logic
-        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
-            for sheet_name, df in sheet_dfs.items():
-                df.to_excel(writer, sheet_name=sheet_map[sheet_name], index=False)
-        
-        return {
-            'status': 'success',
-            'message': f'Excel file saved to {output_file}',
-            'output_path': output_file
-        }
-    except Exception as e:
-        return {'status': 'error', 'message': str(e)}
+Hi all,
+
+Thank you for sharing the feedback. Please find our responses below:
+
+1. Derivation field in the detailed lineage table section is not available
+Response: Since the tool processes SQLs as input, extracting derivations for each variable from SQL is proving to be a bit complex. This is the only pending component, and we are currently exploring ways to implement it. We will keep you updated on its feasibility and timeline.
+
+
+2. Occurrence of known lineage breaks in fallback fields
+Response: We have incorporated additional exception handling to ensure that no lineage breakages occur for the mentioned fallback flags.
+
+
+3. Lineage update delays and missing BDE highlights after highlighter data upload
+Response: The BDE highlighter is now enhanced to reflect highlights on both the chart and the table. We have also optimized the highlighting process to reduce update time.
+
+
+4. Incorrect results in source-to-output tracing option
+Response: Both source-to-output and output-to-source tracing functionalities have been reviewed and are now working as expected.
+
+

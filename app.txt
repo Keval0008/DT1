@@ -1,54 +1,60 @@
-def create_legend():
-    return html.Div(
-        [
-            html.H4("Highlight Legend"),
-            dbc.Row([
-                dbc.Col([
-                    html.Div(style={
-                        "width": "20px",
-                        "height": "20px",
-                        "background-color": "#FF6B6B",
-                        "border": "2px solid #CC0000",
-                        "display": "inline-block",
-                        "margin-right": "10px"
-                    }),
-                    html.Span("Dead Ends")
-                ], width=3),
-                dbc.Col([
-                    html.Div(style={
-                        "width": "20px",
-                        "height": "20px",
-                        "background-color": "#74B9FF",
-                        "border": "2px solid #0984E3",
-                        "display": "inline-block",
-                        "margin-right": "10px"
-                    }),
-                    html.Span("Start Node")
-                ], width=3),
-                # Add other legend items similarly...
-            ], className="mb-2"),
-            dbc.Row([
-                dbc.Col([
-                    html.Div(style={
-                        "width": "20px",
-                        "height": "20px",
-                        "background-color": "#55EFC4",
-                        "border": "2px solid #00B894",
-                        "display": "inline-block",
-                        "margin-right": "10px"
-                    }),
-                    html.Span("Clicked Node")
-                ], width=3)
-            ])
-        ],
-        style={
-            "position": "fixed",
-            "bottom": "20px",
-            "right": "20px",
-            "background": "white",
-            "padding": "10px",
-            "border": "1px solid #ddd",
-            "border-radius": "5px",
-            "z-index": 1000
+def get_stylesheet():
+    return [
+        # Base node style
+        {
+            "selector": "node",
+            "style": {
+                "label": "data(label)",
+                "shape": "rectangle",
+                "width": 400,
+                "height": 100,
+                "background-color": "#ADD8E6",  # Default blue
+                "text-valign": "center",
+                "text-halign": "center",
+                "font-size": 16,
+                "text-wrap": "wrap",
+                "text-max-width": 390,
+                "border-width": 2,
+                "border-color": "#666"
+            }
+        },
+        # Fixed Highlights
+        {
+            "selector": ".dead-end",
+            "style": {
+                "background-color": "#FF6B6B",  # Red
+                "border-color": "#CC0000"
+            }
+        },
+        {
+            "selector": ".start-node",
+            "style": {
+                "background-color": "#74B9FF",  # Blue
+                "border-color": "#0984E3"
+            }
+        },
+        {
+            "selector": ".perm-highlight",
+            "style": {
+                "background-color": "#FFD700",  # Gold
+                "border-color": "#FF8C00"
+            }
+        },
+        {
+            "selector": ".source-table",
+            "style": {
+                "background-color": "#A29BFE",  # Purple
+                "border-color": "#6C5CE7"
+            }
+        },
+        # Dynamic Tap Highlight
+        {
+            "selector": ".tap-highlight",
+            "style": {
+                "background-color": "#55EFC4",  # Green
+                "border-color": "#00B894",
+                "border-width": 4,
+                "z-index": 9999  # Ensure it appears above others
+            }
         }
-    )
+    ]

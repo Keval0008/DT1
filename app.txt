@@ -1,60 +1,63 @@
-def get_stylesheet():
-    return [
-        # Base node style
-        {
-            "selector": "node",
-            "style": {
-                "label": "data(label)",
-                "shape": "rectangle",
-                "width": 400,
-                "height": 100,
-                "background-color": "#ADD8E6",  # Default blue
-                "text-valign": "center",
-                "text-halign": "center",
-                "font-size": 16,
-                "text-wrap": "wrap",
-                "text-max-width": 390,
-                "border-width": 2,
-                "border-color": "#666"
-            }
-        },
-        # Fixed Highlights
-        {
-            "selector": ".dead-end",
-            "style": {
-                "background-color": "#FF6B6B",  # Red
-                "border-color": "#CC0000"
-            }
-        },
-        {
-            "selector": ".start-node",
-            "style": {
-                "background-color": "#74B9FF",  # Blue
-                "border-color": "#0984E3"
-            }
-        },
-        {
-            "selector": ".perm-highlight",
-            "style": {
-                "background-color": "#FFD700",  # Gold
-                "border-color": "#FF8C00"
-            }
-        },
-        {
-            "selector": ".source-table",
-            "style": {
-                "background-color": "#A29BFE",  # Purple
-                "border-color": "#6C5CE7"
-            }
-        },
-        # Dynamic Tap Highlight
-        {
-            "selector": ".tap-highlight",
-            "style": {
-                "background-color": "#55EFC4",  # Green
-                "border-color": "#00B894",
-                "border-width": 4,
-                "z-index": 9999  # Ensure it appears above others
-            }
-        }
-    ]
+import pandas as pd
+
+# df = pd.read_excel("your_file.xlsx", sheet_name="YourSheetName")
+df = df.astype(str)  # Treat everything as string for matching
+
+target_sections = ["IWPB", "CIB", "CC", "CC (BSM)"]
+section_rows = {}
+
+# Step 1: Get row index for each section
+for section in target_sections:
+    match = df.isin([section])
+    indices = match.stack()[match.stack()].index
+    if len(indices) > 0:
+        section_rows[section] = indices[0][0]
+
+# Step 2: Sort sections by their row order
+ordered_sections = sorted(section_rows.items(), key=lambda x: x[1])
+results = {}
+
+# Step 3: Loop through each section
+for idx, (section, start_row) in enumerate(ordered_sections):
+    end_row = ordered_sections[idx + 1][1] if idx + 1 < len(ordered_sections) else len(df)
+
+    forecast_row, forecast_col = None, None
+
+    # Search for "Forecast/Base (USD millions)"
+    for i in range(start_row, end_row):
+        for j in range(len(df.columns)):
+            if str(df.iat[i, j]).strip() == "Forecast/Base (USD millions)":
+                forecast_row, forecast_col = i, j
+                break
+        if forecast_row is not None:
+            break
+
+    if forecast_row is None:
+        print(f"'Forecast/Base (USD millions)' not found in section '{section}'")
+        continue
+
+    # Search for "Total (Apr'25 Forecast)" in that column
+    value_index = None
+    for r in range(start_row, end_row):
+        if str(df.iat[r, forecast_col]).strip() == "Total (Apr'25 Forecast)":
+            value_index = r
+            break
+
+    # Search for target months in the forecast_row
+    month_col_indices = {}
+    for c in range(len(df.columns)):
+        cell_val = str(df.iat[forecast_row, c]).strip()
+        if cell_val in ["Dec-2025", "Dec-2026", "2027"]:
+            month_col_indices[cell_val] = c
+
+    results[section] = {
+        "value_index": value_index,
+        "column_indices": month_col_indices
+    }
+
+# Step 4: Print results
+for section, data in results.items():
+    print(f"\n--- {section} ---")
+    print("Value Index:", data["value_index"])
+    for month, col_idx in data["column_indices"].items():
+        print(f"{month}: column {col_idx}")

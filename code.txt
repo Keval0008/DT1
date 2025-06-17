@@ -4,12 +4,13 @@ import os
 import shutil
 from collections import Counter
 from datetime import datetime
+import pandas as pd
 
 # Predefined keyword
 keyword = "backup"
 
 def select_files():
-    files = filedialog.askopenfilenames(title="Select Files")
+    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
     file_list.clear()
     file_list.extend(list(files))
     update_stats()
@@ -33,12 +34,22 @@ def save_files():
     
     try:
         for file in file_list:
+            # Read the Excel file
+            df = pd.read_excel(file)
+            
+            # Add new columns
+            df['Submitted by'] = keyword
+            df['Submitted time'] = timestamp
+            
+            # Get file name and create new name with suffix
             base_name = os.path.basename(file)
             name, ext = os.path.splitext(base_name)
-            # Always add keyword and timestamp as suffix
             new_name = f"{name}_{keyword}_{timestamp}{ext}"
             dest_path = os.path.join(folder_path.get(), new_name)
-            shutil.copy(file, dest_path)
+            
+            # Save modified Excel file
+            df.to_excel(dest_path, index=False)
+            
         update_status(f"Success: {len(file_list)} files saved!", "green")
     except Exception as e:
         update_status(f"Error: {str(e)}", "red")
@@ -70,7 +81,7 @@ def update_status(message, color):
 # Tkinter UI Setup
 root = tk.Tk()
 root.title("File Rename & Save")
-root.geometry("500x400")  # Reduced height since keyword and radio buttons are removed
+root.geometry("500x400")
 root.configure(bg="#f5f5f5")
 root.resizable(False, False)
 
@@ -91,7 +102,7 @@ main_frame.pack(padx=20, pady=20, fill="both", expand=True)
 tk.Label(main_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
 
 # Select Files Button
-tk.Button(main_frame, text="Select Files", command=select_files, font=button_font, bg="#4a90e2", fg="white",
+tk.Button(main_frame, text="Select Excel Files", command=select_files, font=button_font, bg="#4a90e2", fg="white",
           relief="flat", width=20).pack(pady=5)
 
 # Select Folder Button

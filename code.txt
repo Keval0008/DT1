@@ -3,6 +3,10 @@ from tkinter import filedialog, messagebox
 import os
 import shutil
 from collections import Counter
+from datetime import datetime
+
+# Predefined keyword
+keyword = "backup"
 
 def select_files():
     files = filedialog.askopenfilenames(title="Select Files")
@@ -24,17 +28,15 @@ def save_files():
         update_status("Error: No folder selected", "red")
         return
 
-    keyword = keyword_entry.get().strip()
-    if not keyword:
-        update_status("Error: No keyword entered", "red")
-        return
-
-    mode = prefix_suffix.get()
+    # Get current timestamp in DDMMYYYY_HHMMSS format
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+    
     try:
         for file in file_list:
             base_name = os.path.basename(file)
             name, ext = os.path.splitext(base_name)
-            new_name = f"{keyword}_{name}{ext}" if mode == "prefix" else f"{name}_{keyword}{ext}"
+            # Always add keyword and timestamp as suffix
+            new_name = f"{name}_{keyword}_{timestamp}{ext}"
             dest_path = os.path.join(folder_path.get(), new_name)
             shutil.copy(file, dest_path)
         update_status(f"Success: {len(file_list)} files saved!", "green")
@@ -68,18 +70,16 @@ def update_status(message, color):
 # Tkinter UI Setup
 root = tk.Tk()
 root.title("File Rename & Save")
-root.geometry("500x600")
+root.geometry("500x400")  # Reduced height since keyword and radio buttons are removed
 root.configure(bg="#f5f5f5")
 root.resizable(False, False)
 
 # Variables
 file_list = []
 folder_path = tk.StringVar()
-prefix_suffix = tk.StringVar(value="prefix")
 
 # Fonts and Styles
 label_font = ("Helvetica", 10)
-entry_font = ("Helvetica", 10)
 button_font = ("Helvetica", 10, "bold")
 stats_font = ("Helvetica", 9)
 
@@ -97,20 +97,6 @@ tk.Button(main_frame, text="Select Files", command=select_files, font=button_fon
 # Select Folder Button
 tk.Button(main_frame, text="Select Folder", command=select_folder, font=button_font, bg="#4a90e2", fg="white",
           relief="flat", width=20).pack(pady=5)
-
-# Keyword Entry
-tk.Label(main_frame, text="Keyword", font=label_font, bg="#f5f5f5").pack(pady=(10, 2))
-keyword_entry = tk.Entry(main_frame, font=entry_font, width=25, relief="flat", bg="#ffffff", highlightthickness=1,
-                         highlightbackground="#d3d3d3")
-keyword_entry.pack()
-
-# Prefix/Suffix Radio Buttons
-radio_frame = tk.Frame(main_frame, bg="#f5f5f5")
-radio_frame.pack(pady=10)
-tk.Radiobutton(radio_frame, text="Prefix", variable=prefix_suffix, value="prefix", font=label_font, bg="#f5f5f5",
-               selectcolor="#f5f5f5").pack(side="left", padx=10)
-tk.Radiobutton(radio_frame, text="Suffix", variable=prefix_suffix, value="suffix", font=label_font, bg="#f5f5f5",
-               selectcolor="#f5f5f5").pack(side="left", padx=10)
 
 # Save Button
 tk.Button(main_frame, text="Save Files", command=save_files, font=button_font, bg="#2ecc71", fg="white", relief="flat",

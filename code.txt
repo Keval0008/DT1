@@ -1,13 +1,15 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import os
-import shutil
-from collections import Counter
-from datetime import datetime
 import pandas as pd
+import getpass
+from datetime import datetime
 
-# Predefined keyword
-keyword = "backup"
+# Get current user ID
+keyword = getpass.getuser()
+
+# List of admin user IDs (modify as needed)
+admin_users = ["admin1", "admin2", "superuser"]  # Example user IDs
 
 def select_files():
     files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
@@ -56,32 +58,21 @@ def save_files():
     update_stats()
 
 def update_stats():
-    # Update file count and folder
-    stats_text = f"Files Selected: {len(file_list)}\n"
-    folder = folder_path.get() or "Not selected"
-    stats_text += f"Destination Folder: {folder}\n"
+    # Update file count and folder in bold
+    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
     stats_label.config(text=stats_text)
-
-    # Clear existing table data
-    for item in file_type_table.get_children():
-        file_type_table.delete(item)
-
-    # Update file type breakdown in table
-    if file_list:
-        extensions = [os.path.splitext(f)[1].lower() or 'No extension' for f in file_list]
-        ext_counts = Counter(extensions)
-        for ext, count in ext_counts.items():
-            file_type_table.insert("", "end", values=(ext, count))
-    else:
-        file_type_table.insert("", "end", values=("None", 0))
 
 def update_status(message, color):
     status_label.config(text=message, fg=color)
 
+def admin_button_action():
+    # Placeholder for admin functionality
+    messagebox.showinfo("Admin", "Admin button clicked (no action yet).")
+
 # Tkinter UI Setup
 root = tk.Tk()
 root.title("File Rename & Save")
-root.geometry("500x450")  # Adjusted height for table
+root.geometry("500x350")  # Reduced height since table is removed
 root.configure(bg="#f5f5f5")
 root.resizable(False, False)
 
@@ -92,67 +83,50 @@ folder_path = tk.StringVar()
 # Fonts and Styles
 label_font = ("Helvetica", 10)
 button_font = ("Helvetica", 10, "bold")
-stats_font = ("Helvetica", 9)
+stats_font = ("Helvetica", 10, "bold")  # Bold for stats
 
-# ttk Style for rounded buttons and table
+# ttk Style for rounded buttons
 style = ttk.Style()
-style.theme_use("clam")  # Use 'clam' theme for better customization
+style.theme_use("clam")
 style.configure("TButton",
                 padding=6,
                 relief="raised",
                 background="#4a90e2",
                 foreground="white",
                 borderwidth=2,
-                borderradius=10)  # Rounded corners
+                borderradius=10)
 style.map("TButton",
-          background=[("active", "#357ABD")])  # Darker blue when clicked
-style.configure("Treeview",
-                font=stats_font,
-                rowheight=25,
-                background="#ffffff",
-                foreground="#333333",
-                fieldbackground="#ffffff")
-style.configure("Treeview.Heading",
-                font=("Helvetica", 9, "bold"),
-                background="#d3d3d3",
-                foreground="#333333")
-style.layout("Treeview",
-             [('Treeview.treearea', {'sticky': 'nswe', 'border': 1, 'borderradius': 10})])  # Rounded table
+          background=[("active", "#357ABD")])
 
-# Main Frame
-main_frame = tk.Frame(root, bg="#f5f5f5")
-main_frame.pack(padx=20, pady=20, fill="both", expand=True)
+# Notebook for tabs
+notebook = ttk.Notebook(root)
+notebook.pack(padx=20, pady=20, fill="both", expand=True)
 
-# Title
-tk.Label(main_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+# User Tab
+user_frame = tk.Frame(notebook, bg="#f5f5f5")
+notebook.add(user_frame, text="User")
 
-# Select Files Button
-ttk.Button(main_frame, text="Select Excel Files", command=select_files, style="TButton").pack(pady=5)
+# Admin Tab (only visible to admin users)
+if getpass.getuser() in admin_users:
+    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
+    notebook.add(admin_frame, text="Admin")
+else:
+    notebook.tab(0, state="normal")  # Ensure User tab is accessible
 
-# Select Folder Button
-ttk.Button(main_frame, text="Select Folder", command=select_folder, style="TButton").pack(pady=5)
-
-# Save Button
-ttk.Button(main_frame, text="Save Files", command=save_files, style="TButton").pack(pady=15)
-
-# Status Label
-status_label = tk.Label(main_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
+# User Tab Content
+tk.Label(user_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+ttk.Button(user_frame, text="Select Excel Files", command=select_files, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Select Folder", command=select_folder, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Save Files", command=save_files, style="TButton").pack(pady=15)
+status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
 status_label.pack(pady=5)
+stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: Not selected",
+                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw")
+stats_label.pack(pady=10, fill="x")
 
-# Stats Label (for file count and folder)
-stats_label = tk.Label(main_frame, text="Files Selected: 0\nDestination Folder: Not selected",
-                       font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw")
-stats_label.pack(pady=5, fill="x")
-
-# File Type Table
-table_frame = tk.Frame(main_frame, bg="#f5f5f5")
-table_frame.pack(pady=10, fill="x")
-file_type_table = ttk.Treeview(table_frame, columns=("Extension", "Count"), show="headings", height=4)
-file_type_table.heading("Extension", text="File Type")
-file_type_table.heading("Count", text="Count")
-file_type_table.column("Extension", width=120, anchor="w")
-file_type_table.column("Count", width=80, anchor="center")
-file_type_table.pack(fill="x")
-file_type_table.insert("", "end", values=("None", 0))  # Initial empty state
+# Admin Tab Content (for admins only)
+if getpass.getuser() in admin_users:
+    tk.Label(admin_frame, text="Admin Panel", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+    ttk.Button(admin_frame, text="Admin Action", command=admin_button_action, style="TButton").pack(pady=5)
 
 root.mainloop()

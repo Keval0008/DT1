@@ -1,63 +1,133 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import os
 import pandas as pd
+import getpass
+from datetime import datetime
 
-# df = pd.read_excel("your_file.xlsx", sheet_name="YourSheetName")
-df = df.astype(str)  # Treat everything as string for matching
+# Get current user ID
+keyword = getpass.getuser()
 
-target_sections = ["IWPB", "CIB", "CC", "CC (BSM)"]
-section_rows = {}
+# List of admin user IDs (modify as needed)
+admin_users = ["admin1", "admin2", "superuser"]  # Example user IDs
 
-# Step 1: Get row index for each section
-for section in target_sections:
-    match = df.isin([section])
-    indices = match.stack()[match.stack()].index
-    if len(indices) > 0:
-        section_rows[section] = indices[0][0]
+def select_files():
+    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
+    file_list.clear()
+    file_list.extend(list(files))
+    update_stats()
 
-# Step 2: Sort sections by their row order
-ordered_sections = sorted(section_rows.items(), key=lambda x: x[1])
-results = {}
+def select_folder():
+    folder = filedialog.askdirectory(title="Select Destination Folder")
+    if folder:
+        folder_path.set(folder)
+        update_stats()
 
-# Step 3: Loop through each section
-for idx, (section, start_row) in enumerate(ordered_sections):
-    end_row = ordered_sections[idx + 1][1] if idx + 1 < len(ordered_sections) else len(df)
+def save_files():
+    if not file_list:
+        update_status("Error: No files selected", "red")
+        return
+    if not folder_path.get():
+        update_status("Error: No folder selected", "red")
+        return
 
-    forecast_row, forecast_col = None, None
+    # Get current timestamp in DDMMYYYY_HHMMSS format
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+    
+    try:
+        for file in file_list:
+            # Read the Excel file
+            df = pd.read_excel(file)
+            
+            # Add new columns
+            df['Submitted by'] = keyword
+            df['Submitted time'] = timestamp
+            
+            # Get file name and create new name with suffix
+            base_name = os.path.basename(file)
+            name, ext = os.path.splitext(base_name)
+            new_name = f"{name}_{keyword}_{timestamp}{ext}"
+            dest_path = os.path.join(folder_path.get(), new_name)
+            
+            # Save modified Excel file
+            df.to_excel(dest_path, index=False)
+            
+        update_status(f"Success: {len(file_list)} files saved!", "green")
+    except Exception as e:
+        update_status(f"Error: {str(e)}", "red")
+    update_stats()
 
-    # Search for "Forecast/Base (USD millions)"
-    for i in range(start_row, end_row):
-        for j in range(len(df.columns)):
-            if str(df.iat[i, j]).strip() == "Forecast/Base (USD millions)":
-                forecast_row, forecast_col = i, j
-                break
-        if forecast_row is not None:
-            break
+def update_stats():
+    # Update file count and folder in bold
+    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
+    stats_label.config(text=stats_text)
 
-    if forecast_row is None:
-        print(f"'Forecast/Base (USD millions)' not found in section '{section}'")
-        continue
+def update_status(message, color):
+    status_label.config(text=message, fg=color)
 
-    # Search for "Total (Apr'25 Forecast)" in that column
-    value_index = None
-    for r in range(start_row, end_row):
-        if str(df.iat[r, forecast_col]).strip() == "Total (Apr'25 Forecast)":
-            value_index = r
-            break
+def admin_button_action():
+    # Placeholder for admin functionality
+    messagebox.showinfo("Admin", "Admin button clicked (no action yet).")
 
-    # Search for target months in the forecast_row
-    month_col_indices = {}
-    for c in range(len(df.columns)):
-        cell_val = str(df.iat[forecast_row, c]).strip()
-        if cell_val in ["Dec-2025", "Dec-2026", "2027"]:
-            month_col_indices[cell_val] = c
+# Tkinter UI Setup
+root = tk.Tk()
+root.title("File Rename & Save")
+root.geometry("500x350")
+root.configure(bg="#f5f5f5")
+root.resizable(False, False)
 
-    results[section] = {
-        "value_index": value_index,
-        "column_indices": month_col_indices
-    }
+# Variables
+file_list = []
+folder_path = tk.StringVar()
 
-# Step 4: Print results
-for section, data in results.items():
-    print(f"\n--- {section} ---")
-    print("Value Index:", data["value_index"])
-    for month, col_idx in data["column_indices"].items():
-        print(f"{month}: column {col_idx}")
+# Fonts and Styles
+label_font = ("Helvetica", 10)
+button_font = ("Helvetica", 10, "bold")
+stats_font = ("Helvetica", 10, "bold")  # Bold for stats
+
+# ttk Style for rounded buttons
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("TButton",
+                padding=6,
+                relief="raised",
+                background="#4a90e2",
+                foreground="white",
+                borderwidth=2,
+                borderradius=10)
+style.map("TButton",
+          background=[("active", "#357ABD")])
+
+# Notebook for tabs
+notebook = ttk.Notebook(root)
+notebook.pack(padx=20, pady=20, fill="both", expand=True)
+
+# User Tab
+user_frame = tk.Frame(notebook, bg="#f5f5f5")
+notebook.add(user_frame, text="User")
+
+# Admin Tab (only visible to admin users)
+if getpass.getuser() in admin_users:
+    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
+    notebook.add(admin_frame, text="Admin")
+else:
+    notebook.tab(0, state="normal")  # Ensure User tab is accessible
+
+# User Tab Content
+tk.Label(user_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+ttk.Button(user_frame, text="Select Excel Files", command=select_files, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Select Folder", command=select_folder, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Save Files", command=save_files, style="TButton").pack(pady=15)
+status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
+status_label.pack(pady=5)
+stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: Not selected",
+                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
+                      wraplength=450)  # Wrap text within 450 pixels
+stats_label.pack(pady=10, fill="x")
+
+# Admin Tab Content (for admins only)
+if getpass.getuser() in admin_users:
+    tk.Label(admin_frame, text="Admin Panel", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+    ttk.Button(admin_frame, text="Admin Action", command=admin_button_action, style="TButton").pack(pady=5)
+
+root.mainloop()

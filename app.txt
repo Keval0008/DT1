@@ -4,7 +4,8 @@ import os
 import pandas as pd
 import getpass
 from datetime import datetime
-import math
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 # Get current user ID
 keyword = getpass.getuser()
@@ -37,12 +38,33 @@ def save_files():
     
     try:
         for file in file_list:
-            # Read the Excel file
-            df = pd.read_excel(file)
+            # Read Excel file with multi-level header (rows 1, 2, 3)
+            df = pd.read_excel(file, header=[0, 1, 2])
             
-            # Add new columns
-            df['Submitted by'] = keyword
-            df['Submitted time'] = timestamp
+            # Dynamically identify column ranges
+            col_letters = [get_column_letter(i + 1) for i in range(len(df.columns))]
+            cm_index = col_letters.index("CM") if "CM" in col_letters else 91  # CM is 92nd column (1-based)
+            cn_index = col_letters.index("CN") if "CN" in col_letters else 92
+            cs_index = col_letters.index("CS") if "CS" in col_letters else 97
+            
+            # Get column names for CN to CS
+            cols_cn_to_cs = df.columns[cn_index:cs_index + 1]
+            
+            # Drop rows where all CN to CS columns are null
+            df = df[~df[cols_cn_to_cs].isna().all(axis=1)]
+            
+            # Add new columns: Submitted by and Submitted time
+            new_cols = pd.MultiIndex.from_tuples([
+                ("", "", "Submitted by"),
+                ("", "", "Submitted time")
+            ])
+            new_data = pd.DataFrame({
+                ("", "", "Submitted by"): [keyword] * len(df),
+                ("", "", "Submitted time"): [timestamp] * len(df)
+            }, index=df.index)
+            
+            # Concatenate new columns to DataFrame
+            df = pd.concat([df, new_data], axis=1)
             
             # Get file name and create new name with suffix
             base_name = os.path.basename(file)
@@ -50,8 +72,27 @@ def save_files():
             new_name = f"{name}_{keyword}_{timestamp}{ext}"
             dest_path = os.path.join(folder_path.get(), new_name)
             
-            # Save modified Excel file
-            df.to_excel(dest_path, index=False)
+            # Save Excel file with preserved header format
+            with pd.ExcelWriter(dest_path, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, header=True)
+                
+                # Load workbook to adjust headers
+                workbook = writer.book
+                worksheet = workbook.active
+                
+                # Adjust headers for columns up to CM (single-level in row 3)
+                for col_idx in range(1, cm_index + 2):
+                    for row in range(1, 3):  # Clear rows 1 and 2
+                        worksheet.cell(row=row, column=col_idx).value = None
+                    if col_idx <= len(df.columns):
+                        worksheet.cell(row=3, column=col_idx).value = df.columns[col_idx - 1][2]
+                
+                # Preserve multi-level headers for CN to CS and new columns
+                for col_idx in range(cm_index + 2, len(df.columns) + 1):
+                    col = df.columns[col_idx - 1]
+                    worksheet.cell(row=1, column=col_idx).value = col[0] or ""
+                    worksheet.cell(row=2, column=col_idx).value = col[1] or ""
+                    worksheet.cell(row=3, column=col_idx).value = col[2] or ""
             
         update_status(f"Success: {len(file_list)} files saved!", "green")
     except Exception as e:
@@ -63,23 +104,6 @@ def update_stats():
     stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
     stats_label.config(text=stats_text)
 
-    # Calculate dynamic height based on wrapped text
-    base_height = 350  # Minimum height for fixed elements
-    wraplength = 450  # Matches wraplength of stats_label
-    font_height = 20  # Approximate height per line (Helvetica 10 bold)
-    
-    # Estimate lines for folder path
-    folder_text = folder_path.get() or "Not selected"
-    chars_per_line = wraplength // 7  # Approximate chars per line (7 pixels per char)
-    folder_lines = max(1, math.ceil(len("Destination Folder: " + folder_text) / chars_per_line))
-    
-    # Calculate total height: base + extra for wrapped lines
-    extra_lines = max(0, folder_lines - 2)  # Assume 2 lines fit in base height
-    total_height = base_height + extra_lines * font_height
-    
-    # Update window geometry (keep width fixed at 500)
-    root.geometry(f"500x{int(total_height)}")
-
 def update_status(message, color):
     status_label.config(text=message, fg=color)
 
@@ -90,7 +114,7 @@ def admin_button_action():
 # Tkinter UI Setup
 root = tk.Tk()
 root.title("File Rename & Save")
-root.geometry("500x350")  # Initial size
+root.geometry("500x395")  # Fixed size
 root.configure(bg="#f5f5f5")
 root.resizable(False, False)
 
@@ -101,7 +125,7 @@ folder_path = tk.StringVar()
 # Fonts and Styles
 label_font = ("Helvetica", 10)
 button_font = ("Helvetica", 10, "bold")
-stats_font = ("Helvetica", 10, "bold")  # Bold for stats
+stats_font = ("Helvetica", 10, "bold")
 
 # ttk Style for rounded buttons
 style = ttk.Style()
@@ -129,7 +153,7 @@ if getpass.getuser() in admin_users:
     admin_frame = tk.Frame(notebook, bg="#f5f5f5")
     notebook.add(admin_frame, text="Admin")
 else:
-    notebook.tab(0, state="normal")  # Ensure User tab is accessible
+    notebook.tab(0, state="normal")
 
 # User Tab Content
 tk.Label(user_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
@@ -143,7 +167,7 @@ stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: 
                       wraplength=450)
 stats_label.pack(pady=10, fill="x")
 
-# Admin Tab Content (for admins only)
+# Admin Tab Content
 if getpass.getuser() in admin_users:
     tk.Label(admin_frame, text="Admin Panel", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
     ttk.Button(admin_frame, text="Admin Action", command=admin_button_action, style="TButton").pack(pady=5)

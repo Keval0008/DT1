@@ -1,35 +1,63 @@
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, Border, Side
 
-# Load your workbook and select the active sheet (you can change this)
-wb = load_workbook('your_file.xlsx')
-ws = wb.active
+def merge_and_format_rows(filename, row_nums, output_file):
+    wb = load_workbook(filename)
+    ws = wb.active
 
-# Set the row you want to check
-row_num = 1
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
 
-# Get max column count for row 1
-max_col = ws.max_column
+    max_col = ws.max_column
 
-# Initialize variables
-start_col = 1
-prev_value = ws.cell(row=row_num, column=1).value
+    for row_num in row_nums:
+        start_col = None
+        prev_value = None
 
-for col in range(2, max_col + 2):  # +2 to handle the last merge
-    curr_value = ws.cell(row=row_num, column=col).value if col <= max_col else None
-    
-    # Compare current and previous value
-    if curr_value != prev_value:
-        if prev_value is not None:
-            # Merge from start_col to col-1
-            if start_col != col - 1:
-                start_letter = get_column_letter(start_col)
-                end_letter = get_column_letter(col - 1)
-                merge_range = f"{start_letter}{row_num}:{end_letter}{row_num}"
-                ws.merge_cells(merge_range)
-        # Update pointers
-        start_col = col
-        prev_value = curr_value
+        for col in range(1, max_col + 2):  # +2 to ensure we catch the last group
+            curr_cell = ws.cell(row=row_num, column=col)
+            curr_value = curr_cell.value if col <= max_col else None
 
-# Save the updated file
-wb.save('your_file_merged.xlsx')
+            if prev_value is None and isinstance(curr_value, str):
+                # Start of new sequence
+                prev_value = curr_value
+                start_col = col
+
+            elif prev_value is not None and curr_value != prev_value:
+                if start_col is not None and col - start_col > 1:
+                    # Merge range
+                    start_letter = get_column_letter(start_col)
+                    end_letter = get_column_letter(col - 1)
+                    ws.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
+                # Format the (merged) cell
+                target_cell = ws.cell(row=row_num, column=start_col)
+                target_cell.font = Font(bold=True)
+                target_cell.alignment = Alignment(horizontal='center', vertical='center')
+                for c in range(start_col, col):
+                    ws.cell(row=row_num, column=c).border = thin_border
+                # Reset
+                prev_value = curr_value
+                start_col = col if isinstance(curr_value, str) else None
+
+    # Autofit column widths
+    for col in ws.columns:
+        max_length = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+        adjusted_width = (max_length + 2)
+        ws.column_dimensions[col_letter].width = adjusted_width
+
+    wb.save(output_file)
+
+# Example usage
+merge_and_format_rows('your_file.xlsx', [1, 2, 3], 'your_file_merged.xlsx')

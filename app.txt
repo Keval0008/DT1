@@ -4,6 +4,7 @@ import os
 import pandas as pd
 import getpass
 from datetime import datetime
+import math
 
 # Get current user ID
 keyword = getpass.getuser()
@@ -21,7 +22,7 @@ def select_folder():
     folder = filedialog.askdirectory(title="Select Destination Folder")
     if folder:
         folder_path.set(folder)
-        update_stats()
+    update_stats()
 
 def save_files():
     if not file_list:
@@ -62,6 +63,23 @@ def update_stats():
     stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
     stats_label.config(text=stats_text)
 
+    # Calculate dynamic height based on wrapped text
+    base_height = 350  # Minimum height for fixed elements
+    wraplength = 450  # Matches wraplength of stats_label
+    font_height = 20  # Approximate height per line (Helvetica 10 bold)
+    
+    # Estimate lines for folder path
+    folder_text = folder_path.get() or "Not selected"
+    chars_per_line = wraplength // 7  # Approximate chars per line (7 pixels per char)
+    folder_lines = max(1, math.ceil(len("Destination Folder: " + folder_text) / chars_per_line))
+    
+    # Calculate total height: base + extra for wrapped lines
+    extra_lines = max(0, folder_lines - 2)  # Assume 2 lines fit in base height
+    total_height = base_height + extra_lines * font_height
+    
+    # Update window geometry (keep width fixed at 500)
+    root.geometry(f"500x{int(total_height)}")
+
 def update_status(message, color):
     status_label.config(text=message, fg=color)
 
@@ -72,7 +90,7 @@ def admin_button_action():
 # Tkinter UI Setup
 root = tk.Tk()
 root.title("File Rename & Save")
-root.geometry("500x350")
+root.geometry("500x350")  # Initial size
 root.configure(bg="#f5f5f5")
 root.resizable(False, False)
 
@@ -122,7 +140,7 @@ status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5",
 status_label.pack(pady=5)
 stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: Not selected",
                       font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
-                      wraplength=450)  # Wrap text within 450 pixels
+                      wraplength=450)
 stats_label.pack(pady=10, fill="x")
 
 # Admin Tab Content (for admins only)

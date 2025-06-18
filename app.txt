@@ -1,185 +1,35 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import os
-import pandas as pd
-import getpass
-from datetime import datetime
-from openpyxl import Workbook
+from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-# Get current user ID
-keyword = getpass.getuser()
+# Load your workbook and select the active sheet (you can change this)
+wb = load_workbook('your_file.xlsx')
+ws = wb.active
 
-# List of admin user IDs (modify as needed)
-admin_users = ["admin1", "admin2", "superuser"]  # Example user IDs
+# Set the row you want to check
+row_num = 1
 
-def select_files():
-    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
-    file_list.clear()
-    file_list.extend(list(files))
-    update_stats()
+# Get max column count for row 1
+max_col = ws.max_column
 
-def select_folder():
-    folder = filedialog.askdirectory(title="Select Destination Folder")
-    if folder:
-        folder_path.set(folder)
-    update_stats()
+# Initialize variables
+start_col = 1
+prev_value = ws.cell(row=row_num, column=1).value
 
-def save_files():
-    if not file_list:
-        update_status("Error: No files selected", "red")
-        return
-    if not folder_path.get():
-        update_status("Error: No folder selected", "red")
-        return
-
-    # Get current timestamp in DDMMYYYY_HHMMSS format
-    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+for col in range(2, max_col + 2):  # +2 to handle the last merge
+    curr_value = ws.cell(row=row_num, column=col).value if col <= max_col else None
     
-    try:
-        for file in file_list:
-            # Read Excel file with multi-level header (rows 1, 2, 3)
-            df = pd.read_excel(file, header=[0, 1, 2])
-            
-            # Drop columns that are entirely null
-            df = df.dropna(axis=1, how='all')
-            
-            # Dynamically identify column ranges
-            col_letters = [get_column_letter(i + 1) for i in range(len(df.columns))]
-            cm_index = col_letters.index("CM") if "CM" in col_letters else 91
-            cn_index = col_letters.index("CN") if "CN" in col_letters else 92
-            cs_index = col_letters.index("CS") if "CS" in col_letters else 97
-            
-            # Adjust indices if columns were dropped
-            cm_index = min(cm_index, len(df.columns) - 1)
-            cn_index = min(cn_index, len(df.columns) - 1)
-            cs_index = min(cs_index, len(df.columns) - 1)
-            
-            # Get column names for CN to CS (if they exist)
-            cols_cn_to_cs = df.columns[cn_index:cs_index + 1] if cn_index <= cs_index else []
-            
-            # Drop rows where all CN to CS columns are null (if applicable)
-            if cols_cn_to_cs:
-                df = df[~df[cols_cn_to_cs].isna().all(axis=1)]
-            
-            # Add new columns: Submitted by and Submitted time
-            new_cols = pd.MultiIndex.from_tuples([
-                ("", "", "Submitted by"),
-                ("", "", "Submitted time")
-            ])
-            new_data = pd.DataFrame({
-                ("", "", "Submitted by"): [keyword] * len(df),
-                ("", "", "Submitted time"): [timestamp] * len(df)
-            }, index=df.index)
-            
-            # Concatenate new columns to DataFrame
-            df = pd.concat([df, new_data], axis=1)
-            
-            # Get file name and create new name with suffix
-            base_name = os.path.basename(file)
-            name, ext = os.path.splitext(base_name)
-            new_name = f"{name}_{keyword}_{timestamp}{ext}"
-            dest_path = os.path.join(folder_path.get(), new_name)
-            
-            # Save Excel file with preserved header format
-            workbook = Workbook()
-            worksheet = workbook.active
-            
-            # Write headers
-            for col_idx, col in enumerate(df.columns, 1):
-                if col_idx <= cm_index + 1:
-                    # Columns up to CM: Single-level header in row 3
-                    worksheet.cell(row=3, column=col_idx).value = col[2]
-                else:
-                    # Columns CN to CS and new columns: Multi-level headers
-                    worksheet.cell(row=1, column=col_idx).value = col[0] or ""
-                    worksheet.cell(row=2, column=col_idx).value = col[1] or ""
-                    worksheet.cell(row=3, column=col_idx).value = col[2] or ""
-            
-            # Write data (starting from row 4)
-            for row_idx, row_data in enumerate(df.values, 4):
-                for col_idx, value in enumerate(row_data, 1):
-                    worksheet.cell(row=row_idx, column=col_idx).value = value
-            
-            # Save workbook
-            workbook.save(dest_path)
-            
-        update_status(f"Success: {len(file_list)} files saved!", "green")
-    except Exception as e:
-        update_status(f"Error: {str(e)}", "red")
-    update_stats()
+    # Compare current and previous value
+    if curr_value != prev_value:
+        if prev_value is not None:
+            # Merge from start_col to col-1
+            if start_col != col - 1:
+                start_letter = get_column_letter(start_col)
+                end_letter = get_column_letter(col - 1)
+                merge_range = f"{start_letter}{row_num}:{end_letter}{row_num}"
+                ws.merge_cells(merge_range)
+        # Update pointers
+        start_col = col
+        prev_value = curr_value
 
-def update_stats():
-    # Update file count and folder in bold
-    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
-    stats_label.config(text=stats_text)
-
-def update_status(message, color):
-    status_label.config(text=message, fg=color)
-
-def admin_button_action():
-    # Placeholder for admin functionality
-    messagebox.showinfo("Admin", "Admin button clicked (no action yet).")
-
-# Tkinter UI Setup
-root = tk.Tk()
-root.title("File Rename & Save")
-root.geometry("500x395")  # Fixed size
-root.configure(bg="#f5f5f5")
-root.resizable(False, False)
-
-# Variables
-file_list = []
-folder_path = tk.StringVar()
-
-# Fonts and Styles
-label_font = ("Helvetica", 10)
-button_font = ("Helvetica", 10, "bold")
-stats_font = ("Helvetica", 10, "bold")
-
-# ttk Style for rounded buttons
-style = ttk.Style()
-style.theme_use("clam")
-style.configure("TButton",
-                padding=6,
-                relief="raised",
-                background="#4a90e2",
-                foreground="white",
-                borderwidth=2,
-                borderradius=10)
-style.map("TButton",
-          background=[("active", "#357ABD")])
-
-# Notebook for tabs
-notebook = ttk.Notebook(root)
-notebook.pack(padx=20, pady=20, fill="both", expand=True)
-
-# User Tab
-user_frame = tk.Frame(notebook, bg="#f5f5f5")
-notebook.add(user_frame, text="User")
-
-# Admin Tab (only visible to admin users)
-if getpass.getuser() in admin_users:
-    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
-    notebook.add(admin_frame, text="Admin")
-else:
-    notebook.tab(0, state="normal")
-
-# User Tab Content
-tk.Label(user_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
-ttk.Button(user_frame, text="Select Excel Files", command=select_files, style="TButton").pack(pady=5)
-ttk.Button(user_frame, text="Select Folder", command=select_folder, style="TButton").pack(pady=5)
-ttk.Button(user_frame, text="Save Files", command=save_files, style="TButton").pack(pady=15)
-status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
-status_label.pack(pady=5)
-stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: Not selected",
-                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
-                      wraplength=450)
-stats_label.pack(pady=10, fill="x")
-
-# Admin Tab Content
-if getpass.getuser() in admin_users:
-    tk.Label(admin_frame, text="Admin Panel", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
-    ttk.Button(admin_frame, text="Admin Action", command=admin_button_action, style="TButton").pack(pady=5)
-
-root.mainloop()
+# Save the updated file
+wb.save('your_file_merged.xlsx')

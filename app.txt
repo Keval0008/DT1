@@ -41,17 +41,26 @@ def save_files():
             # Read Excel file with multi-level header (rows 1, 2, 3)
             df = pd.read_excel(file, header=[0, 1, 2])
             
+            # Drop columns that are entirely null
+            df = df.dropna(axis=1, how='all')
+            
             # Dynamically identify column ranges
             col_letters = [get_column_letter(i + 1) for i in range(len(df.columns))]
             cm_index = col_letters.index("CM") if "CM" in col_letters else 91
             cn_index = col_letters.index("CN") if "CN" in col_letters else 92
             cs_index = col_letters.index("CS") if "CS" in col_letters else 97
             
-            # Get column names for CN to CS
-            cols_cn_to_cs = df.columns[cn_index:cs_index + 1]
+            # Adjust indices if columns were dropped
+            cm_index = min(cm_index, len(df.columns) - 1)
+            cn_index = min(cn_index, len(df.columns) - 1)
+            cs_index = min(cs_index, len(df.columns) - 1)
             
-            # Drop rows where all CN to CS columns are null
-            df = df[~df[cols_cn_to_cs].isna().all(axis=1)]
+            # Get column names for CN to CS (if they exist)
+            cols_cn_to_cs = df.columns[cn_index:cs_index + 1] if cn_index <= cs_index else []
+            
+            # Drop rows where all CN to CS columns are null (if applicable)
+            if cols_cn_to_cs:
+                df = df[~df[cols_cn_to_cs].isna().all(axis=1)]
             
             # Add new columns: Submitted by and Submitted time
             new_cols = pd.MultiIndex.from_tuples([

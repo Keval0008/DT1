@@ -1,63 +1,68 @@
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, Border, Side
+import pandas as pd
+import numpy as np
+from datetime import datetime
 
-def merge_and_format_rows(filename, row_nums, output_file):
-    wb = load_workbook(filename)
-    ws = wb.active
+# Create a sample DataFrame with 3-level columns
+columns = pd.MultiIndex.from_tuples([
+    ('Category1', 'SubCat1', 'Value1'),
+    ('Category1', 'SubCat1', 'Value2'),
+    ('Category1', 'SubCat2', 'Value1'),
+    ('Category2', 'SubCat1', 'Value1'),
+    ('Category2', 'SubCat2', 'Value1'),
+    ('Category3', 'SubCat1', 'Value1'),
+    ('Category3', 'SubCat2', 'Value1'),
+    ('Category3', 'SubCat3', 'Value1'),
+    ('Metadata', 'Submitter', 'ID'),
+    ('Metadata', 'Submission', 'Time')
+])
 
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
+data = [
+    [1, 2, 3, 4, 5, 6, 7, 8, 'user1', datetime(2023,1,1)],
+    [1, 2, 3, 4, 5, 6, 7, 8, 'user1', datetime(2023,1,2)],  # Same user duplicate
+    [9, 8, 7, 6, 5, 4, 3, 2, 'user2', datetime(2023,1,3)],
+    [1, 2, 3, 4, 5, 6, 7, 8, 'user3', datetime(2023,1,4)],  # Different user duplicate
+    [9, 8, 7, 6, 5, 4, 3, 2, 'user2', datetime(2023,1,5)],  # Same user duplicate
+    [5, 5, 5, 5, 5, 5, 5, 5, 'user4', datetime(2023,1,6)],  # Unique
+    [1, 1, 1, 1, 1, 1, 1, 1, 'user5', datetime(2023,1,7)],  # Unique
+    [1, 1, 1, 1, 1, 1, 1, 1, 'user5', datetime(2023,1,8)]   # Same user duplicate
+]
 
-    max_col = ws.max_column
+df = pd.DataFrame(data, columns=columns)
 
-    for row_num in row_nums:
-        start_col = None
-        prev_value = None
 
-        for col in range(1, max_col + 2):  # +2 to ensure we catch the last group
-            curr_cell = ws.cell(row=row_num, column=col)
-            curr_value = curr_cell.value if col <= max_col else None
+# Define which columns are data columns (first 8) and metadata columns
+data_cols = df.columns[:8]
+meta_cols = df.columns[8:]
 
-            if prev_value is None and isinstance(curr_value, str):
-                # Start of new sequence
-                prev_value = curr_value
-                start_col = col
+# Group by the data columns
+grouped = df.groupby(data_cols)
 
-            elif prev_value is not None and curr_value != prev_value:
-                if start_col is not None and col - start_col > 1:
-                    # Merge range
-                    start_letter = get_column_letter(start_col)
-                    end_letter = get_column_letter(col - 1)
-                    ws.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
-                # Format the (merged) cell
-                target_cell = ws.cell(row=row_num, column=start_col)
-                target_cell.font = Font(bold=True)
-                target_cell.alignment = Alignment(horizontal='center', vertical='center')
-                for c in range(start_col, col):
-                    ws.cell(row=row_num, column=c).border = thin_border
-                # Reset
-                prev_value = curr_value
-                start_col = col if isinstance(curr_value, str) else None
+# Function to categorize each group
+def categorize_group(group):
+    submitters = group[('Metadata', 'Submitter', 'ID')].nunique()
+    submissions = len(group)
+    
+    if submissions == 1:
+        return 'single_submission'
+    elif submissions > 1 and submitters == 1:
+        return 'multiple_same_submitter'
+    else:
+        return 'multiple_different_submitters'
 
-    # Autofit column widths
-    for col in ws.columns:
-        max_length = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            try:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
-            except:
-                pass
-        adjusted_width = (max_length + 2)
-        ws.column_dimensions[col_letter].width = adjusted_width
+# Categorize each row
+df['category'] = grouped.transform(categorize_group)[('Metadata', 'Submitter', 'ID')]
 
-    wb.save(output_file)
+# Split into separate DataFrames
+single_df = df[df['category'] == 'single_submission'].drop(columns='category')
+same_user_df = df[df['category'] == 'multiple_same_submitter'].drop(columns='category')
+diff_users_df = df[df['category'] == 'multiple_different_submitters'].drop(columns='category')
 
-# Example usage
-merge_and_format_rows('your_file.xlsx', [1, 2, 3], 'your_file_merged.xlsx')
+# Display results
+print("\nSingle submissions:")
+print(single_df)
+
+print("\nMultiple submissions by same user:")
+print(same_user_df)
+
+print("\nMultiple submissions by different users:")
+print(diff_users_df)

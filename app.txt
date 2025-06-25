@@ -1,68 +1,308 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import os
 import pandas as pd
-import numpy as np
+import getpass
 from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 
-# Create a sample DataFrame with 3-level columns
-columns = pd.MultiIndex.from_tuples([
-    ('Category1', 'SubCat1', 'Value1'),
-    ('Category1', 'SubCat1', 'Value2'),
-    ('Category1', 'SubCat2', 'Value1'),
-    ('Category2', 'SubCat1', 'Value1'),
-    ('Category2', 'SubCat2', 'Value1'),
-    ('Category3', 'SubCat1', 'Value1'),
-    ('Category3', 'SubCat2', 'Value1'),
-    ('Category3', 'SubCat3', 'Value1'),
-    ('Metadata', 'Submitter', 'ID'),
-    ('Metadata', 'Submission', 'Time')
-])
+# Get current user ID
+keyword = getpass.getuser()
 
-data = [
-    [1, 2, 3, 4, 5, 6, 7, 8, 'user1', datetime(2023,1,1)],
-    [1, 2, 3, 4, 5, 6, 7, 8, 'user1', datetime(2023,1,2)],  # Same user duplicate
-    [9, 8, 7, 6, 5, 4, 3, 2, 'user2', datetime(2023,1,3)],
-    [1, 2, 3, 4, 5, 6, 7, 8, 'user3', datetime(2023,1,4)],  # Different user duplicate
-    [9, 8, 7, 6, 5, 4, 3, 2, 'user2', datetime(2023,1,5)],  # Same user duplicate
-    [5, 5, 5, 5, 5, 5, 5, 5, 'user4', datetime(2023,1,6)],  # Unique
-    [1, 1, 1, 1, 1, 1, 1, 1, 'user5', datetime(2023,1,7)],  # Unique
-    [1, 1, 1, 1, 1, 1, 1, 1, 'user5', datetime(2023,1,8)]   # Same user duplicate
-]
+# List of admin user IDs (modify as needed)
+admin_users = ["admin1", "admin2", "superuser"]  # Example user IDs
 
-df = pd.DataFrame(data, columns=columns)
+# Columns to group by for conflict detection (modify as needed)
+group_columns = ["ColA", "ColB"]  # Example columns; adjust based on your data
 
+def select_files():
+    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
+    file_list.clear()
+    file_list.extend(list(files))
+    update_stats()
 
-# Define which columns are data columns (first 8) and metadata columns
-data_cols = df.columns[:8]
-meta_cols = df.columns[8:]
+def select_folder():
+    folder = filedialog.askdirectory(title="Select Destination Folder")
+    if folder:
+        folder_path.set(folder)
+    update_stats()
 
-# Group by the data columns
-grouped = df.groupby(data_cols)
+def save_files():
+    if not file_list:
+        update_status("Error: No files selected", "red")
+        return
+    if not folder_path.get():
+        update_status("Error: No folder selected", "red")
+        return
 
-# Function to categorize each group
-def categorize_group(group):
-    submitters = group[('Metadata', 'Submitter', 'ID')].nunique()
-    submissions = len(group)
+    timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
     
-    if submissions == 1:
-        return 'single_submission'
-    elif submissions > 1 and submitters == 1:
-        return 'multiple_same_submitter'
-    else:
-        return 'multiple_different_submitters'
+    try:
+        for file in file_list:
+            df = pd.read_excel(file, header=[0, 1, 2])
+            df = df.dropna(axis=1, how='all')
+            
+            col_letters = [get_column_letter(i + 1) for i in range(len(df.columns))]
+            cm_index = col_letters.index("CM") if "CM" in col_letters else 91
+            cn_index = col_letters.index("CN") if "CN" in col_letters else 92
+            cs_index = col_letters.index("CS") if "CS" in col_letters else 97
+            
+            cm_index = min(cm_index, len(df.columns) - 1)
+            cn_index = min(cn_index, len(df.columns) - 1)
+            cs_index = min(cs_index, len(df.columns) - 1)
+            
+            cols_cn_to_cs = df.columns[cn_index:cs_index + 1] if cn_index <= cs_index else []
+            if cols_cn_to_cs:
+                df = df[~df[cols_cn_to_cs].isna().all(axis=1)]
+            
+            new_cols = pd.MultiIndex.from_tuples([
+                ("", "", "Submitted by"),
+                ("", "", "Submitted time")
+            ])
+            new_data = pd.DataFrame({
+                ("", "", "Submitted by"): [keyword] * len(df),
+                ("", "", "Submitted time"): [timestamp] * len(df)
+            }, index=df.index)
+            
+            df = pd.concat([df, new_data], axis=1)
+            
+            base_name = os.path.basename(file)
+            name, ext = os.path.splitext(base_name)
+            new_name = f"{name}_{keyword}_{timestamp}{ext}"
+            dest_path = os.path.join(folder_path.get(), new_name)
+            
+            workbook = Workbook()
+            worksheet = workbook.active
+            
+            for col_idx, col in enumerate(df.columns, 1):
+                if col_idx <= cm_index + 1:
+                    worksheet.cell(row=3, column=col_idx).value = col[2]
+                else:
+                    worksheet.cell(row=1, column=col_idx).value = col[0] or ""
+                    worksheet.cell(row=2, column=col_idx).value = col[1] or ""
+                    worksheet.cell(row=3, column=col_idx).value = col[2] or ""
+            
+            for row_idx, row_data in enumerate(df.values, 4):
+                for col_idx, value in enumerate(row_data, 1):
+                    worksheet.cell(row=row_idx, column=col_idx).value = value
+            
+            workbook.save(dest_path)
+            
+        update_status(f"Success: {len(file_list)} files saved!", "green")
+    except Exception as e:
+        update_status(f"Error: {str(e)}", "red")
+    update_stats()
 
-# Categorize each row
-df['category'] = grouped.transform(categorize_group)[('Metadata', 'Submitter', 'ID')]
+def select_admin_folder():
+    folder = filedialog.askdirectory(title="Select Input Folder")
+    if folder:
+        admin_folder_path.set(folder)
+        admin_status_label.config(text=f"Folder selected: {folder}", fg="#333333")
 
-# Split into separate DataFrames
-single_df = df[df['category'] == 'single_submission'].drop(columns='category')
-same_user_df = df[df['category'] == 'multiple_same_submitter'].drop(columns='category')
-diff_users_df = df[df['category'] == 'multiple_different_submitters'].drop(columns='category')
+def process_admin_files():
+    if not admin_folder_path.get():
+        admin_status_label.config(text="Error: No folder selected", fg="red")
+        return
 
-# Display results
-print("\nSingle submissions:")
-print(single_df)
+    try:
+        # Collect all .xlsx files recursively
+        xlsx_files = []
+        for root, _, files in os.walk(admin_folder_path.get()):
+            for file in files:
+                if file.endswith(".xlsx"):
+                    xlsx_files.append(os.path.join(root, file))
+        
+        if not xlsx_files:
+            admin_status_label.config(text="Error: No .xlsx files found", fg="red")
+            return
+        
+        # Read all files and check column structure
+        dfs = []
+        first_columns = None
+        for file in xlsx_files:
+            df = pd.read_excel(file, header=[0, 1, 2])
+            if first_columns is None:
+                first_columns = df.columns
+            elif not df.columns.equals(first_columns):
+                admin_status_label.config(text=f"Error: Inconsistent column structure in {file}", fg="red")
+                continue
+            # Flatten MultiIndex columns to single level
+            df.columns = ['_'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
+            dfs.append(df)
+        
+        # Concatenate all DataFrames
+        master_df = pd.concat(dfs, ignore_index=True)
+        
+        # Verify USERID column exists
+        userid_col = "Submitted by"  # Flattened name of ("", "", "Submitted by")
+        if userid_col not in master_df.columns:
+            admin_status_label.config(text="Error: USERID column not found", fg="red")
+            return
+        
+        # Store original flattened column order
+        original_flat_cols = master_df.columns.tolist()
+        
+        # Remove columns with all null values
+        non_null_cols = master_df.columns[~master_df.isna().all()]
+        master_df = master_df[non_null_cols]
+        
+        # Group by specified columns
+        group_counts = master_df.groupby(group_columns).size().reset_index(name="count")
+        
+        # Separate single records and conflicts
+        single_groups = group_counts[group_counts["count"] == 1][group_columns]
+        conflict_groups = group_counts[group_counts["count"] > 1][group_columns]
+        
+        # Initialize output DataFrames with all original flattened columns
+        output_df = pd.DataFrame(columns=original_flat_cols)
+        same_user_conflict_df = pd.DataFrame(columns=original_flat_cols)
+        different_user_conflict_df = pd.DataFrame(columns=original_flat_cols)
+        
+        # Process single-record groups
+        if not single_groups.empty:
+            output_df = master_df.merge(single_groups, on=group_columns, how="inner")
+            # Reindex to include all original columns, filling missing ones with NaN
+            output_df = output_df.reindex(columns=original_flat_cols)
+        
+        # Process conflict groups
+        if not conflict_groups.empty:
+            conflict_rows = master_df.merge(conflict_groups, on=group_columns, how="inner")
+            for _, group in conflict_rows.groupby(group_columns):
+                userids = group[userid_col].unique()
+                if len(userids) == 1:  # Only one unique user, even with duplicates
+                    group = group.reindex(columns=original_flat_cols)
+                    same_user_conflict_df = pd.concat([same_user_conflict_df, group], ignore_index=True)
+                else:  # Multiple unique users
+                    group = group.reindex(columns=original_flat_cols)
+                    different_user_conflict_df = pd.concat([different_user_conflict_df, group], ignore_index=True)
+        
+        # Restore three-level MultiIndex for output
+        def unflatten_columns(df, original_columns):
+            # Create a mapping from flattened to original MultiIndex
+            flat_cols = ['_'.join([str(c) for c in col if c]).strip('_') for col in original_columns]
+            col_map = dict(zip(flat_cols, original_columns))
+            # Rename columns to tuples, handling any missing columns
+            df.columns = [col_map.get(col, ('', '', col)) for col in df.columns]
+            # Convert to MultiIndex
+            df.columns = pd.MultiIndex.from_tuples(df.columns)
+            # Reindex to ensure all original columns are present in order
+            df = df.reindex(columns=original_columns)
+            return df
+        
+        output_df = unflatten_columns(output_df, first_columns)
+        same_user_conflict_df = unflatten_columns(same_user_conflict_df, first_columns)
+        different_user_conflict_df = unflatten_columns(different_user_conflict_df, first_columns)
+        
+        # Save output Excel with three sheets
+        timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+        output_file = os.path.join(admin_folder_path.get(), f"Master_Output_{timestamp}.xlsx")
+        
+        workbook = Workbook()
+        workbook.remove(workbook.active)  # Remove default sheet
+        
+        # Write sheets
+        sheets = [
+            ("Output", output_df),
+            ("Same User Conflict", same_user_conflict_df),
+            ("Different User Conflict", different_user_conflict_df)
+        ]
+        
+        col_letters = [get_column_letter(i + 1) for i in range(len(first_columns))]
+        cm_index = col_letters.index("CM") if "CM" in col_letters else 91
+        
+        for sheet_name, df in sheets:
+            worksheet = workbook.create_sheet(sheet_name)
+            # Write headers
+            for col_idx, col in enumerate(df.columns, 1):
+                if col_idx <= cm_index + 1:
+                    worksheet.cell(row=3, column=col_idx).value = col[2]
+                else:
+                    worksheet.cell(row=1, column=col_idx).value = col[0] or ""
+                    worksheet.cell(row=2, column=col_idx).value = col[1] or ""
+                    worksheet.cell(row=3, column=col_idx).value = col[2] or ""
+            # Write data
+            for row_idx, row_data in enumerate(df.values, 4):
+                for col_idx, value in enumerate(row_data, 1):
+                    worksheet.cell(row=row_idx, column=col_idx).value = value
+        
+        workbook.save(output_file)
+        admin_status_label.config(text=f"Success: Master file saved as {output_file}", fg="green")
+        
+    except Exception as e:
+        admin_status_label.config(text=f"Error: {str(e)}", fg="red")
 
-print("\nMultiple submissions by same user:")
-print(same_user_df)
+def update_stats():
+    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
+    stats_label.config(text=stats_text)
 
-print("\nMultiple submissions by different users:")
-print(diff_users_df)
+def update_status(message, color):
+    status_label.config(text=message, fg=color)
+
+# Tkinter UI Setup
+root = tk.Tk()
+root.title("File Rename & Save")
+root.geometry("500x395")  # Fixed size
+root.configure(bg="#f5f5f5")
+root.resizable(False, False)
+
+# Variables
+file_list = []
+folder_path = tk.StringVar()
+admin_folder_path = tk.StringVar()
+
+# Fonts and Styles
+label_font = ("Helvetica", 10)
+button_font = ("Helvetica", 10, "bold")
+stats_font = ("Helvetica", 10, "bold")
+
+# ttk Style for rounded buttons
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("TButton",
+                padding=6,
+                relief="raised",
+                background="#4a90e2",
+                foreground="white",
+                borderwidth=2,
+                borderradius=10)
+style.map("TButton",
+          background=[("active", "#357ABD")])
+
+# Notebook for tabs
+notebook = ttk.Notebook(root)
+notebook.pack(padx=20, pady=20, fill="both", expand=True)
+
+# User Tab
+user_frame = tk.Frame(notebook, bg="#f5f5f5")
+notebook.add(user_frame, text="User")
+
+# Admin Tab (only visible to admin users)
+if getpass.getuser() in admin_users:
+    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
+    notebook.add(admin_frame, text="Admin")
+else:
+    notebook.tab(0, state="normal")
+
+# User Tab Content
+tk.Label(user_frame, text="File Rename & Save", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+ttk.Button(user_frame, text="Select Excel Files", command=select_files, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Select Folder", command=select_folder, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Save Files", command=save_files, style="TButton").pack(pady=15)
+status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
+status_label.pack(pady=5)
+stats_label = tk.Label(user_frame, text="Files Selected: 0\nDestination Folder: Not selected",
+                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
+                      wraplength=450)
+stats_label.pack(pady=10, fill="x")
+
+# Admin Tab Content
+if getpass.getuser() in admin_users:
+    tk.Label(admin_frame, text="Admin Panel", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+    ttk.Button(admin_frame, text="Select Input Folder", command=select_admin_folder, style="TButton").pack(pady=5)
+    ttk.Button(admin_frame, text="Process Files", command=process_admin_files, style="TButton").pack(pady=5)
+    global admin_status_label
+    admin_status_label = tk.Label(admin_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
+    admin_status_label.pack(pady=10)
+
+root.mainloop()

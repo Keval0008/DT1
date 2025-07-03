@@ -1,173 +1,133 @@
-def save_files():
-    if not file_list:
-        update_status("Error: No files selected", "red")
-        return
-    if not folder_path.get():
-        update_status("Error: No folder selected", "red")
-        return
-
-    timestamp_for_filename = datetime.now().strftime("%d%m%Y_%H%M%S")
-    timestamp_for_excel = datetime.now().strftime("%d%m%Y|%H%M%S")
+def save_for_review():
+    """Ask for review location and save with detailed error log"""
+    review_folder = filedialog.askdirectory(
+        title="Select Review Folder Location",
+        initialdir=folder_path.get()
+    )
     
-    try:
-        validation_errors = []
+    if not review_folder:
+        update_status("Save cancelled", "orange")
+        return
+    
+    new_name = f"{name}_{keyword}_{timestamp_for_filename}_REVIEW{ext}"
+    dest_path = os.path.join(review_folder, new_name)
+    
+    # Create a workbook with formatted main sheet and simple error log
+    workbook = Workbook()
+    
+    # ===== MAIN DATA SHEET (formatted like original) =====
+    main_sheet = workbook.active
+    main_sheet.title = "Data"
+    
+    # Write headers with multi-level formatting
+    for col_idx, col in enumerate(df.columns, 1):
+        main_sheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+        main_sheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+        main_sheet.cell(row=3, column=col_idx).value = col[2]
+    
+    # Write data (starting from row 4)
+    for row_idx, row_data in enumerate(df.values, 4):
+        for col_idx, value in enumerate(row_data, 1):
+            main_sheet.cell(row=row_idx, column=col_idx).value = value
+    
+    # Apply the same formatting as merge_and_format_rows
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    
+    max_col = main_sheet.max_column
+    for row_num in [1, 2]:  # Format header rows
+        start_col = None
+        prev_value = None
         
-        for file in file_list:
-            df = pd.read_excel(file, header=[0, 1, 2])
-            
-            # First clean up the dataframe
-            drop_columns = []
-            for i in range(len(df.columns)):
-                if "Comments." in df.columns[i][2]:
-                    drop_columns.append(df.columns[i])
-                    
-            df = df.drop(columns=drop_columns)
-            
-            multi_column = []
-            for i in range(len(df.columns)):
-                if "Unnamed" in df.columns[i][0]:
-                    multi_column.append(df.columns[i])
-                    
-            if len(multi_column)>0:
-                df = df[~df[multi_column].isna().all(axis=1)]
-            
-            # Now perform validation on the cleaned dataframe
-            if user_info_df is not None:
-                for i, row in df.iterrows():
-                    for role_num in [1, 2, 3]:
-                        role_col = f"Role Holder{role_num}"
-                        ps_id = row[(role_col, "PS ID")]
-                        name = row[(role_col, "Name")]
-                        
-                        if pd.notna(ps_id):
-                            valid, grade = validate_group_grade(ps_id, role_col)
-                            if not valid:
-                                validation_errors.append({
-                                    'file': file,
-                                    'row': i+4,  # Excel row numbers (1-based + 3 header rows)
-                                    'role': role_col,
-                                    'ps_id': ps_id,
-                                    'name': name,
-                                    'grade': grade
-                                })
-            
-            # Add submission info columns
-            new_cols = pd.MultiIndex.from_tuples([
-                ("", "", "Submitted by"),
-                ("", "", "Submitted time")
-            ])
-            new_data = pd.DataFrame({
-                ("", "", "Submitted by"): [keyword] * len(df),
-                ("", "", "Submitted time"): [timestamp_for_excel] * len(df)
-            }, index=df.index)
-            
-            df = pd.concat([df, new_data], axis=1)
-            
-            base_name = os.path.basename(file)
-            name, ext = os.path.splitext(base_name)
-            
-            def proceed_with_saving():
-                """Save directly to the destination folder"""
-                new_name = f"{name}_{keyword}_{timestamp_for_filename}{ext}"
-                dest_path = os.path.join(folder_path.get(), new_name)
+        for col in range(1, max_col + 2):  # +2 to catch last group
+            curr_cell = main_sheet.cell(row=row_num, column=col)
+            curr_value = curr_cell.value if col <= max_col else None
+
+            if prev_value is None and isinstance(curr_value, str):
+                prev_value = curr_value
+                start_col = col
+            elif prev_value is not None and curr_value != prev_value:
+                if start_col is not None and col - start_col > 1:
+                    # Merge range
+                    start_letter = get_column_letter(start_col)
+                    end_letter = get_column_letter(col - 1)
+                    main_sheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
                 
-                # Add validation comments to cells if saving with errors
-                if validation_errors:
-                    # Create a comments column if it doesn't exist
-                    if ("Comments", "", "") not in df.columns:
-                        df[("Comments", "", "")] = ""
-                    
-                    for error in validation_errors:
-                        comment = f"Validation Issue: {error['role']} {error['ps_id']} has invalid grade {error['grade']}"
-                        df.at[error['row']-4, ("Comments", "", "")] = comment
+                # Format merged cell
+                target_cell = main_sheet.cell(row=row_num, column=start_col)
+                target_cell.font = Font(bold=True)
+                target_cell.alignment = Alignment(horizontal='center', vertical='center')
+                for c in range(start_col, col):
+                    main_sheet.cell(row=row_num, column=c).border = thin_border
                 
-                merge_and_format_rows(df, [1,2], dest_path, validation_errors)
-                update_status(f"Success: {len(file_list)} files saved!", "green")
-            
-            def save_for_review():
-                """Ask for review location and save with detailed error log"""
-                review_folder = filedialog.askdirectory(
-                    title="Select Review Folder Location",
-                    initialdir=folder_path.get()
-                )
-                
-                if not review_folder:
-                    update_status("Save cancelled", "orange")
-                    return
-                
-                new_name = f"{name}_{keyword}_{timestamp_for_filename}_REVIEW{ext}"
-                dest_path = os.path.join(review_folder, new_name)
-                
-                # Create a detailed error log sheet
-                if validation_errors:
-                    # Create a new sheet for error log
-                    workbook = Workbook()
-                    main_sheet = workbook.active
-                    main_sheet.title = "Data"
-                    
-                    # Write main data to first sheet
-                    for col_idx, col in enumerate(df.columns, 1):
-                        main_sheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
-                        main_sheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
-                        main_sheet.cell(row=3, column=col_idx).value = col[2]
-                    
-                    for row_idx, row_data in enumerate(df.values, 4):
-                        for col_idx, value in enumerate(row_data, 1):
-                            main_sheet.cell(row=row_idx, column=col_idx).value = value
-                    
-                    # Create error log sheet
-                    error_sheet = workbook.create_sheet("Validation Errors")
-                    error_sheet.append(["Row", "Role", "PS ID", "Name", "Current Grade", "Required Grades"])
-                    
-                    for error in validation_errors:
-                        if error['role'] == "Role Holder1":
-                            required = "06,05,04,03,02,01,MD"
-                        elif error['role'] == "Role Holder2":
-                            required = "05,04,03,02,01,MD"
-                        else:
-                            required = "04,03,02,01,MD"
-                        
-                        error_sheet.append([
-                            error['row'],
-                            error['role'],
-                            error['ps_id'],
-                            error['name'],
-                            error['grade'],
-                            required
-                        ])
-                    
-                    # Format error sheet
-                    for col in error_sheet.columns:
-                        max_length = 0
-                        col_letter = col[0].column_letter
-                        for cell in col:
-                            try:
-                                if cell.value:
-                                    max_length = max(max_length, len(str(cell.value)))
-                            except:
-                                pass
-                        adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
-                        error_sheet.column_dimensions[col_letter].width = adjusted_width
-                    
-                    # Highlight errors in main sheet
-                    for error in validation_errors:
-                        for col_idx, col in enumerate(df.columns, 1):
-                            if col[1] == error['role'] and col[2] in ["PS ID", "Name"]:
-                                main_sheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
-                    
-                    workbook.save(dest_path)
-                else:
-                    merge_and_format_rows(df, [1,2], dest_path, validation_errors)
-                
-                update_status(f"Saved for review: {len(file_list)} files to {review_folder}", "orange")
-                # Open the folder where file was saved
-                os.startfile(review_folder)
-            
-            if validation_errors:
-                show_validation_popup(validation_errors, proceed_with_saving, save_for_review)
+                prev_value = curr_value
+                start_col = col if isinstance(curr_value, str) else None
+    
+    # Highlight validation errors
+    for error in validation_errors:
+        for col_idx, col in enumerate(df.columns, 1):
+            if col[1] == error['role'] and col[2] in ["PS ID", "Name"]:
+                main_sheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
+    
+    # Autofit columns for main sheet
+    for col in main_sheet.columns:
+        max_length = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+        adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
+        main_sheet.column_dimensions[col_letter].width = adjusted_width
+    
+    # ===== ERROR LOG SHEET (simple format) =====
+    if validation_errors:
+        error_sheet = workbook.create_sheet("Validation Errors")
+        
+        # Headers
+        headers = ["Row", "Role", "PS ID", "Name", "Current Grade", "Required Grades"]
+        for col_idx, header in enumerate(headers, 1):
+            cell = error_sheet.cell(row=1, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
+        
+        # Data rows
+        for row_idx, error in enumerate(validation_errors, 2):
+            if error['role'] == "Role Holder1":
+                required = "06,05,04,03,02,01,MD"
+            elif error['role'] == "Role Holder2":
+                required = "05,04,03,02,01,MD"
             else:
-                proceed_with_saving()
-                
-    except Exception as e:
-        update_status(f"Error: {str(e)}", "red")
-    update_stats()
+                required = "04,03,02,01,MD"
+            
+            error_sheet.append([
+                error['row'],
+                error['role'],
+                error['ps_id'],
+                error['name'],
+                error['grade'],
+                required
+            ])
+        
+        # Autofit columns for error sheet
+        for col in error_sheet.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            error_sheet.column_dimensions[col_letter].width = adjusted_width
+    
+    workbook.save(dest_path)
+    update_status(f"Saved for review: {len(file_list)} files to {review_folder}", "orange")
+    os.startfile(review_folder)

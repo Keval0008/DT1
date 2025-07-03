@@ -1,179 +1,3 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-import os
-import pandas as pd
-import getpass
-from datetime import datetime
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-import copy
-import numpy as np
-
-# Get current user ID
-keyword = getpass.getuser()  
-
-# List of admin user IDs (modify as needed)
-admin_users = ["admin1", "admin2", "superuser"]  # Example user IDs
-
-# Global variables
-processed_dfs = None
-user_info_df = None
-
-# Highlight fill for validation errors
-ERROR_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-
-def load_user_info():
-    """Load the user information file from the same directory as the script"""
-    global user_info_df
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        user_info_path = os.path.join(script_dir, "user_info.xlsx")
-        if os.path.exists(user_info_path):
-            user_info_df = pd.read_excel(user_info_path)
-            return True
-        else:
-            messagebox.showwarning("Warning", "User info file not found. Validation will be skipped.")
-            return False
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to load user info file: {str(e)}")
-        return False
-
-def validate_group_grade(user_id, role_type):
-    """Validate if user's group grade matches role requirements"""
-    if user_info_df is None:
-        return True, "No validation data"  # Skip validation if no user info
-    
-    # First try User ID lookup
-    user_row = user_info_df[user_info_df['User ID'] == user_id]
-    
-    # If not found, try PERSON_ID_EXTERNAL
-    if user_row.empty:
-        user_row = user_info_df[user_info_df['PERSON_ID_EXTERNAL'] == user_id]
-    
-    if user_row.empty:
-        return False, "User not found"
-    
-    group_grade = str(user_row['Group Grade'].values[0]).strip()
-    
-    # Validation rules
-    if role_type == "Role Holder1":
-        valid = group_grade in ['06','05','04','03','02','01','MD']
-    elif role_type == "Role Holder2": 
-        valid = group_grade in ['05','04','03','02','01','MD']
-    else: # Role Holder3
-        valid = group_grade in ['04','03','02','01','MD']
-        
-    return valid, group_grade
-
-def select_files():
-    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
-    file_list.clear()
-    file_list.extend(list(files))
-    update_stats()
-
-def select_folder():
-    folder = filedialog.askdirectory(title="Select Destination Folder")
-    if folder:
-        folder_path.set(folder)
-    update_stats()
-    
-def merge_and_format_rows(df, row_nums, dest_path, validation_errors=None):
-    workbook = Workbook()
-    worksheet = workbook.active
-    
-    # Write headers
-    for col_idx, col in enumerate(df.columns, 1):
-        worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
-        worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
-        worksheet.cell(row=3, column=col_idx).value = col[2]
-        
-    # Write data (starting from row 4)
-    for row_idx, row_data in enumerate(df.values, 4):
-        for col_idx, value in enumerate(row_data, 1):
-            worksheet.cell(row=row_idx, column=col_idx).value = value
-    
-    # Highlight validation errors
-    if validation_errors:
-        for error in validation_errors:
-            role_col = error['role']
-            # Find the column indices for PS ID and Name
-            for col_idx, col in enumerate(df.columns, 1):
-                if col[1] == role_col and col[2] in ["PS ID", "Name"]:
-                    worksheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
-
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-
-    max_col = worksheet.max_column
-    for row_num in row_nums:
-        start_col = None    
-        prev_value = None
-        
-        for col in range(1, max_col + 2): # +2 to ensure we catch the last group
-            curr_cell = worksheet.cell(row=row_num, column=col)
-            curr_value = curr_cell.value if col <= max_col else None
-
-            if prev_value is None and isinstance(curr_value, str):
-                # Start of new sequence
-                prev_value = curr_value
-                start_col = col
-
-            elif prev_value is not None and curr_value != prev_value:
-                if start_col is not None and col - start_col > 1:
-                    # Merge range
-                    start_letter = get_column_letter(start_col)
-                    end_letter = get_column_letter(col - 1)
-                    worksheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
-                # Format the (merged) cell
-                target_cell = worksheet.cell(row=row_num, column=start_col)
-                target_cell.font = Font(bold=True)
-                target_cell.alignment = Alignment(horizontal='center', vertical='center')
-                for c in range(start_col, col):
-                    worksheet.cell(row=row_num, column=c).border = thin_border
-                # Reset
-                prev_value = curr_value
-                start_col = col if isinstance(curr_value, str) else None
-
-    # Autofit column widths
-    for col in worksheet.columns:
-        max_length = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            try:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
-            except:
-                pass
-        adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
-        worksheet.column_dimensions[col_letter].width = adjusted_width
-    
-    workbook.save(dest_path)
-
-def show_validation_popup(errors, proceed_callback, review_callback):
-    popup = tk.Toplevel()
-    popup.title("Validation Errors")
-    popup.grab_set()  # Make it modal
-    
-    msg = f"Found {len(errors)} validation errors:\n"
-    for error in errors[:5]: # Show first 5 errors
-        msg += f"\n- {error['role']}: {error['ps_id']} ({error['name']}) - Invalid grade: {error['grade']}"
-    
-    if len(errors) > 5:
-        msg += f"\n\n...and {len(errors)-5} more errors"
-    
-    tk.Label(popup, text=msg, justify=tk.LEFT).pack(padx=20, pady=10)
-    
-    button_frame = tk.Frame(popup)
-    button_frame.pack(pady=10)
-    
-    tk.Button(button_frame, text="Proceed Anyway", command=lambda: [proceed_callback(), popup.destroy()]).pack(side=tk.LEFT, padx=10)
-    tk.Button(button_frame, text="Save for Review", command=lambda: [review_callback(), popup.destroy()]).pack(side=tk.RIGHT, padx=10)
-
 def save_files():
     if not file_list:
         update_status("Error: No files selected", "red")
@@ -191,7 +15,23 @@ def save_files():
         for file in file_list:
             df = pd.read_excel(file, header=[0, 1, 2])
             
-            # Perform validation if user info is available
+            # First clean up the dataframe
+            drop_columns = []
+            for i in range(len(df.columns)):
+                if "Comments." in df.columns[i][2]:
+                    drop_columns.append(df.columns[i])
+                    
+            df = df.drop(columns=drop_columns)
+            
+            multi_column = []
+            for i in range(len(df.columns)):
+                if "Unnamed" in df.columns[i][0]:
+                    multi_column.append(df.columns[i])
+                    
+            if len(multi_column)>0:
+                df = df[~df[multi_column].isna().all(axis=1)]
+            
+            # Now perform validation on the cleaned dataframe
             if user_info_df is not None:
                 for i, row in df.iterrows():
                     for role_num in [1, 2, 3]:
@@ -211,22 +51,7 @@ def save_files():
                                     'grade': grade
                                 })
             
-            # Process the file (columns dropping etc.)
-            drop_columns = []
-            for i in range(len(df.columns)):
-                if "Comments." in df.columns[i][2]:
-                    drop_columns.append(df.columns[i])
-                    
-            df = df.drop(columns=drop_columns)
-            
-            multi_column = []
-            for i in range(len(df.columns)):
-                if "Unnamed" in df.columns[i][0]:
-                    multi_column.append(df.columns[i])
-                    
-            if len(multi_column)>0:
-                df = df[~df[multi_column].isna().all(axis=1)]
-            
+            # Add submission info columns
             new_cols = pd.MultiIndex.from_tuples([
                 ("", "", "Submitted by"),
                 ("", "", "Submitted time")
@@ -242,16 +67,101 @@ def save_files():
             name, ext = os.path.splitext(base_name)
             
             def proceed_with_saving():
+                """Save directly to the destination folder"""
                 new_name = f"{name}_{keyword}_{timestamp_for_filename}{ext}"
                 dest_path = os.path.join(folder_path.get(), new_name)
+                
+                # Add validation comments to cells if saving with errors
+                if validation_errors:
+                    # Create a comments column if it doesn't exist
+                    if ("Comments", "", "") not in df.columns:
+                        df[("Comments", "", "")] = ""
+                    
+                    for error in validation_errors:
+                        comment = f"Validation Issue: {error['role']} {error['ps_id']} has invalid grade {error['grade']}"
+                        df.at[error['row']-4, ("Comments", "", "")] = comment
+                
                 merge_and_format_rows(df, [1,2], dest_path, validation_errors)
                 update_status(f"Success: {len(file_list)} files saved!", "green")
             
             def save_for_review():
+                """Ask for review location and save with detailed error log"""
+                review_folder = filedialog.askdirectory(
+                    title="Select Review Folder Location",
+                    initialdir=folder_path.get()
+                )
+                
+                if not review_folder:
+                    update_status("Save cancelled", "orange")
+                    return
+                
                 new_name = f"{name}_{keyword}_{timestamp_for_filename}_REVIEW{ext}"
-                dest_path = os.path.join(folder_path.get(), new_name)
-                merge_and_format_rows(df, [1,2], dest_path, validation_errors)
-                update_status(f"Saved for review: {len(file_list)} files", "orange")
+                dest_path = os.path.join(review_folder, new_name)
+                
+                # Create a detailed error log sheet
+                if validation_errors:
+                    # Create a new sheet for error log
+                    workbook = Workbook()
+                    main_sheet = workbook.active
+                    main_sheet.title = "Data"
+                    
+                    # Write main data to first sheet
+                    for col_idx, col in enumerate(df.columns, 1):
+                        main_sheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+                        main_sheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+                        main_sheet.cell(row=3, column=col_idx).value = col[2]
+                    
+                    for row_idx, row_data in enumerate(df.values, 4):
+                        for col_idx, value in enumerate(row_data, 1):
+                            main_sheet.cell(row=row_idx, column=col_idx).value = value
+                    
+                    # Create error log sheet
+                    error_sheet = workbook.create_sheet("Validation Errors")
+                    error_sheet.append(["Row", "Role", "PS ID", "Name", "Current Grade", "Required Grades"])
+                    
+                    for error in validation_errors:
+                        if error['role'] == "Role Holder1":
+                            required = "06,05,04,03,02,01,MD"
+                        elif error['role'] == "Role Holder2":
+                            required = "05,04,03,02,01,MD"
+                        else:
+                            required = "04,03,02,01,MD"
+                        
+                        error_sheet.append([
+                            error['row'],
+                            error['role'],
+                            error['ps_id'],
+                            error['name'],
+                            error['grade'],
+                            required
+                        ])
+                    
+                    # Format error sheet
+                    for col in error_sheet.columns:
+                        max_length = 0
+                        col_letter = col[0].column_letter
+                        for cell in col:
+                            try:
+                                if cell.value:
+                                    max_length = max(max_length, len(str(cell.value)))
+                            except:
+                                pass
+                        adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
+                        error_sheet.column_dimensions[col_letter].width = adjusted_width
+                    
+                    # Highlight errors in main sheet
+                    for error in validation_errors:
+                        for col_idx, col in enumerate(df.columns, 1):
+                            if col[1] == error['role'] and col[2] in ["PS ID", "Name"]:
+                                main_sheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
+                    
+                    workbook.save(dest_path)
+                else:
+                    merge_and_format_rows(df, [1,2], dest_path, validation_errors)
+                
+                update_status(f"Saved for review: {len(file_list)} files to {review_folder}", "orange")
+                # Open the folder where file was saved
+                os.startfile(review_folder)
             
             if validation_errors:
                 show_validation_popup(validation_errors, proceed_with_saving, save_for_review)
@@ -261,369 +171,3 @@ def save_files():
     except Exception as e:
         update_status(f"Error: {str(e)}", "red")
     update_stats()
-
-def update_stats():
-    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
-    stats_label.config(text=stats_text)
-
-def update_status(message, color):
-    status_label.config(text=message, fg=color)
-
-def select_admin_folder():
-    folder = filedialog.askdirectory(title="Select Input Folder")
-    if folder:
-        admin_folder_path.set(folder)
-        admin_status_label.config(text=f"Input folder selected: {folder}", fg="#333333")
-    else:
-        admin_status_label.config(text="No input folder selected", fg="red")
-
-def select_admin_output_folder():
-    folder = filedialog.askdirectory(title="Select Output Folder")
-    if folder:
-        admin_output_folder_path.set(folder)
-        admin_status_label.config(text=f"Output folder selected: {folder}", fg="#333333")
-        if processed_dfs is not None:
-            save_button.config(state="normal")
-    else:
-        admin_status_label.config(text="No output folder selected", fg="red")
-
-def process_admin_files():
-    global processed_dfs
-    if not admin_folder_path.get():
-        admin_status_label.config(text="Error: No input folder selected", fg="red")
-        return
-
-    try:
-        # Load user info if available
-        load_user_info()
-        
-        # Collect all .xlsx files recursively
-        xlsx_files = []
-        for root, _, files in os.walk(admin_folder_path.get()):
-            for file in files:
-                if file.endswith(".xlsx"):
-                    xlsx_files.append(os.path.join(root, file))
-        
-        if not xlsx_files:
-            admin_status_label.config(text="Error: No .xlsx files found", fg="red")
-            return
-        
-        # Read all files and check column structure
-        column_mapping = {}
-        dfs = []
-        validation_failures = []
-        first_columns = None
-        
-        for file in xlsx_files:
-            df = pd.read_excel(file, header=[0, 1, 2])
-            if first_columns is None:
-                first_columns = df.columns
-                for col in df.columns:
-                    flattened_name = "|".join([str(c) for c in col if c]).strip('_')
-                    column_mapping[flattened_name] = col
-            elif not df.columns.equals(first_columns):
-                admin_status_label.config(text=f"Error: Inconsistent column structure in {file}", fg="red")
-                continue
-            
-            # Validate rows if user info is available
-            if user_info_df is not None:
-                for i, row in df.iterrows():
-                    validation_errors = []
-                    for role_num in [1, 2, 3]:
-                        role_col = f"Role Holder{role_num}"
-                        ps_id = row[(role_col, "PS ID")]
-                        
-                        if pd.notna(ps_id):
-                            valid, grade = validate_group_grade(ps_id, role_col)
-                            if not valid:
-                                validation_errors.append(f"{role_col}: Invalid grade {grade}")
-                    
-                    if validation_errors:
-                        # Add to validation fail report
-                        row_df = df.iloc[[i]].copy()
-                        row_df[("Validation", "", "Errors")] = ", ".join(validation_errors)
-                        validation_failures.append(row_df)
-            
-            # Flatten MultiIndex columns to single level
-            df.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
-            dfs.append(df)
-        
-        # Concatenate all DataFrames
-        master_df = pd.concat(dfs, ignore_index=True)
-        master_df = master_df.drop_duplicates().reset_index(drop=True)
-        
-        rename_dict = {
-            "Proposed changes|Role Holder3\nAccount Owner|Comments": "Comments",
-            "Proposed changes|Role Holder3\nAccount Owner|Submitted by": "Submitted by",
-            "Proposed changes|Role Holder3\nAccount Owner|Submitted time": "Submitted time"
-        }
-        
-        for key, value in rename_dict.items():
-            master_df = master_df.rename(columns={key:value})
-        
-        # Verify USERID column exists
-        userid_col = "Submitted by"  # Flattened name of ("", "", "Submitted by")
-        if userid_col not in master_df.columns:
-            admin_status_label.config(text="Error: USERID column not found", fg="red")
-            return
-            
-        multi_column = [col for col in master_df.columns if not col.startswith("Unnamed")]
-        
-        # Store original flattened column order
-        original_flat_cols = master_df.columns.tolist()
-        
-        # Remove columns with all null values
-        non_null_cols = master_df.columns[~master_df.isna().all()]
-        null_cols = [l for l in original_flat_cols if l not in non_null_cols]
-        master_df_non_null = master_df[non_null_cols]
-        master_df_non_null = master_df_non_null.fillna("NULL")
-        
-        data_columns = [l for l in master_df_non_null.columns if l not in multi_column]
-        info_columns = [l for l in master_df_non_null.columns if l in multi_column]
-        
-        reviewers_columns = copy.deepcopy(info_columns)
-        reviewers_columns.remove("Submitted by")
-        reviewers_columns.remove("Submitted time")
-        
-        master_df_non_null["Submitted time"] = pd.to_datetime(master_df_non_null["Submitted time"], format="%d%m%Y|%H%M%S", errors="coerce")
-        
-        # Group by specified columns
-        grouped = master_df_non_null.groupby(data_columns)
-        
-        no_conflict = pd.DataFrame(columns=master_df_non_null.columns)
-        conflict_report = pd.DataFrame(columns=master_df_non_null.columns)
-
-        for name, group in grouped:
-            if len(group) == 1:
-                no_conflict = pd.concat([no_conflict, group], ignore_index=True)
-            else:
-                reviewers_cols = group[reviewers_columns]
-                all_reviewers_same = (reviewers_cols.drop_duplicates().shape[0] == 1)
-                if all_reviewers_same:
-                    latest_row = group.loc[group['Submitted time'].idxmax()]
-                    no_conflict = pd.concat([no_conflict, latest_row.to_frame().T], ignore_index=True)
-                else:
-                    conflict_report = pd.concat([conflict_report, group], ignore_index=True)
-
-        # Create validation fail report if we found any
-        if validation_failures:
-            validation_fail_report = pd.concat(validation_failures, ignore_index=True)
-            validation_fail_report.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in validation_fail_report.columns]
-        else:
-            validation_fail_report = pd.DataFrame(columns=master_df_non_null.columns + ["Validation|Errors"])
-
-        processed_dfs = {
-            'no_conflict': no_conflict,
-            'conflict_report': conflict_report,
-            'validation_fail_report': validation_fail_report,
-            'column_mapping': column_mapping
-        }
-
-        def unflatten_columns(flat_columns, column_mapping):
-            new_columns = []
-            for col in flat_columns:
-                if col in column_mapping:
-                    new_columns.append(column_mapping[col])
-                else:
-                    # Handle special case for validation error column
-                    if col == "Validation|Errors":
-                        new_columns.append(("Validation", "", "Errors"))
-                    else:
-                        new_columns.append((col,'',''))
-            return pd.MultiIndex.from_tuples(new_columns)
-
-        def adding_null_col(df):
-            for col in null_cols:
-                if col not in df.columns:
-                    df[col] = np.nan
-            df = df[column_mapping.keys()]
-            return df
-
-        def process_final_df(df):
-            if 'Submitted time' in df.columns:
-                df['Submitted time'] = pd.to_datetime(df['Submitted time'], format="%d%m%Y|%H%M%S", errors='coerce')
-                df['Submitted time'] = df['Submitted time'].dt.strftime('%d%m%Y|%H%M%S')
-            df = adding_null_col(df)
-            df = df.replace("NULL", np.nan)
-            df.columns = unflatten_columns(df.columns, column_mapping)
-            df = df.drop_duplicates().reset_index(drop=True)
-            return df
-
-        no_conflict = process_final_df(no_conflict)
-        conflict_report = process_final_df(conflict_report)
-        validation_fail_report = process_final_df(validation_fail_report)
-
-        # Save output Excel with three sheets
-        timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
-        output_file = os.path.join(admin_output_folder_path.get(), f"Consolidated_output_{keyword}_{timestamp}.xlsx")
-
-        workbook = Workbook()
-        workbook.remove(workbook.active) # Remove default sheet
-
-        # Write sheets
-        sheets = [
-            ("Consolidated Output", no_conflict),
-            ("Conflict Report", conflict_report),
-            ("Validation Fail Report", validation_fail_report)
-        ]
-
-        for sheet_name, df in sheets:
-            if df.empty:
-                continue  # Skip empty sheets
-                
-            worksheet = workbook.create_sheet(sheet_name)
-            
-            # Write headers
-            for col_idx, col in enumerate(df.columns, 1):
-                worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
-                worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
-                worksheet.cell(row=3, column=col_idx).value = col[2]
-
-            # Write data (starting from row 4)
-            for row_idx, row_data in enumerate(df.values, 4):
-                for col_idx, value in enumerate(row_data, 1):
-                    worksheet.cell(row=row_idx, column=col_idx).value = value
-
-            thin_border = Border(
-                left=Side(style='thin'),
-                right=Side(style='thin'),
-                top=Side(style='thin'),
-                bottom=Side(style='thin')
-            )
-
-            max_col = worksheet.max_column
-
-            for row_num in [1, 2]:
-                start_col = None
-                prev_value = None
-
-                for col in range(1, max_col + 2): # +2 to ensure we catch the last group
-                    curr_cell = worksheet.cell(row=row_num, column=col)
-                    curr_value = curr_cell.value if col <= max_col else None
-
-                    if prev_value is None and isinstance(curr_value, str):
-                        # Start of new sequence
-                        prev_value = curr_value
-                        start_col = col
-
-                    elif prev_value is not None and curr_value != prev_value:
-                        if start_col is not None and col - start_col > 1:
-                            # Merge range
-                            start_letter = get_column_letter(start_col)
-                            end_letter = get_column_letter(col - 1)
-                            worksheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
-
-                        # Format the (merged) cell
-                        target_cell = worksheet.cell(row=row_num, column=start_col)
-                        target_cell.font = Font(bold=True)
-                        target_cell.alignment = Alignment(horizontal='center', vertical='center')
-
-                        for c in range(start_col, col):
-                            worksheet.cell(row=row_num, column=c).border = thin_border
-
-                        # Reset
-                        prev_value = curr_value
-                        start_col = col if isinstance(curr_value, str) else None
-
-            # Autofit column widths
-            for col in worksheet.columns:
-                max_length = 0
-                col_letter = get_column_letter(col[0].column)
-                for cell in col:
-                    try:
-                        if cell.value:
-                            max_length = max(max_length, len(str(cell.value)))
-                    except:
-                        pass
-                adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
-                worksheet.column_dimensions[col_letter].width = adjusted_width
-
-        workbook.save(output_file)
-        admin_status_label.config(text=f"Success: Consolidation complete - saved as {output_file}", fg="green")
-        processed_dfs = None
-
-    except Exception as e:
-        admin_status_label.config(text=f"Error: {str(e)}", fg="red")
-        processed_dfs = None
-
-# Tkinter UI Setup
-root = tk.Tk()
-root.title("File Rename & Save")
-root.geometry("500x395")  # Height remains sufficient
-root.configure(bg="#f5f5f5")
-root.resizable(False, False)
-
-# Variables
-file_list = []
-folder_path = tk.StringVar()
-admin_folder_path = tk.StringVar()
-admin_output_folder_path = tk.StringVar()
-
-# Fonts and Styles
-label_font = ("Helvetica", 10)
-button_font = ("Helvetica", 10, "bold")
-stats_font = ("Helvetica", 10, "bold")
-
-# ttk Style for rounded buttons
-style = ttk.Style()
-style.theme_use("clam")
-style.configure("TButton",
-                padding=6,
-                relief="raised",
-                background="#4a90e2",
-                foreground="white",
-                borderwidth=2,
-                borderradius=10)
-style.map("TButton",
-          background=[("active", "#357ABD")])
-
-# Notebook for tabs
-notebook = ttk.Notebook(root)
-notebook.pack(padx=20, pady=20, fill="both", expand=True)
-
-# User Tab
-user_frame = tk.Frame(notebook, bg="#f5f5f5")
-notebook.add(user_frame, text="User Panel")
-
-# Admin Tab (only visible to admin users)
-if getpass.getuser() in admin_users:
-    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
-    notebook.add(admin_frame, text="Admin")
-else:
-    notebook.tab(0, state="normal")
-
-# User Tab Content
-tk.Label(user_frame, text="BSRS Data Collection Tool", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
-ttk.Button(user_frame, text="Select BSRS Template", command=select_files, style="TButton").pack(pady=5)
-ttk.Button(user_frame, text="Select Destination Folder", command=select_folder, style="TButton").pack(pady=5)
-ttk.Button(user_frame, text="Submit", command=save_files, style="TButton").pack(pady=15)
-status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
-status_label.pack(pady=5)
-stats_label = tk.Label(user_frame, text="Template Selected: 0\nDestination Folder: Not Selected",
-                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
-                      wraplength=450)
-stats_label.pack(pady=10, fill="x")
-
-# Admin Tab Content
-if getpass.getuser() in admin_users:
-    tk.Label(admin_frame, text="BSRS Data Collection Tool", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
-    
-    # Frame to hold input and output folder buttons in the same row
-    folder_button_frame = tk.Frame(admin_frame, bg="#f5f5f5")
-    folder_button_frame.pack(pady=5, fill="x")
-    
-    ttk.Button(folder_button_frame, text="Select Input Folder", command=select_admin_folder, style="TButton").pack(pady=5)
-    
-    output_folder_button = ttk.Button(folder_button_frame, text="Select Output Folder", command=select_admin_output_folder, style="TButton")
-    output_folder_button.pack(pady=5)
-    
-    save_button = ttk.Button(admin_frame, text="Consolidate", command=process_admin_files, style="TButton")
-    save_button.pack(pady=5)
-    
-    admin_status_label = tk.Label(admin_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
-    admin_status_label.pack(pady=10)
-
-# Load user info file at startup
-load_user_info()
-
-root.mainloop()

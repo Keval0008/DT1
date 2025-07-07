@@ -1,66 +1,27 @@
 import pandas as pd
 
-# Sample dataframes
-main_df = pd.DataFrame({
-    ('Proposed Changes', 'Role Holder1 Preparer', 'PS ID'): [111, 222, 333],
-    ('Proposed Changes', 'Role Holder1 Preparer', 'Name'): ['A', 'B', 'C'],
-    ('Proposed Changes', 'Role Holder2 Reviewer', 'PS ID'): [444, 555, 666],
-    ('Proposed Changes', 'Role Holder2 Reviewer', 'Name'): ['D', 'E', 'F'],
-    ('Proposed Changes', 'Role Holder3 Account Owner', 'PS ID'): [777, 888, 999],
-    ('Proposed Changes', 'Role Holder3 Account Owner', 'Name'): ['G', 'H', 'I']
-})
+# Example setup
+df = pd.DataFrame(columns=[f'col{i}' for i in range(1, 101)])
+cols_to_order = ['col50', 'col30', 'col70', 'col10', 'col90']
 
-mapping_df = pd.DataFrame({
-    'PS ID': [111, 555, 999],
-    'Personal PS ID': [112, 556, 998],
-    'Grade': ['G1', 'G2', 'G3'],
-    'BF Level1': ['L1A', 'L1B', 'L1C'],
-    'BF Level2': ['L2A', 'L2B', 'L2C'],
-    'Contact': ['email1', 'email2', 'email3']
-})
+# 1. Get current column list
+cols = list(df.columns)
 
-# Reset multi-index columns if any
-main_df.columns = ['_'.join(col) for col in main_df.columns]
+# 2. Find first appearance index among these columns
+indices = [cols.index(col) for col in cols_to_order if col in cols]
+if not indices:
+    raise ValueError("None of the specified columns found in dataframe.")
+first_index = min(indices)
 
-# Process each role holder
-for role in ['Role Holder1 Preparer', 'Role Holder2 Reviewer', 'Role Holder3 Account Owner']:
-    psid_col = f'Proposed Changes_{role}_PS ID'
-    name_col = f'Proposed Changes_{role}_Name'
-    
-    # First merge on PS ID
-    enriched = pd.merge(
-        main_df[[psid_col, name_col]],
-        mapping_df,
-        how='left',
-        left_on=psid_col,
-        right_on='PS ID',
-        suffixes=('', '_map')
-    )
-    
-    # If no match, try Personal PS ID
-    missing = enriched['Grade'].isnull()
-    if missing.any():
-        fallback = pd.merge(
-            enriched[missing][[psid_col]],
-            mapping_df,
-            how='left',
-            left_on=psid_col,
-            right_on='Personal PS ID'
-        )
-        if not fallback.empty:
-            for col in ['Grade', 'BF Level1', 'BF Level2', 'Contact']:
-                enriched.loc[missing, col] = fallback[col].values
-    
-    # Rename new columns to indicate role holder
-    enriched.rename(columns={
-        'Grade': f'{role}_Grade',
-        'BF Level1': f'{role}_BF Level1',
-        'BF Level2': f'{role}_BF Level2',
-        'Contact': f'{role}_Contact'
-    }, inplace=True)
-    
-    # Concatenate new info back to main_df
-    main_df = pd.concat([main_df, enriched[[f'{role}_Grade', f'{role}_BF Level1', f'{role}_BF Level2', f'{role}_Contact']]], axis=1)
+# 3. Remove the columns from their current positions
+cols_reordered = [col for col in cols if col not in cols_to_order]
 
-# Displaying final output as requested
-main_df.style.set_properties(**{'text-align': 'left'})
+# 4. Insert them back in required order at first_index
+for i, col in enumerate(cols_to_order):
+    cols_reordered.insert(first_index + i, col)
+
+# 5. Reorder dataframe
+df = df[cols_reordered]
+
+# ✅ Now, df has cols_to_order at first_index onwards in the given order
+print(df.columns[first_index:first_index + len(cols_to_order)])

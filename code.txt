@@ -1,27 +1,30 @@
-import pandas as pd
+import win32com.client
 
-# Example setup
-df = pd.DataFrame(columns=[f'col{i}' for i in range(1, 101)])
-cols_to_order = ['col50', 'col30', 'col70', 'col10', 'col90']
+# Specify your file path and password
+file_path = r"C:\path\to\your\file.xlsx"
+password = "your_password"
 
-# 1. Get current column list
-cols = list(df.columns)
+# Initialize Excel Application
+excel = win32com.client.Dispatch("Excel.Application")
+excel.Visible = False  # Keep Excel hidden
 
-# 2. Find first appearance index among these columns
-indices = [cols.index(col) for col in cols_to_order if col in cols]
-if not indices:
-    raise ValueError("None of the specified columns found in dataframe.")
-first_index = min(indices)
+# Open workbook with password
+workbook = excel.Workbooks.Open(file_path, False, True, None, password)
 
-# 3. Remove the columns from their current positions
-cols_reordered = [col for col in cols if col not in cols_to_order]
+# Access a specific sheet, for example, the first sheet
+sheet = workbook.Sheets(1)
 
-# 4. Insert them back in required order at first_index
-for i, col in enumerate(cols_to_order):
-    cols_reordered.insert(first_index + i, col)
+# Read cell values (example: A1 value)
+value = sheet.Range("A1").Value
+print("Value in A1:", value)
 
-# 5. Reorder dataframe
-df = df[cols_reordered]
+# Loop through rows and columns as needed
+# Example: reading first 5 rows and columns
+for row in range(1, 6):
+    for col in range(1, 6):
+        print(sheet.Cells(row, col).Value, end="\t")
+    print()
 
-# ✅ Now, df has cols_to_order at first_index onwards in the given order
-print(df.columns[first_index:first_index + len(cols_to_order)])
+# Close workbook and quit Excel
+workbook.Close(False)
+excel.Quit()

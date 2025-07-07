@@ -1,10 +1,66 @@
-Hi Shipra,
-Good evening.
+import pandas as pd
 
-I just wanted to check in regarding the impairment tool. As of the last review with Sahil, the numbers were matching with the EUC for Q2 FY25.
+# Sample dataframes
+main_df = pd.DataFrame({
+    ('Proposed Changes', 'Role Holder1 Preparer', 'PS ID'): [111, 222, 333],
+    ('Proposed Changes', 'Role Holder1 Preparer', 'Name'): ['A', 'B', 'C'],
+    ('Proposed Changes', 'Role Holder2 Reviewer', 'PS ID'): [444, 555, 666],
+    ('Proposed Changes', 'Role Holder2 Reviewer', 'Name'): ['D', 'E', 'F'],
+    ('Proposed Changes', 'Role Holder3 Account Owner', 'PS ID'): [777, 888, 999],
+    ('Proposed Changes', 'Role Holder3 Account Owner', 'Name'): ['G', 'H', 'I']
+})
 
-From your end, can we consider the impairment tool good to go for reporting purposes?
+mapping_df = pd.DataFrame({
+    'PS ID': [111, 555, 999],
+    'Personal PS ID': [112, 556, 998],
+    'Grade': ['G1', 'G2', 'G3'],
+    'BF Level1': ['L1A', 'L1B', 'L1C'],
+    'BF Level2': ['L2A', 'L2B', 'L2C'],
+    'Contact': ['email1', 'email2', 'email3']
+})
 
-As for the input automation tool, we’ll have a more detailed discussion post-reporting to refine it further and cover all edge cases to make it more dynamic.
+# Reset multi-index columns if any
+main_df.columns = ['_'.join(col) for col in main_df.columns]
 
-Would it be possible for you to share a sign-off over email for the impairment tool?
+# Process each role holder
+for role in ['Role Holder1 Preparer', 'Role Holder2 Reviewer', 'Role Holder3 Account Owner']:
+    psid_col = f'Proposed Changes_{role}_PS ID'
+    name_col = f'Proposed Changes_{role}_Name'
+    
+    # First merge on PS ID
+    enriched = pd.merge(
+        main_df[[psid_col, name_col]],
+        mapping_df,
+        how='left',
+        left_on=psid_col,
+        right_on='PS ID',
+        suffixes=('', '_map')
+    )
+    
+    # If no match, try Personal PS ID
+    missing = enriched['Grade'].isnull()
+    if missing.any():
+        fallback = pd.merge(
+            enriched[missing][[psid_col]],
+            mapping_df,
+            how='left',
+            left_on=psid_col,
+            right_on='Personal PS ID'
+        )
+        if not fallback.empty:
+            for col in ['Grade', 'BF Level1', 'BF Level2', 'Contact']:
+                enriched.loc[missing, col] = fallback[col].values
+    
+    # Rename new columns to indicate role holder
+    enriched.rename(columns={
+        'Grade': f'{role}_Grade',
+        'BF Level1': f'{role}_BF Level1',
+        'BF Level2': f'{role}_BF Level2',
+        'Contact': f'{role}_Contact'
+    }, inplace=True)
+    
+    # Concatenate new info back to main_df
+    main_df = pd.concat([main_df, enriched[[f'{role}_Grade', f'{role}_BF Level1', f'{role}_BF Level2', f'{role}_Contact']]], axis=1)
+
+# Displaying final output as requested
+main_df.style.set_properties(**{'text-align': 'left'})

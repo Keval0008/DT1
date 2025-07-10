@@ -1,44 +1,13 @@
-import win32com.client
-import pandas as pd
+Hi Adarsh,
 
-# Parameters
-file_path = r"C:\path\to\your\file.xlsx"
-password = "your_password"
+HBME Parallel Run Report – I have prepared the report for VIU calculation. For sensitivity and break-even point, I have included the tool output in the report. I asked Sahil if they are doing this analysis in a separate file, as there is no such analysis in the EUC. He mentioned he is occupied with reporting work but will respond on chat.
 
-# Initialize Excel
-excel = win32com.client.Dispatch("Excel.Application")
-excel.Visible = False
+HBME Input Automation – For this, Sahil also suggested scheduling a meeting next week. I will coordinate with him and set up a call.
 
-# Open workbook with password
-workbook = excel.Workbooks.Open(file_path, False, True, None, password)
+HIBUK – I am currently checking the input automation tool that we coded for them. We can get back to them with the tool after this check.
 
-# Access sheet
-sheet = workbook.Sheets(1)
+VIU Report – I have started working on preparing the VIU project report.
 
-# Get used range
-used_range = sheet.UsedRange
-nrows = used_range.Rows.Count
-ncols = used_range.Columns.Count
+BSRS – Please share the updated tool with admin access to Prakash. Can I schedule a call for Monday for a walkthrough, as Mani requested on mail?
 
-# Extract data into nested list
-data = []
-for row in range(1, nrows + 1):
-    row_data = []
-    for col in range(1, ncols + 1):
-        value = sheet.Cells(row, col).Value
-        row_data.append(value)
-    data.append(row_data)
-
-# Convert to DataFrame
-df = pd.DataFrame(data)
-
-# Optionally set first row as header if applicable
-df.columns = df.iloc[0]
-df = df[1:].reset_index(drop=True)
-
-# Close workbook and quit Excel
-workbook.Close(False)
-excel.Quit()
-
-# Display
-print(df.head())
+Also, I have a function to attend tomorrow at my relative’s place. Can I take leave for tomorrow?

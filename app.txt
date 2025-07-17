@@ -1,32 +1,35 @@
-Subject: BSRS Tool – New Updates to Streamline Data Collection
-
-Hi All,
-
-I’m excited to share the latest updates to the BSRS Tool, designed to make data collection and validation easier for both users and admins. Here’s a quick overview:
-
-Key Updates:
-
-L&D data is now embedded directly into the BSRS template.
-
-User Panel Features:
-✅ Auto-Validation: Automatically validates Group Grades for Role Holder details (PS ID, Name) entered by users.
-✅ Error Handling: Clear warnings highlight discrepancies (e.g., invalid grades), with options to save the file as is or at a separate location for review.
-✅ Auto-Populate User Info: Additional details such as Email and BF Levels are now auto-filled from the L&D database.
-
-Admin Panel Features:
-🔧 One-Click Consolidation: Merge all user submissions into a single file effortlessly.
-📊 Smart Reports: Automatically generates three sheets:
-
-Consolidated Output: Contains all records submitted by users.
-
-Outstanding Records: Lists records left unfilled by users.
-
-Conflict Report: Highlights rows where different Role Holder details were filled for the same record, either by the same or different users.
-
-These enhancements will ensure faster, error-free submissions while maintaining compliance with role-specific grade rules.
-
-All group members have been given admin access. For any new access requests, please reach out to us.
-
-Feel free to start using the updated tool and share your feedback.
-
-Best regards,
+def add_detailed_conflict_log(df, special_columns, submitted_by_col='Submitted by', submitted_time_col='Submitted time'):
+    """
+    Creates a detailed conflict log showing exact value combinations with submission info.
+    """
+    # Get all columns not in special_columns
+    group_columns = [col for col in df.columns if col not in special_columns]
+    
+    # Initialize conflict log column
+    df['conflict_log'] = ''
+    
+    # Group by all columns except the special ones
+    grouped = df.groupby(group_columns, dropna=False)
+    
+    for name, group in grouped:
+        if len(group) > 1:
+            conflict_lines = ["Conflict log:"]
+            
+            # Check each special column for differences
+            for col in special_columns:
+                unique_values = group[col].dropna().unique()
+                if len(unique_values) > 1:
+                    # Group by unique values and collect submission info
+                    value_groups = group.groupby(col)[[submitted_by_col, submitted_time_col]].agg(lambda x: '|'.join(map(str, x.unique())))
+                    
+                    for value, (submitters, times) in value_groups.iterrows():
+                        conflict_lines.append(
+                            f"- {col} has value '{value}' "
+                            f"(Submitted by: {submitters}, "
+                            f"Submitted time: {times})"
+                        )
+            
+            # Join all conflict lines
+            df.loc[group.index, 'conflict_log'] = '\n'.join(conflict_lines) if len(conflict_lines) > 1 else ''
+    
+    return df

@@ -1,13 +1,67 @@
-Hi Adarsh,
+Here’s a professionally written report section explaining this “Targeted Headroom Zeroing” feature, suitable for inclusion in a parallel run or feature documentation report:
 
-HBME Parallel Run Report – I have prepared the report for VIU calculation. For sensitivity and break-even point, I have included the tool output in the report. I asked Sahil if they are doing this analysis in a separate file, as there is no such analysis in the EUC. He mentioned he is occupied with reporting work but will respond on chat.
 
-HBME Input Automation – For this, Sahil also suggested scheduling a meeting next week. I will coordinate with him and set up a call.
+---
 
-HIBUK – I am currently checking the input automation tool that we coded for them. We can get back to them with the tool after this check.
+🔁 Backsolving Feature – Target Headroom as Zero
 
-VIU Report – I have started working on preparing the VIU project report.
+🔍 Overview
 
-BSRS – Please share the updated tool with admin access to Prakash. Can I schedule a call for Monday for a walkthrough, as Mani requested on mail?
+The Backsolving feature allows users to define a target output value—typically Headroom = 0—and the tool automatically determines the required input value(s) to achieve this target. This feature enables a reverse calculation flow where, instead of modifying inputs and observing the impact on outputs, users set the desired outcome and observe what adjustments are necessary in the inputs.
 
-Also, I have a function to attend tomorrow at my relative’s place. Can I take leave for tomorrow?
+
+---
+
+⚙️ How It Works
+
+The tool leverages a polynomial function derived from the impairment model, where inputs such as Discount Rate, Growth Rate, and other key parameters are embedded as variables.
+
+The system applies minimization techniques on this function to compute the required input values that would make the Headroom = 0 (or reach the global minima).
+
+Each input variable is varied one at a time, keeping other inputs constant, to isolate its specific impact on the headroom outcome.
+
+
+
+---
+
+🧪 Use Case Scenarios
+
+Scenario ID	Target Output	Variable Backsolved	Other Inputs (Fixed)	Required Value	Variation from Original	Snapshot	Remarks
+
+BS-001	Headroom = 0	Growth Rate	DR: 10%, EAD: 5Cr	2.8%	+1.3%	[Image]	Indicates sensitivity to GR
+BS-002	Headroom = 0	Discount Rate	GR: 1.5%, EAD: 5Cr	13.2%	+3.2%	[Image]	Higher DR needed to nullify headroom
+BS-003	Headroom = 0	EAD	GR: 2%, DR: 9%	₹4.7 Cr	-₹0.3 Cr	[Image]	Input reduction path
+
+
+
+---
+
+🧠 Key Benefits
+
+Enables reverse stress-testing: understand how much deviation in key variables can push Headroom to zero.
+
+Assists in risk and buffer analysis: identifying the tolerance range of inputs.
+
+Useful for what-if scenario planning for auditors, controllers, and risk teams.
+
+
+
+---
+
+📈 Technical Note
+
+The backend uses numerical optimization techniques (e.g., gradient descent or root-finding algorithms) on a polynomial representation of the impairment calculation. The function models Headroom as:
+
+Headroom = VIU(Input Variables) - Carrying Value
+
+To achieve Headroom = 0, the function minimizes:
+
+f(x) = |Headroom| = |VIU(x) - Carrying Value|
+
+Where x can be one or more of the adjustable input parameters (e.g., Growth Rate, Discount Rate).
+
+
+---
+
+Let me know if you'd like this converted into a Word or Excel template for reporting or if you’d like visuals/graphs to go with this write-up.
+

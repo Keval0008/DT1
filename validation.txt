@@ -1,0 +1,303 @@
+"""
+Validation functions for BSRS Role Holder Collection Tool
+"""
+import pandas as pd
+from typing import List, Dict, Tuple, Optional, Any
+import config
+import utils
+from utils import logger
+
+class ValidationError:
+    """Represents a validation error"""
+    
+    def __init__(self, file_path: str = None, row: int = None, role: str = None, 
+                 ps_id: str = None, name: str = None, grade: str = None, 
+                 description: str = None, error_type: str = "validation"):
+        self.file_path = file_path
+        self.row = row
+        self.role = role
+        self.ps_id = ps_id
+        self.name = name
+        self.grade = grade
+        self.description = description
+        self.error_type = error_type
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for compatibility with existing code"""
+        return {
+            'file': self.file_path,
+            'row': self.row,
+            'role': self.role,
+            'ps_id': self.ps_id,
+            'name': self.name,
+            'grade': self.grade,
+            'description': self.description,
+            'error_type': self.error_type
+        }
+    
+    def __str__(self) -> str:
+        if self.role:
+            return f"Row {self.row}: {self.role} - {self.ps_id} ({self.name}) - {self.description}"
+        else:
+            return f"Row {self.row}: {self.description}"
+
+class DataValidator:
+    """Handles all data validation operations"""
+    
+    def __init__(self, user_info_df: Optional[pd.DataFrame] = None):
+        self.user_info_df = user_info_df
+        self.setup_user_info()
+    
+    def setup_user_info(self):
+        """Prepare user info dataframe for validation"""
+        if self.user_info_df is not None:
+            self.user_info_df['Formatted_User_ID'] = self.user_info_df['User ID'].apply(utils.format_id)
+            self.user_info_df['Formatted_PERSON_ID_EXTERNAL'] = self.user_info_df['PERSON_ID_EXTERNAL'].apply(utils.format_id)
+    
+    def validate_group_grade(self, user_id: str, role_type: str) -> Tuple[bool, str]:
+        """Validate if user's group grade matches role requirements"""
+        if self.user_info_df is None:
+            logger.warning("No user info available for validation")
+            return True, "No validation data"
+        
+        formatted_user_id = utils.format_id(user_id)
+        
+        # First try User ID lookup
+        user_row = self.user_info_df[self.user_info_df['Formatted_User_ID'] == str(formatted_user_id)]
+        
+        # If not found, try PERSON_ID_EXTERNAL
+        if user_row.empty:
+            user_row = self.user_info_df[self.user_info_df['Formatted_PERSON_ID_EXTERNAL'] == str(user_id)]
+        
+        if user_row.empty:
+            logger.warning(f"User {user_id} not found in user info")
+            return False, "User not found"
+        
+        raw_grade = user_row['Group Grade'].values[0]
+        group_grade = utils.normalize_grade(raw_grade)
+        
+        # Validation rules from config
+        required_grades = config.ROLE_GRADE_REQUIREMENTS.get(role_type, [])
+        valid = group_grade in required_grades
+        
+        return valid, group_grade
+    
+    def validate_file_structure(self, file_path: str) -> List[ValidationError]:
+        """Validate Excel file structure"""
+        errors = []
+        
+        # Basic file validation
+        if not utils.validate_file_path(file_path):
+            errors.append(ValidationError(
+                file_path=file_path,
+                description="Invalid file path or file format",
+                error_type="file_structure"
+            ))
+            return errors
+        
+        try:
+            # Try to read main sheet
+            main_df = utils.safe_excel_read(
+                file_path, 
+                sheet_name=config.MAIN_SHEET,
+                header=config.HEADER_ROWS
+            )
+            
+            if main_df is None:
+                errors.append(ValidationError(
+                    file_path=file_path,
+                    description=f"Could not read main sheet '{config.MAIN_SHEET}'",
+                    error_type="file_structure"
+                ))
+            
+            # Try to read user info sheet
+            user_info_df = utils.safe_excel_read(
+                file_path,
+                sheet_name=config.USER_INFO_SHEET,
+                header=1
+            )
+            
+            if user_info_df is None:
+                errors.append(ValidationError(
+                    file_path=file_path,
+                    description=f"Could not read user info sheet '{config.USER_INFO_SHEET}'",
+                    error_type="file_structure"
+                ))
+                
+        except Exception as e:
+            errors.append(ValidationError(
+                file_path=file_path,
+                description=f"Error reading file structure: {str(e)}",
+                error_type="file_structure"
+            ))
+        
+        return errors
+    
+    def validate_data_completeness(self, df: pd.DataFrame, file_path: str = None) -> List[ValidationError]:
+        """Validate data completeness for role holders"""
+        errors = []
+        
+        # Get target columns for validation
+        target_cols = [("Proposed changes", role, field) 
+                      for role in config.ROLE_HOLDERS 
+                      for field in ["PS ID", "Name"]]
+        
+        def is_partial(row):
+            """Check if row has partial data (some fields filled, others empty)"""
+            values = [str(row[col]).strip() for col in target_cols if col in df.columns]
+            blanks = [v == '' or v.lower() == 'nan' for v in values]
+            total_blanks = sum(blanks)
+            return not (total_blanks == 0 or total_blanks == len(values))
+        
+        # Check each row for partial data
+        for idx, row in df.iterrows():
+            if is_partial(row):
+                errors.append(ValidationError(
+                    file_path=file_path,
+                    row=idx + config.DATA_START_ROW,  # Convert to Excel row number
+                    description="Missing data in Role Holder column/columns",
+                    error_type="data_completeness"
+                ))
+        
+        return errors
+    
+    def validate_role_permissions(self, df: pd.DataFrame, file_path: str = None) -> List[ValidationError]:
+        """Validate role holder permissions based on grades"""
+        errors = []
+        
+        if self.user_info_df is None:
+            logger.warning("Skipping role permission validation - no user info available")
+            return errors
+        
+        for idx, row in df.iterrows():
+            for role_col in config.ROLE_HOLDERS:
+                ps_id_col = ("Proposed changes", role_col, "PS ID")
+                name_col = ("Proposed changes", role_col, "Name")
+                
+                if ps_id_col in df.columns and not pd.isna(row[ps_id_col]):
+                    ps_id = row[ps_id_col]
+                    name = row[name_col] if name_col in df.columns else ""
+                    
+                    valid, grade = self.validate_group_grade(ps_id, role_col)
+                    
+                    if not valid:
+                        # Create description based on role requirements
+                        required_grades = config.ROLE_GRADE_REQUIREMENTS.get(role_col, [])
+                        min_grade = min(required_grades) if required_grades else "Unknown"
+                        
+                        description = f"{role_col} requires grade {min_grade} and above, but user has grade {grade}"
+                        
+                        errors.append(ValidationError(
+                            file_path=file_path,
+                            row=idx + config.DATA_START_ROW,
+                            role=role_col,
+                            ps_id=ps_id,
+                            name=name,
+                            grade=grade,
+                            description=description,
+                            error_type="role_permission"
+                        ))
+        
+        return errors
+    
+    def validate_file(self, file_path: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], List[ValidationError]]:
+        """Comprehensive file validation"""
+        all_errors = []
+        
+        logger.info(f"Starting validation for file: {file_path}")
+        
+        # 1. Validate file structure
+        structure_errors = self.validate_file_structure(file_path)
+        all_errors.extend(structure_errors)
+        
+        if structure_errors:
+            logger.error(f"File structure validation failed for {file_path}")
+            return None, None, all_errors
+        
+        # 2. Read data
+        try:
+            main_df = utils.safe_excel_read(
+                file_path,
+                sheet_name=config.MAIN_SHEET,
+                header=config.HEADER_ROWS
+            )
+            
+            user_info_df = utils.safe_excel_read(
+                file_path,
+                sheet_name=config.USER_INFO_SHEET,
+                header=1
+            )
+            
+            # Update user info for validation
+            if user_info_df is not None:
+                self.user_info_df = user_info_df
+                self.setup_user_info()
+            
+        except Exception as e:
+            all_errors.append(ValidationError(
+                file_path=file_path,
+                description=f"Error reading file data: {str(e)}",
+                error_type="file_read"
+            ))
+            return None, None, all_errors
+        
+        # 3. Validate data completeness
+        completeness_errors = self.validate_data_completeness(main_df, file_path)
+        all_errors.extend(completeness_errors)
+        
+        # 4. Validate role permissions
+        permission_errors = self.validate_role_permissions(main_df, file_path)
+        all_errors.extend(permission_errors)
+        
+        logger.info(f"Validation completed for {file_path}. Found {len(all_errors)} errors.")
+        
+        return main_df, user_info_df, all_errors
+    
+    def get_error_summary(self, errors: List[ValidationError]) -> Dict[str, int]:
+        """Get summary of errors by type"""
+        summary = {}
+        for error in errors:
+            error_type = error.error_type
+            summary[error_type] = summary.get(error_type, 0) + 1
+        return summary
+
+def add_detailed_conflict_log(df: pd.DataFrame, special_columns: List[str],
+                            submitted_by_col: str = 'Submitted by',
+                            submitted_time_col: str = 'Submitted time') -> pd.DataFrame:
+    """Add detailed conflict logging to DataFrame"""
+    
+    # Get all columns not in special_columns
+    group_columns = [col for col in df.columns if col not in special_columns]
+    
+    # Identify columns to check for matching ('PS ID' or 'Name' in name)
+    match_columns = [col for col in special_columns if ('PS ID' in str(col)) or ('Name' in str(col))]
+    
+    # Initialize conflict log column
+    df['Conflict Log'] = ''
+    
+    # Group by all non-special columns
+    grouped = df.groupby(group_columns, dropna=False)
+    
+    for name, group in grouped:
+        if len(group) > 1:
+            conflict_lines = ['']
+            
+            # Check matching columns ('PS ID' or 'Name')
+            for col in match_columns:
+                unique_values = group[col].dropna().unique()
+                if len(unique_values) > 1:
+                    value_groups = group.groupby(col)[[submitted_by_col, submitted_time_col]].agg(
+                        lambda x: '|'.join(map(str, x.unique()))
+                    )
+                    
+                    for value, (submitters, times) in value_groups.iterrows():
+                        conflict_lines.append(
+                            f"- {col} has value '{value}' "
+                            f"(Submitted by: {submitters}, "
+                            f"Submitted time: {times})"
+                        )
+            
+            # Join all conflict lines
+            df.loc[group.index, 'Conflict Log'] = '\n'.join(conflict_lines) if len(conflict_lines) > 1 else ''
+    
+    return df 

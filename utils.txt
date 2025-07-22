@@ -88,6 +88,14 @@ def format_id(id_value) -> Optional[str]:
     id_str = str(id_value).split('.')[0]
     return id_str.zfill(8)
 
+def format_ps_id(ps_id_value) -> Optional[str]:
+    """Format PS ID to remove decimal places and normalize"""
+    if pd.isna(ps_id_value):
+        return None
+    # Convert to string and remove decimal if it exists
+    ps_id_str = str(ps_id_value).split('.')[0]
+    return ps_id_str
+
 def normalize_grade(grade) -> Optional[str]:
     """Normalize grade to standardized format"""
     if pd.isna(grade):

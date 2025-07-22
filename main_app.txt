@@ -96,7 +96,7 @@ class BSRSApp:
         # Tab buttons
         self.user_tab_btn = tk.Button(
             tab_frame,
-            text="Process Files",
+            text="User Panel",
             command=lambda: self.switch_tab("user"),
             font=config.FONTS['button'],
             bg=config.COLORS['primary'],
@@ -110,7 +110,7 @@ class BSRSApp:
         
         self.admin_tab_btn = tk.Button(
             tab_frame,
-            text="Consolidate",
+            text="Admin Panel",
             command=lambda: self.switch_tab("admin"),
             font=config.FONTS['button'],
             bg=config.COLORS['surface'],
@@ -146,8 +146,20 @@ class BSRSApp:
             "Select BSRS files to process",
             mode="files"
         )
-        self.file_selector.pack(fill=tk.X, pady=(0, 15))
+        self.file_selector.pack(fill=tk.X, pady=(0, 5))
         self.file_selector.set_callback(self.on_files_selected)
+        
+        # File path display
+        self.file_path_label = tk.Label(
+            self.user_frame,
+            text="No files selected",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light'],
+            anchor='w',
+            justify='left'
+        )
+        self.file_path_label.pack(fill=tk.X, pady=(2, 15))
         
         # Destination selection
         self.dest_selector = CleanFileSelector(
@@ -155,8 +167,20 @@ class BSRSApp:
             "Choose destination folder",
             mode="folder"
         )
-        self.dest_selector.pack(fill=tk.X, pady=(0, 25))
+        self.dest_selector.pack(fill=tk.X, pady=(0, 5))
         self.dest_selector.set_callback(self.on_destination_selected)
+        
+        # Destination path display
+        self.dest_path_label = tk.Label(
+            self.user_frame,
+            text="No destination selected",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light'],
+            anchor='w',
+            justify='left'
+        )
+        self.dest_path_label.pack(fill=tk.X, pady=(2, 25))
         
         # Process button
         self.process_btn = tk.Button(
@@ -201,8 +225,20 @@ class BSRSApp:
             "Select input folder (containing BSRS files)",
             mode="folder"
         )
-        self.admin_input_selector.pack(fill=tk.X, pady=(0, 15))
+        self.admin_input_selector.pack(fill=tk.X, pady=(0, 5))
         self.admin_input_selector.set_callback(self.on_admin_input_selected)
+        
+        # Input folder path display
+        self.admin_input_path_label = tk.Label(
+            self.admin_frame,
+            text="No input folder selected",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light'],
+            anchor='w',
+            justify='left'
+        )
+        self.admin_input_path_label.pack(fill=tk.X, pady=(2, 15))
         
         # Output folder selection
         self.admin_output_selector = CleanFileSelector(
@@ -210,8 +246,20 @@ class BSRSApp:
             "Choose output folder for consolidated file",
             mode="folder"
         )
-        self.admin_output_selector.pack(fill=tk.X, pady=(0, 25))
+        self.admin_output_selector.pack(fill=tk.X, pady=(0, 5))
         self.admin_output_selector.set_callback(self.on_admin_output_selected)
+        
+        # Output folder path display
+        self.admin_output_path_label = tk.Label(
+            self.admin_frame,
+            text="No output folder selected",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light'],
+            anchor='w',
+            justify='left'
+        )
+        self.admin_output_path_label.pack(fill=tk.X, pady=(2, 25))
         
         # Consolidate button
         self.consolidate_btn = tk.Button(
@@ -273,24 +321,48 @@ class BSRSApp:
         self.update_process_button()
         
         if files:
+            if len(files) == 1:
+                # Show single file path
+                file_name = Path(files[0]).name
+                file_path = str(Path(files[0]).parent)
+                self.file_path_label.config(text=f"📁 {file_path} / {file_name}")
+            else:
+                # Show multiple files summary
+                self.file_path_label.config(text=f"📄 {len(files)} files selected")
             self.status_bar.set_status(f"{len(files)} files selected")
         else:
+            self.file_path_label.config(text="No files selected")
             self.status_bar.set_status("Ready")
     
     def on_destination_selected(self, folders: List[str]):
         """Handle destination selection"""
         self.destination_folder = folders[0] if folders else ""
         self.update_process_button()
+        
+        if self.destination_folder:
+            self.dest_path_label.config(text=f"📂 {self.destination_folder}")
+        else:
+            self.dest_path_label.config(text="No destination selected")
     
     def on_admin_input_selected(self, folders: List[str]):
         """Handle admin input selection"""
         self.admin_input_folder = folders[0] if folders else ""
         self.update_consolidate_button()
+        
+        if self.admin_input_folder:
+            self.admin_input_path_label.config(text=f"📂 {self.admin_input_folder}")
+        else:
+            self.admin_input_path_label.config(text="No input folder selected")
     
     def on_admin_output_selected(self, folders: List[str]):
         """Handle admin output selection"""
         self.admin_output_folder = folders[0] if folders else ""
         self.update_consolidate_button()
+        
+        if self.admin_output_folder:
+            self.admin_output_path_label.config(text=f"📂 {self.admin_output_folder}")
+        else:
+            self.admin_output_path_label.config(text="No output folder selected")
     
     def update_process_button(self):
         """Update process button state"""

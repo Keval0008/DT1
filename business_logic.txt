@@ -1,0 +1,495 @@
+"""
+Business logic for BSRS Role Holder Collection Tool
+Handles Excel processing, data enrichment, and consolidation
+"""
+import pandas as pd
+import numpy as np
+import copy
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional, Any
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+import config
+import utils
+import validation
+from utils import logger
+
+ERROR_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+class BSRSProcessor:
+    """Main business logic processor for BSRS files"""
+    
+    def __init__(self):
+        self.validator = validation.DataValidator()
+    
+    def process_single_file(self, file_path: str, output_dir: str, 
+                          progress_callback: Optional[callable] = None) -> Tuple[bool, str, List[validation.ValidationError]]:
+        """Process a single BSRS file"""
+        
+        logger.info(f"Processing file: {file_path}")
+        
+        if progress_callback:
+            progress_callback(10, "Validating file...")
+        
+        # Validate and read file
+        main_df, user_info_df, validation_errors = self.validator.validate_file(file_path)
+        
+        if main_df is None:
+            return False, "Failed to read file", validation_errors
+        
+        if progress_callback:
+            progress_callback(30, "Processing data...")
+        
+        # Process the dataframe
+        try:
+            processed_df = self._process_dataframe(main_df, user_info_df, file_path)
+            
+            if progress_callback:
+                progress_callback(70, "Generating output...")
+            
+            # Generate output file
+            output_path = self._generate_output_file(processed_df, file_path, output_dir, validation_errors)
+            
+            if progress_callback:
+                progress_callback(100, "Complete!")
+            
+            return True, output_path, validation_errors
+            
+        except Exception as e:
+            logger.error(f"Error processing file {file_path}: {str(e)}")
+            return False, f"Processing error: {str(e)}", validation_errors
+    
+    def _process_dataframe(self, df: pd.DataFrame, user_info_df: Optional[pd.DataFrame], 
+                         file_path: str) -> pd.DataFrame:
+        """Process and enrich dataframe"""
+        
+        # Clean data
+        df = df.replace("'nan", np.nan)
+        df.columns = pd.MultiIndex.from_tuples([
+            tuple(s.replace('\n', '') for s in col) for col in df.columns
+        ])
+        
+        # Drop comment columns
+        drop_columns = [col for col in df.columns if "Comments." in col[2]]
+        df = df.drop(columns=drop_columns)
+        
+        # Enrich data if user info is available
+        if user_info_df is not None:
+            df = self._enrich_with_user_info(df, user_info_df)
+        
+        # Add submission info
+        timestamp = utils.generate_timestamp()
+        df[("", "", "Submitted by")] = np.nan
+        df[("", "", "Submitted time")] = np.nan
+        
+        # Identify non-blank rows
+        multi_column = [col for col in df.columns if "Unnamed" in col[0]]
+        col_to_check = [col for col in df.columns if col not in multi_column]
+        condition = df[col_to_check].notna().any(axis=1)
+        
+        # Set submission info for non-blank rows
+        df.loc[condition, ("", "", "Submitted by")] = config.CURRENT_USER
+        df.loc[condition, ("", "", "Submitted time")] = timestamp
+        
+        return df
+    
+    def _enrich_with_user_info(self, df: pd.DataFrame, user_info_df: pd.DataFrame) -> pd.DataFrame:
+        """Enrich dataframe with user information"""
+        
+        # Flatten columns for processing
+        df.columns = ['|'.join(col) for col in df.columns]
+        
+        for role_col in config.ROLE_HOLDERS:
+            psid_col = f'Proposed changes|{role_col}|PS ID'
+            name_col = f'Proposed changes|{role_col}|Name'
+            
+            if psid_col not in df.columns:
+                continue
+            
+            # First merge on PS ID
+            enriched = pd.merge(
+                df[[psid_col, name_col]] if name_col in df.columns else df[[psid_col]],
+                user_info_df.drop_duplicates(),
+                how='left',
+                left_on=psid_col,
+                right_on='User ID',
+                suffixes=('', '_map')
+            )
+            
+            # If no match, try Personal PS ID
+            missing = enriched['Manually added column'].isnull() if 'Manually added column' in enriched.columns else pd.Series([True] * len(enriched))
+            if missing.any():
+                missing_df = enriched[missing][[psid_col]].copy()
+                missing_df['original_index'] = missing_df.index
+                
+                fallback = pd.merge(
+                    missing_df,
+                    user_info_df,
+                    how='inner',
+                    left_on=psid_col,
+                    right_on='PERSON_ID_EXTERNAL'
+                )
+                
+                if not fallback.empty:
+                    fallback = fallback.groupby('original_index').first().reset_index()
+                    fallback = fallback.set_index('original_index')
+                    
+                    enriched = enriched.join(
+                        fallback[config.ENRICHMENT_COLUMNS], 
+                        rsuffix="_fallback"
+                    )
+                    
+                    # Combine columns
+                    for col in config.ENRICHMENT_COLUMNS:
+                        if col in enriched.columns and f'{col}_fallback' in enriched.columns:
+                            enriched[col] = enriched[col].combine_first(enriched[f'{col}_fallback'])
+                            enriched = enriched.drop(f'{col}_fallback', axis=1, errors='ignore')
+            
+            # Rename columns to indicate role holder
+            column_mapping = {col: f'Proposed changes|{role_col}|{col}' 
+                            for col in config.ENRICHMENT_COLUMNS 
+                            if col in enriched.columns}
+            enriched = enriched.rename(columns=column_mapping)
+            
+            # Add enriched columns to main dataframe
+            new_cols = [f'Proposed changes|{role_col}|{col}' for col in config.ENRICHMENT_COLUMNS]
+            existing_new_cols = [col for col in new_cols if col in enriched.columns]
+            
+            if existing_new_cols:
+                df = pd.concat([df, enriched[existing_new_cols]], axis=1)
+        
+        # Restore MultiIndex columns
+        col_tuples = [tuple(col.split("|")) for col in df.columns]
+        df.columns = pd.MultiIndex.from_tuples(col_tuples)
+        
+        return df
+    
+    def _generate_output_file(self, df: pd.DataFrame, input_file: str, 
+                            output_dir: str, validation_errors: List[validation.ValidationError]) -> str:
+        """Generate formatted Excel output file"""
+        
+        base_name = Path(input_file).stem
+        timestamp = utils.generate_timestamp(for_filename=True)
+        output_name = f"{base_name}_{config.CURRENT_USER}_{timestamp}.xlsx"
+        output_path = Path(output_dir) / output_name
+        
+        # Create workbook
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Data"
+        
+        # Write headers
+        for col_idx, col in enumerate(df.columns, 1):
+            worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+            worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+            worksheet.cell(row=3, column=col_idx).value = col[2]
+        
+        # Write data
+        for row_idx, row_data in enumerate(df.values, 4):
+            for col_idx, value in enumerate(row_data, 1):
+                worksheet.cell(row=row_idx, column=col_idx).value = value
+        
+        # Highlight validation errors
+        if validation_errors:
+            for error in validation_errors:
+                if error.role and error.row:
+                    for col_idx, col in enumerate(df.columns, 1):
+                        if len(col) > 1 and col[1] == error.role and col[2] in ["PS ID", "Name"]:
+                            worksheet.cell(row=error.row, column=col_idx).fill = ERROR_FILL
+        
+        # Format headers
+        self._format_worksheet_headers(worksheet)
+        
+        # Autofit columns
+        self._autofit_columns(worksheet)
+        
+        # Add error log sheet if there are validation errors
+        if validation_errors:
+            self._add_error_sheet(workbook, validation_errors)
+        
+        workbook.save(output_path)
+        logger.info(f"Output file saved: {output_path}")
+        
+        return str(output_path)
+    
+    def _format_worksheet_headers(self, worksheet):
+        """Format worksheet headers with merging and styling"""
+        
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        max_col = worksheet.max_column
+        for row_num in [1, 2]:
+            start_col = None
+            prev_value = None
+            
+            for col in range(1, max_col + 2):
+                curr_cell = worksheet.cell(row=row_num, column=col)
+                curr_value = curr_cell.value if col <= max_col else None
+                
+                if prev_value is None and isinstance(curr_value, str):
+                    prev_value = curr_value
+                    start_col = col
+                elif prev_value is not None and curr_value != prev_value:
+                    if start_col is not None and col - start_col > 1:
+                        start_letter = get_column_letter(start_col)
+                        end_letter = get_column_letter(col - 1)
+                        worksheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
+                    
+                    target_cell = worksheet.cell(row=row_num, column=start_col)
+                    target_cell.font = Font(bold=True)
+                    target_cell.alignment = Alignment(horizontal='center', vertical='center')
+                    
+                    for c in range(start_col, col):
+                        worksheet.cell(row=row_num, column=c).border = thin_border
+                    
+                    prev_value = curr_value
+                    start_col = col if isinstance(curr_value, str) else None
+    
+    def _autofit_columns(self, worksheet):
+        """Autofit column widths"""
+        for col in worksheet.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 25)
+            worksheet.column_dimensions[col_letter].width = adjusted_width
+    
+    def _add_error_sheet(self, workbook: Workbook, errors: List[validation.ValidationError]):
+        """Add validation errors sheet"""
+        error_sheet = workbook.create_sheet(config.OUTPUT_SHEETS['errors'])
+        
+        # Headers
+        headers = ["Row", "Role", "PS ID", "Name", "Current Grade", "Validation Rule", "Error Type"]
+        for col_idx, header in enumerate(headers, 1):
+            cell = error_sheet.cell(row=1, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
+        
+        # Data rows
+        for row_idx, error in enumerate(errors, 2):
+            error_sheet.append([
+                error.row,
+                error.role,
+                error.ps_id,
+                error.name,
+                error.grade,
+                error.description,
+                error.error_type
+            ])
+        
+        self._autofit_columns(error_sheet)
+
+class ConsolidationProcessor:
+    """Handles consolidation of multiple BSRS files"""
+    
+    def __init__(self):
+        self.validator = validation.DataValidator()
+    
+    def consolidate_files(self, input_folder: str, output_folder: str,
+                         progress_callback: Optional[callable] = None) -> Tuple[bool, str]:
+        """Consolidate all Excel files in the input folder"""
+        
+        logger.info(f"Starting consolidation of files in: {input_folder}")
+        
+        try:
+            # Find all Excel files
+            xlsx_files = []
+            for root, _, files in Path(input_folder).rglob("*"):
+                for file in files:
+                    if file.endswith(".xlsx"):
+                        xlsx_files.append(Path(root) / file)
+            
+            if not xlsx_files:
+                return False, "No Excel files found in input folder"
+            
+            if progress_callback:
+                progress_callback(10, f"Found {len(xlsx_files)} files to process...")
+            
+            # Process files
+            master_df, column_mapping = self._process_files_for_consolidation(xlsx_files, progress_callback)
+            
+            if progress_callback:
+                progress_callback(70, "Consolidating data...")
+            
+            # Generate consolidated output
+            output_path = self._generate_consolidated_output(
+                master_df, column_mapping, output_folder
+            )
+            
+            if progress_callback:
+                progress_callback(100, "Consolidation complete!")
+            
+            return True, output_path
+            
+        except Exception as e:
+            logger.error(f"Error during consolidation: {str(e)}")
+            return False, f"Consolidation error: {str(e)}"
+    
+    def _process_files_for_consolidation(self, files: List[Path], 
+                                       progress_callback: Optional[callable] = None) -> Tuple[pd.DataFrame, Dict]:
+        """Process multiple files for consolidation"""
+        
+        column_mapping = {}
+        dfs = []
+        first_columns = None
+        
+        total_files = len(files)
+        
+        for idx, file in enumerate(files):
+            if progress_callback:
+                progress = 10 + (50 * idx / total_files)  # Progress from 10% to 60%
+                progress_callback(progress, f"Processing {file.name}...")
+            
+            df = utils.safe_excel_read(str(file), header=config.HEADER_ROWS)
+            if df is None:
+                logger.warning(f"Skipping file {file} - could not read")
+                continue
+            
+            # Check column consistency
+            if first_columns is None:
+                first_columns = df.columns
+                for col in df.columns:
+                    flattened_name = "|".join([str(c) for c in col if c]).strip('_')
+                    column_mapping[flattened_name] = col
+            elif not df.columns.equals(first_columns):
+                logger.error(f"Inconsistent column structure in {file}")
+                raise ValueError(f"Inconsistent column structure in {file}")
+            
+            # Flatten columns for processing
+            df.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
+            dfs.append(df)
+        
+        # Combine all dataframes
+        master_df = pd.concat(dfs, ignore_index=True)
+        master_df = master_df.drop_duplicates().reset_index(drop=True)
+        
+        return master_df, column_mapping
+    
+    def _generate_consolidated_output(self, master_df: pd.DataFrame, 
+                                    column_mapping: Dict, output_folder: str) -> str:
+        """Generate consolidated output file"""
+        
+        # Process and separate data
+        no_conflict, outstanding, conflict_report = self._separate_consolidated_data(master_df)
+        
+        # Create output file
+        timestamp = utils.generate_timestamp(for_filename=True)
+        output_file = Path(output_folder) / f"Consolidated_output_{config.CURRENT_USER}_{timestamp}.xlsx"
+        
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        
+        # Process each sheet
+        sheets = [
+            (config.OUTPUT_SHEETS['consolidated'], no_conflict),
+            (config.OUTPUT_SHEETS['outstanding'], outstanding),
+            (config.OUTPUT_SHEETS['conflicts'], conflict_report)
+        ]
+        
+        for sheet_name, df in sheets:
+            if df.empty:
+                continue
+                
+            # Convert back to MultiIndex
+            df = self._restore_multiindex_columns(df, column_mapping)
+            
+            # Create worksheet
+            worksheet = workbook.create_sheet(sheet_name)
+            
+            # Write data with formatting
+            self._write_consolidated_sheet(worksheet, df)
+        
+        workbook.save(output_file)
+        logger.info(f"Consolidated output saved: {output_file}")
+        
+        return str(output_file)
+    
+    def _separate_consolidated_data(self, master_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Separate consolidated data into different categories"""
+        
+        # Identify column types
+        multi_columns = [col for col in master_df.columns if not col.startswith("Unnamed")]
+        data_columns = [col for col in master_df.columns if col not in multi_columns]
+        
+        # Filter non-null data
+        reviewers_columns = [col for col in multi_columns if col not in ['Submitted by', 'Submitted time']]
+        condition_non_blank = master_df[reviewers_columns].notna().any(axis=1)
+        
+        filled_df = master_df[condition_non_blank].copy().fillna('NULL')
+        outstanding_df = master_df[~condition_non_blank].copy().drop_duplicates().reset_index(drop=True)
+        
+        # Process timestamps
+        filled_df['Submitted time'] = pd.to_datetime(
+            filled_df['Submitted time'], 
+            format='%d%m%Y|%H%M%S', 
+            errors='coerce'
+        )
+        
+        # Group and identify conflicts
+        grouped = filled_df.groupby(data_columns)
+        no_conflict = pd.DataFrame(columns=master_df.columns)
+        conflict_report = pd.DataFrame(columns=list(master_df.columns) + ["Conflict Log"])
+        
+        for name, group in grouped:
+            if len(group) == 1:
+                no_conflict = pd.concat([no_conflict, group], ignore_index=True)
+            else:
+                reviewers_cols = group[reviewers_columns]
+                all_reviewers_same = (reviewers_cols.drop_duplicates().shape[0] == 1)
+                
+                if all_reviewers_same:
+                    # Take the latest submission
+                    latest_row = group.loc[group['Submitted time'].idxmax()]
+                    no_conflict = pd.concat([no_conflict, latest_row.to_frame().T], ignore_index=True)
+                else:
+                    # Add conflict log
+                    conf_cols = [col for col in group.columns if col not in data_columns]
+                    group = validation.add_detailed_conflict_log(group, conf_cols)
+                    conflict_report = pd.concat([conflict_report, group], ignore_index=True)
+        
+        return no_conflict, outstanding_df, conflict_report
+    
+    def _restore_multiindex_columns(self, df: pd.DataFrame, column_mapping: Dict) -> pd.DataFrame:
+        """Restore MultiIndex columns from flattened format"""
+        
+        new_columns = []
+        for col in df.columns:
+            if col in column_mapping:
+                new_columns.append(column_mapping[col])
+            else:
+                new_columns.append((col, '', ''))
+        
+        df.columns = pd.MultiIndex.from_tuples(new_columns)
+        return df
+    
+    def _write_consolidated_sheet(self, worksheet, df: pd.DataFrame):
+        """Write data to consolidated worksheet with formatting"""
+        
+        # Write headers
+        for col_idx, col in enumerate(df.columns, 1):
+            worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+            worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+            worksheet.cell(row=3, column=col_idx).value = col[2]
+        
+        # Write data
+        for row_idx, row_data in enumerate(df.values, 4):
+            for col_idx, value in enumerate(row_data, 1):
+                worksheet.cell(row=row_idx, column=col_idx).value = value
+        
+        # Format headers
+        processor = BSRSProcessor()
+        processor._format_worksheet_headers(worksheet)
+        processor._autofit_columns(worksheet) 

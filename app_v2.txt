@@ -5,140 +5,499 @@ import pandas as pd
 import numpy as np
 import copy
 import getpass
+import logging
+import threading
+import time
 from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from pathlib import Path
+import json
+import shutil
+from typing import Dict, List, Tuple, Optional, Any
+
+# ============================================================================
+# CONFIGURATION AND SETUP
+# ============================================================================
+
+class AppConfig:
+    """Centralized configuration management"""
+    def __init__(self):
+        self.config_file = "app_config.json"
+        self.default_config = {
+            "admin_users": ["admin1", "admin2", "superuser"],
+            "required_sheets": ["Sheet1", "L&D"],
+            "max_file_size_mb": 50,
+            "backup_enabled": True,
+            "log_level": "INFO",
+            "auto_save_backup": True,
+            "validation_strict_mode": False
+        }
+        self.config = self.load_config()
+    
+    def load_config(self) -> Dict:
+        """Load configuration from file or create default"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                # Merge with defaults for any missing keys
+                for key, value in self.default_config.items():
+                    if key not in config:
+                        config[key] = value
+                return config
+            else:
+                self.save_config(self.default_config)
+                return self.default_config.copy()
+        except Exception as e:
+            logging.error(f"Error loading config: {e}")
+            return self.default_config.copy()
+    
+    def save_config(self, config: Dict) -> None:
+        """Save configuration to file"""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            logging.error(f"Error saving config: {e}")
+    
+    def get(self, key: str, default=None):
+        """Get configuration value"""
+        return self.config.get(key, default)
+    
+    def set(self, key: str, value: Any) -> None:
+        """Set configuration value"""
+        self.config[key] = value
+        self.save_config(self.config)
+
+# Setup logging
+def setup_logging():
+    """Setup comprehensive logging system"""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    log_filename = f"{log_dir}/bsrs_app_{datetime.now().strftime('%Y%m%d')}.log"
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+        handlers=[
+            logging.FileHandler(log_filename),
+            logging.StreamHandler()
+        ]
+    )
+    
+    # Create logger for this module
+    logger = logging.getLogger(__name__)
+    logger.info("Application started")
+    return logger
+
+# Initialize configuration and logging
+config = AppConfig()
+logger = setup_logging()
 
 # Get current user ID
 keyword = getpass.getuser()
+logger.info(f"Application started by user: {keyword}")
 
-# List of admin user IDs
-admin_users = ["admin1", "admin2", "superuser"]
+# List of admin user IDs from config
+admin_users = config.get("admin_users", ["admin1", "admin2", "superuser"])
 
 # Global variables to store processed DataFrames
 processed_dfs = None
 user_info_df = None
 
-ERROR_FILL = PatternFill(start_color="FFFF00",end_color="FFFF00",fill_type="solid")
+ERROR_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+# ============================================================================
+# UTILITY CLASSES AND FUNCTIONS
+# ============================================================================
+
+class ValidationError(Exception):
+    """Custom exception for validation errors"""
+    pass
+
+class FileProcessingError(Exception):
+    """Custom exception for file processing errors"""
+    pass
+
+class BackupManager:
+    """Manages backup operations"""
+    def __init__(self):
+        self.backup_dir = "backups"
+        if not os.path.exists(self.backup_dir):
+            os.makedirs(self.backup_dir)
+    
+    def create_backup(self, file_path: str) -> str:
+        """Create backup of a file"""
+        try:
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File not found: {file_path}")
+            
+            filename = os.path.basename(file_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"{timestamp}_{filename}"
+            backup_path = os.path.join(self.backup_dir, backup_filename)
+            
+            shutil.copy2(file_path, backup_path)
+            logger.info(f"Backup created: {backup_path}")
+            return backup_path
+        except Exception as e:
+            logger.error(f"Failed to create backup for {file_path}: {e}")
+            raise FileProcessingError(f"Backup failed: {e}")
+    
+    def cleanup_old_backups(self, days_old: int = 30):
+        """Clean up backups older than specified days"""
+        try:
+            cutoff_time = time.time() - (days_old * 24 * 60 * 60)
+            for filename in os.listdir(self.backup_dir):
+                file_path = os.path.join(self.backup_dir, filename)
+                if os.path.isfile(file_path) and os.path.getctime(file_path) < cutoff_time:
+                    os.remove(file_path)
+                    logger.info(f"Removed old backup: {filename}")
+        except Exception as e:
+            logger.error(f"Error cleaning up backups: {e}")
+
+class InputValidator:
+    """Validates user inputs and file integrity"""
+    
+    @staticmethod
+    def validate_file_exists(file_path: str) -> bool:
+        """Check if file exists and is accessible"""
+        try:
+            return os.path.exists(file_path) and os.path.isfile(file_path)
+        except Exception:
+            return False
+    
+    @staticmethod
+    def validate_folder_exists(folder_path: str) -> bool:
+        """Check if folder exists and is accessible"""
+        try:
+            return os.path.exists(folder_path) and os.path.isdir(folder_path)
+        except Exception:
+            return False
+    
+    @staticmethod
+    def validate_file_size(file_path: str, max_size_mb: int = 50) -> bool:
+        """Check if file size is within limits"""
+        try:
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            return size_mb <= max_size_mb
+        except Exception:
+            return False
+    
+    @staticmethod
+    def validate_excel_file(file_path: str, required_sheets: List[str] = None) -> Tuple[bool, str]:
+        """Validate Excel file format and required sheets"""
+        if required_sheets is None:
+            required_sheets = config.get("required_sheets", ["Sheet1", "L&D"])
+        
+        try:
+            if not file_path.endswith(('.xlsx', '.xls')):
+                return False, "File must be an Excel file (.xlsx or .xls)"
+            
+            if not InputValidator.validate_file_exists(file_path):
+                return False, "File does not exist or is not accessible"
+            
+            if not InputValidator.validate_file_size(file_path, config.get("max_file_size_mb", 50)):
+                return False, f"File size exceeds {config.get('max_file_size_mb', 50)}MB limit"
+            
+            # Check if file can be opened and has required sheets
+            excel_file = pd.ExcelFile(file_path)
+            available_sheets = excel_file.sheet_names
+            
+            missing_sheets = [sheet for sheet in required_sheets if sheet not in available_sheets]
+            if missing_sheets:
+                return False, f"Missing required sheets: {', '.join(missing_sheets)}"
+            
+            excel_file.close()
+            return True, "Valid Excel file"
+            
+        except Exception as e:
+            logger.error(f"Error validating Excel file {file_path}: {e}")
+            return False, f"Error reading file: {str(e)}"
+    
+    @staticmethod
+    def validate_folder_writable(folder_path: str) -> bool:
+        """Check if folder is writable"""
+        try:
+            test_file = os.path.join(folder_path, "test_write.tmp")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            return True
+        except Exception:
+            return False
+
+class ProgressTracker:
+    """Manages progress tracking for long operations"""
+    def __init__(self, parent_widget, total_steps: int = 100):
+        self.parent = parent_widget
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.progress_window = None
+        self.progress_bar = None
+        self.status_label = None
+        self.cancelled = False
+    
+    def show(self, title: str = "Processing..."):
+        """Show progress window"""
+        self.progress_window = tk.Toplevel(self.parent)
+        self.progress_window.title(title)
+        self.progress_window.geometry("400x120")
+        self.progress_window.resizable(False, False)
+        self.progress_window.grab_set()
+        
+        # Center the window
+        self.progress_window.update_idletasks()
+        x = (self.progress_window.winfo_screenwidth() // 2) - (400 // 2)
+        y = (self.progress_window.winfo_screenheight() // 2) - (120 // 2)
+        self.progress_window.geometry(f"400x120+{x}+{y}")
+        
+        self.status_label = tk.Label(self.progress_window, text="Initializing...", font=("Helvetica", 10))
+        self.status_label.pack(pady=10)
+        
+        self.progress_bar = ttk.Progressbar(self.progress_window, length=350, mode='determinate')
+        self.progress_bar.pack(pady=5)
+        
+        cancel_button = tk.Button(self.progress_window, text="Cancel", 
+                                command=self._cancel, bg="#ff6b6b", fg="white")
+        cancel_button.pack(pady=5)
+        
+        self.progress_window.protocol("WM_DELETE_WINDOW", self._cancel)
+    
+    def update(self, step: int, status: str = ""):
+        """Update progress"""
+        if self.progress_window and not self.cancelled:
+            self.current_step = step
+            progress_percent = (step / self.total_steps) * 100
+            self.progress_bar['value'] = progress_percent
+            if status:
+                self.status_label.config(text=status)
+            self.progress_window.update()
+    
+    def _cancel(self):
+        """Cancel operation"""
+        self.cancelled = True
+        if self.progress_window:
+            self.progress_window.destroy()
+    
+    def close(self):
+        """Close progress window"""
+        if self.progress_window:
+            self.progress_window.destroy()
+    
+    def is_cancelled(self) -> bool:
+        """Check if operation was cancelled"""
+        return self.cancelled
+
+# ============================================================================
+# DATA PROCESSING FUNCTIONS
+# ============================================================================
 
 def convert_code(x):
+    """Convert code with error handling"""
     if pd.isna(x):
         return x
     try:
         num = int(x)
         return f"{num:02d}"
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Error converting code {x}: {e}")
         return str(x)
 
 def validate_group_grade(user_id, role_type):
-    """Validate if user's group grade matches role requirements"""
-    if user_info_df is None:
-        return True, "No validation data" # Skip validation if no user info
-        
-    def format_id(id_value):
-        if pd.isna(id_value):
-            return None
-        id_str = str(id_value).split('.')[0]
-        return id_str.zfill(8)
-        
-    def normalize_grade (grade):
-        if pd.isna(grade):
-            return None
-        grade_str = str(grade).strip().upper()
-        if grade_str == 'MD':
-            return 'MD'
-        grade_str = grade_str.lstrip('0')
-        if grade_str.isdigit():
-            return grade_str.zfill(2)
-        return grade_str
-        
-    formatted_user_id = format_id(user_id)
-    
-    user_info_df ['Formatted_User_ID'] = user_info_df ['User ID'].apply(format_id)
-    user_info_df['Formatted_PERSON_ID_EXTERNAL'] = user_info_df['PERSON_ID_EXTERNAL'].apply(format_id)
-    
-    #First try User ID Lookup
-    user_row = user_info_df [user_info_df['Formatted_User_ID'] == str(formatted_user_id)]
-    
-    #If not found, try PERSON_ID_EXTERNAL
-    if user_row.empty:
-        user_row = user_info_df[user_info_df['Formatted_PERSON_ID_EXTERNAL'] == str(user_id)]
-        
-    if user_row.empty:
-        return False, "User not found"
-        
-    raw_grade = user_row['Group Grade'].values[0]
-    group_grade = normalize_grade(raw_grade)
-    
-    #Validation rules
-    if role_type == "Role Holder1 Preparer":
-        valid = group_grade in ['06', '05', '04','03','02', '01', 'MD']
-    elif role_type == "Role Holder2 Reviewer":
-        valid = group_grade in ['05', '04', '03','02','01', 'MD']
-    elif role_type == "Role Holder3Account Owner": # Role Holder3
-        valid = group_grade in ['04','03','02', '01', 'MD']
-    else:
-        valid = True
-    
-    return valid, group_grade
-
-
- 
-def add_detailed_conflict_log(
-    df,
-    special_columns,
-    submitted_by_col='Submitted by',
-    submitted_time_col='Submitted time'
-    ):
-    # Get all columns not in special_columns
-    group_columns = [col for col in df.columns if col not in special_columns]
-
-    # Identify columns to check for matching ('PS ID' or 'Name' in name)
-    match_columns = [col for col in special_columns if ('PS ID' in col) or ('Name' in col)]
-
-    #Initialize conflict log column
-    df['Conflict Log'] = ''
-
-    # Group by all non-special columns
-    grouped = df.groupby (group_columns, dropna=False)
-
-    for name, group in grouped:
-        if len(group) > 1:
-            conflict_lines = ['']
-
-            # FIRST: Check matching columns ('PS ID' or 'Name')
-            matching_conflicts = False
-            for col in match_columns:
-                unique_values = group[col].dropna().unique()
-                if len(unique_values) > 1:
-                    matching_conflicts = True
-                    value_groups = group.groupby(col)[[submitted_by_col, submitted_time_col]].agg(
-                    lambda x: '|'.join(map(str, x.unique()))
-                    )
+    """Validate if user's group grade matches role requirements with enhanced error handling"""
+    try:
+        if user_info_df is None:
+            logger.warning("No user info available for validation")
+            return True, "No validation data"  # Skip validation if no user info
             
-                    for value, (submitters, times) in value_groups.iterrows():
-                        conflict_lines.append(
-                            f"- {col} has value '{value}' "
-                            f" (Submitted by: {submitters}, "
-                            f"Submitted time: {times})"
+        def format_id(id_value):
+            if pd.isna(id_value):
+                return None
+            id_str = str(id_value).split('.')[0]
+            return id_str.zfill(8)
+            
+        def normalize_grade(grade):
+            if pd.isna(grade):
+                return None
+            grade_str = str(grade).strip().upper()
+            if grade_str == 'MD':
+                return 'MD'
+            grade_str = grade_str.lstrip('0')
+            if grade_str.isdigit():
+                return grade_str.zfill(2)
+            return grade_str
+            
+        formatted_user_id = format_id(user_id)
+        
+        user_info_df['Formatted_User_ID'] = user_info_df['User ID'].apply(format_id)
+        user_info_df['Formatted_PERSON_ID_EXTERNAL'] = user_info_df['PERSON_ID_EXTERNAL'].apply(format_id)
+        
+        # First try User ID Lookup
+        user_row = user_info_df[user_info_df['Formatted_User_ID'] == str(formatted_user_id)]
+        
+        # If not found, try PERSON_ID_EXTERNAL
+        if user_row.empty:
+            user_row = user_info_df[user_info_df['Formatted_PERSON_ID_EXTERNAL'] == str(user_id)]
+            
+        if user_row.empty:
+            logger.warning(f"User {user_id} not found in validation data")
+            return False, "User not found"
+            
+        raw_grade = user_row['Group Grade'].values[0]
+        group_grade = normalize_grade(raw_grade)
+        
+        # Validation rules
+        if role_type == "Role Holder1 Preparer":
+            valid = group_grade in ['06', '05', '04', '03', '02', '01', 'MD']
+        elif role_type == "Role Holder2 Reviewer":
+            valid = group_grade in ['05', '04', '03', '02', '01', 'MD']
+        elif role_type == "Role Holder3Account Owner":  # Role Holder3
+            valid = group_grade in ['04', '03', '02', '01', 'MD']
+        else:
+            valid = True
+        
+        logger.info(f"Grade validation for user {user_id}, role {role_type}: {valid} (grade: {group_grade})")
+        return valid, group_grade
+        
+    except Exception as e:
+        logger.error(f"Error in grade validation for user {user_id}, role {role_type}: {e}")
+        return False, f"Validation error: {str(e)}"
+
+def add_detailed_conflict_log(df, special_columns, submitted_by_col='Submitted by', submitted_time_col='Submitted time'):
+    """Add detailed conflict logging with enhanced error handling"""
+    try:
+        # Get all columns not in special_columns
+        group_columns = [col for col in df.columns if col not in special_columns]
+
+        # Identify columns to check for matching ('PS ID' or 'Name' in name)
+        match_columns = [col for col in special_columns if ('PS ID' in col) or ('Name' in col)]
+
+        # Initialize conflict log column
+        df['Conflict Log'] = ''
+
+        # Group by all non-special columns
+        grouped = df.groupby(group_columns, dropna=False)
+
+        for name, group in grouped:
+            if len(group) > 1:
+                conflict_lines = ['']
+
+                # FIRST: Check matching columns ('PS ID' or 'Name')
+                matching_conflicts = False
+                for col in match_columns:
+                    unique_values = group[col].dropna().unique()
+                    if len(unique_values) > 1:
+                        matching_conflicts = True
+                        value_groups = group.groupby(col)[[submitted_by_col, submitted_time_col]].agg(
+                            lambda x: '|'.join(map(str, x.unique()))
                         )
-            
-            #Join all conflict lines
-            df.loc[group.index, 'Conflict Log'] = '\n'.join(conflict_lines) if len(conflict_lines) > 1 else ''
+                
+                        for value, (submitters, times) in value_groups.iterrows():
+                            conflict_lines.append(
+                                f"- {col} has value '{value}' "
+                                f" (Submitted by: {submitters}, "
+                                f"Submitted time: {times})"
+                            )
+                
+                # Join all conflict lines
+                df.loc[group.index, 'Conflict Log'] = '\n'.join(conflict_lines) if len(conflict_lines) > 1 else ''
 
-    return df
+        logger.info(f"Added conflict logging for {len(df)} rows")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error adding conflict log: {e}")
+        raise FileProcessingError(f"Failed to add conflict log: {e}")
 
+# ============================================================================
+# UI HELPER FUNCTIONS
+# ============================================================================
+
+def safe_file_operation(operation_func, error_message: str = "Operation failed"):
+    """Decorator for safe file operations with error handling"""
+    def decorator(*args, **kwargs):
+        try:
+            return operation_func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"{error_message}: {e}")
+            messagebox.showerror("Error", f"{error_message}: {str(e)}")
+            return None
+    return decorator
+
+def show_confirmation_dialog(title: str, message: str) -> bool:
+    """Show confirmation dialog"""
+    return messagebox.askyesno(title, message)
+
+def validate_and_show_errors(files: List[str]) -> Tuple[List[str], List[str]]:
+    """Validate files and show errors"""
+    valid_files = []
+    errors = []
+    
+    for file in files:
+        is_valid, error_msg = InputValidator.validate_excel_file(file)
+        if is_valid:
+            valid_files.append(file)
+        else:
+            errors.append(f"{os.path.basename(file)}: {error_msg}")
+    
+    if errors:
+        error_message = "The following files have validation errors:\n\n" + "\n".join(errors)
+        if valid_files:
+            error_message += f"\n\n{len(valid_files)} files passed validation and will be processed."
+        messagebox.showwarning("File Validation Errors", error_message)
+    
+    return valid_files, errors
+
+# ============================================================================
+# FILE SELECTION AND PROCESSING FUNCTIONS
+# ============================================================================
+
+@safe_file_operation
 def select_files():
-    files = filedialog.askopenfilenames(title="Select Excel Files", filetypes=[("Excel files", "*.xlsx")])
+    """Select files with validation"""
+    files = filedialog.askopenfilenames(
+        title="Select Excel Files", 
+        filetypes=[("Excel files", "*.xlsx"), ("Excel files", "*.xls")]
+    )
+    
+    if not files:
+        return
+    
+    # Validate selected files
+    valid_files, errors = validate_and_show_errors(list(files))
+    
     file_list.clear()
-    file_list.extend(list(files))
+    file_list.extend(valid_files)
+    
+    if valid_files:
+        logger.info(f"Selected {len(valid_files)} valid files")
+        update_status(f"Selected {len(valid_files)} valid files", "green")
+    else:
+        update_status("No valid files selected", "red")
+    
     update_stats()
 
+@safe_file_operation
 def select_folder():
+    """Select destination folder with validation"""
     folder = filedialog.askdirectory(title="Select Destination Folder")
     if folder:
+        if not InputValidator.validate_folder_exists(folder):
+            messagebox.showerror("Error", "Selected folder does not exist or is not accessible")
+            return
+        
+        if not InputValidator.validate_folder_writable(folder):
+            messagebox.showerror("Error", "Selected folder is not writable")
+            return
+        
         folder_path.set(folder)
+        logger.info(f"Selected destination folder: {folder}")
+        update_status("Destination folder selected", "green")
     update_stats()
 
 def merge_and_format_rows(df, row_nums, dest_path, validation_errors=None):
@@ -234,96 +593,190 @@ def show_validation_popup(errors, proceed_callback, review_callback):
     tk.Button(button_frame, text="Save for Review", command=lambda: [review_callback(), popup.destroy()]).pack(side=tk.RIGHT, padx=16)
 
 def save_files():
+    """Enhanced save_files function with comprehensive error handling and progress tracking"""
+    # Input validation
     if not file_list:
         update_status("Error: No files selected", "red")
+        logger.warning("Save attempted with no files selected")
         return
     if not folder_path.get():
         update_status("Error: No folder selected", "red")
+        logger.warning("Save attempted with no folder selected")
+        return
+
+    # Final validation of selected files and folder
+    valid_files, file_errors = validate_and_show_errors(file_list)
+    if not valid_files:
+        update_status("Error: No valid files to process", "red")
+        return
+    
+    if not InputValidator.validate_folder_writable(folder_path.get()):
+        update_status("Error: Cannot write to destination folder", "red")
+        messagebox.showerror("Error", "The destination folder is not writable. Please check permissions.")
+        return
+
+    # Confirmation dialog for processing
+    if not show_confirmation_dialog("Confirm Processing", 
+                                   f"Process {len(valid_files)} files and save to destination folder?"):
+        update_status("Processing cancelled by user", "orange")
         return
 
     timestamp_for_filename = datetime.now().strftime("%d%m%Y_%H%M%S")
     timestamp_for_excel = datetime.now().strftime("%d%m%Y|%H%M%S")
     global user_info_df
     
+    # Initialize backup manager
+    backup_manager = BackupManager() if config.get("backup_enabled") else None
+    
+    # Setup progress tracking
+    progress = ProgressTracker(root, len(valid_files) * 10)  # 10 steps per file
+    progress.show("Processing Files...")
+    
+    def process_files_thread():
+        """Process files in separate thread to prevent UI freezing"""
+        try:
+            process_files_with_progress(valid_files, timestamp_for_filename, 
+                                      timestamp_for_excel, backup_manager, progress)
+        except Exception as e:
+            logger.error(f"Error in file processing thread: {e}")
+            root.after(0, lambda: update_status(f"Error: {str(e)}", "red"))
+        finally:
+            root.after(0, lambda: progress.close())
+    
+    # Start processing in separate thread
+    thread = threading.Thread(target=process_files_thread, daemon=True)
+    thread.start()
+
+def process_files_with_progress(valid_files, timestamp_for_filename, timestamp_for_excel, backup_manager, progress):
+    """Process files with detailed progress tracking and error handling"""
+    global user_info_df
+    
     try:
-       validation_errors = []
-       
-       for file in file_list:
-            df = pd.read_excel (file, sheet_name='Sheet1', header=[0, 1, 2])
-            user_info_df = pd.read_excel (file,sheet_name='L&D', header=1)
-
+        validation_errors = []
+        processed_files = 0
+        
+        for file_index, file in enumerate(valid_files):
+            if progress.is_cancelled():
+                logger.info("Processing cancelled by user")
+                root.after(0, lambda: update_status("Processing cancelled", "orange"))
+                return
+            
+            # Update progress
+            progress.update(file_index * 10, f"Processing file {file_index + 1}/{len(valid_files)}: {os.path.basename(file)}")
+            
+            # Create backup if enabled
+            if backup_manager and config.get("auto_save_backup"):
+                try:
+                    backup_manager.create_backup(file)
+                    progress.update(file_index * 10 + 1, "Backup created")
+                except Exception as e:
+                    logger.warning(f"Backup failed for {file}: {e}")
+            
+            try:
+                # Read Excel file with error handling
+                progress.update(file_index * 10 + 2, "Reading Excel file...")
+                df = pd.read_excel(file, sheet_name='Sheet1', header=[0, 1, 2])
+                user_info_df = pd.read_excel(file, sheet_name='L&D', header=1)
+                logger.info(f"Successfully read file: {file}")
+                
+            except Exception as e:
+                logger.error(f"Failed to read Excel file {file}: {e}")
+                validation_errors.append({
+                    'file': file,
+                    'row': 1,
+                    'role': None,
+                    'ps_id': None,
+                    'name': None,
+                    'grade': None,
+                    'description': f"Failed to read file: {str(e)}"
+                })
+                continue
+            
             # Process the file (columns dropping etc.)
-            drop_columns = []
-            for i in range(len(df.columns)):
-                if "Comments." in df.columns[i][2]:
-                    drop_columns.append(df.columns[i])
+            progress.update(file_index * 10 + 3, "Processing columns...")
+            try:
+                
+                drop_columns = []
+                for i in range(len(df.columns)):
+                    if "Comments." in df.columns[i][2]:
+                        drop_columns.append(df.columns[i])
 
-            df = df.drop(columns=drop_columns)
+                df = df.drop(columns=drop_columns)
 
-            multi_column = []
-            for i in range(len(df.columns)):
-                if "Unnamed" in df.columns[i][0]:
-                    multi_column.append(df.columns[i])
+                multi_column = []
+                for i in range(len(df.columns)):
+                    if "Unnamed" in df.columns[i][0]:
+                        multi_column.append(df.columns[i])
 
-            df = df.replace("'nan", np.nan)
-            df.columns = pd.MultiIndex.from_tuples([tuple(s.replace('\n','') for s in col) for col in df.columns])
+                df = df.replace("'nan", np.nan)
+                df.columns = pd.MultiIndex.from_tuples([tuple(s.replace('\n','') for s in col) for col in df.columns])
 
-            col_to_check = [col for col in df.columns if col not in multi_column]
+                col_to_check = [col for col in df.columns if col not in multi_column]
 
-            role_holders = ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]
+                role_holders = ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]
 
-            target_cols = [("Proposed changes", role, field) for role in role_holders for field in ["PS ID", "Name"]]
+                target_cols = [("Proposed changes", role, field) for role in role_holders for field in ["PS ID", "Name"]]
 
-            def is_partial(row):
-                values = [str(row[col]).strip() for col in target_cols]
-                blanks = [v == '' or v.lower() == 'nan' for v in values]
+                def is_partial(row):
+                    values = [str(row[col]).strip() for col in target_cols]
+                    blanks = [v == '' or v.lower() == 'nan' for v in values]
 
-                total_blanks = sum(blanks)
+                    total_blanks = sum(blanks)
 
-                return not (total_blanks == 0 or total_blanks == len(target_cols))
+                    return not (total_blanks == 0 or total_blanks == len(target_cols))
 
-            df[('check','','')] = df.apply(is_partial, axis=1)
+                df[('check','','')] = df.apply(is_partial, axis=1)
+                
+                progress.update(file_index * 10 + 4, "Performing validation checks...")
 
-            #Perform validation if user info is available
-            if user_info_df is not None:
-                for i, row in df.iterrows():
-                    if row[("check", '', '')]:
-                        validation_errors.append({
-                            'file': file,
-                            'row': 1+4, #Excel row numbers (1-based + 3 header rows)
-                            'role': None,
-                            'ps_id': None,
-                            'name': None,
-                            'grade': None,
-                            'description': "Missing data in Role Holder column/columns"
-                            })
-
-                    for role_col in role_holders:
-                        ps_id = row[("Proposed changes", role_col, "PS ID")]
-                        name = row[("Proposed changes", role_col, "Name")]
-
-                        if pd.notna(ps_id):
-                            valid, grade = validate_group_grade(ps_id, role_col)
-                            if not valid:
-                                description = None
-                            if role_col == "Role Holder1 Preparer":
-                                description = f"{role_col} require grade to be GCB6 and above"
-                            elif role_col == "Role Holder2 Reviewer":
-                                description = f"{role_col} require grade to be GCB5 and above"
-                            elif role_col == "Role Holder3Account Owner":
-                                description = f"{role_col} require grade to be GCB4 and above"
-                            else:
-                                description = None
-
+                # Perform validation if user info is available
+                if user_info_df is not None:
+                    total_rows = len(df)
+                    for i, row in df.iterrows():
+                        # Update progress for validation
+                        if i % 50 == 0:  # Update every 50 rows to avoid too frequent updates
+                            progress.update(file_index * 10 + 4 + int((i/total_rows) * 2), 
+                                          f"Validating row {i+1}/{total_rows}")
+                        
+                        if row[("check", '', '')]:
                             validation_errors.append({
-                                'file':file,
-                                'row': i+4, # Excel row numbers (1-based + 3 header rows)
-                                'role':role_col,
-                                'ps_id':ps_id,
-                                'name': name,
-                                'grade':grade,
-                                'description': description
+                                'file': file,
+                                'row': i+4, #Excel row numbers (1-based + 3 header rows)
+                                'role': None,
+                                'ps_id': None,
+                                'name': None,
+                                'grade': None,
+                                'description': "Missing data in Role Holder column/columns"
                                 })
+
+                        for role_col in role_holders:
+                            ps_id = row[("Proposed changes", role_col, "PS ID")]
+                            name = row[("Proposed changes", role_col, "Name")]
+
+                            if pd.notna(ps_id):
+                                valid, grade = validate_group_grade(ps_id, role_col)
+                                if not valid:
+                                    description = None
+                                    if role_col == "Role Holder1 Preparer":
+                                        description = f"{role_col} require grade to be GCB6 and above"
+                                    elif role_col == "Role Holder2 Reviewer":
+                                        description = f"{role_col} require grade to be GCB5 and above"
+                                    elif role_col == "Role Holder3Account Owner":
+                                        description = f"{role_col} require grade to be GCB4 and above"
+                                    else:
+                                        description = None
+
+                                    validation_errors.append({
+                                        'file':file,
+                                        'row': i+4, # Excel row numbers (1-based + 3 header rows)
+                                        'role':role_col,
+                                        'ps_id':ps_id,
+                                        'name': name,
+                                        'grade':grade,
+                                        'description': description
+                                        })
+                
+                progress.update(file_index * 10 + 6, "Data enrichment in progress...")
 
                 df = df.drop(columns=[("check","","")])
                 for role_col in ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]:
@@ -361,8 +814,8 @@ def save_files():
                         enriched = enriched.join(fallback[['Manually added column','Contact Email Address','BF Level 1','BF Level 2','BF Level 3','BF Level 4','BF Level 5']],rsuffix="_fallback")
 
                         for col in ['Manually added column', 'Contact Email Address', 'BF Level 1', 'BF Level 2', 'BF Level 3', 'BF Level 4', 'BF Level 5']:
-                            enriched[col] = enriched[col].combine_first(enriched[f'{col}_fallback'])
-                            enriched = enriched.drop(f'{col}_fallback', axis=1, errors='ignore')
+                            enriched[col] = enriched[col].combine_first(enriched [f'(col)_fallback'])
+                            enriched = enriched.drop(f'(col)_fallback', axis=1, errors='ignore')
 
                     # Rename new columns to indicate role holder
                     enriched.rename(columns={
@@ -394,163 +847,128 @@ def save_files():
                     df = df[cols_reordered]
                     col_tuples = [tuple(col.split("|")) for col in df.columns]
                     df.columns = pd.MultiIndex.from_tuples(col_tuples)
-                    
-            df = df.replace("'nan", np.nan)
-            
-            df[("", "", "Submitted by")] = np.nan
-            df[("", "", "Submitted time")] = np.nan
-            
-            condition = df[col_to_check].notna().any(axis=1)
-            
-            df.loc[condition, ("", "", "Submitted by")] = keyword
-            df.loc[condition, ("", "", "Submitted time")] = timestamp_for_excel
-            
-            base_name = os.path.basename(file)
-            name, ext = os.path.splitext(base_name)
-
-            def proceed_with_saving():
-                """Save directly to the destination folder"""
-                new_name = f"{name}_{keyword}_{timestamp_for_filename}{ext}"
-                dest_path = os.path.join(folder_path.get(), new_name)
                 
-                row_errors = {}
-                for error in validation_errors:
-                    if error['row'] not in row_errors:
-                        row_errors [error['row']] = []
-                        
-                    if error['role'] is not None:
-                        error_msg = (f"{error['role']} {error['ps_id']}-{error['name']} has invalid grade {error['grade']}")
-                    else:
-                        error_msg = ("Missing data in Role Holder column/columns")
-                    row_errors [error['row']].append(error_msg)
+                df = df.replace("'nan", np.nan)
+                
+                df[("", "", "Submitted by")] = np.nan
+                df[("", "", "Submitted time")] = np.nan
+                
+                condition = df[col_to_check].notna().any(axis=1)
+                
+                df.loc[condition, ("", "", "Submitted by")] = keyword
+                df.loc[condition, ("", "", "Submitted time")] = timestamp_for_excel
+                
+                base_name = os.path.basename(file)
+                name, ext = os.path.splitext(base_name)
+
+                def proceed_with_saving():
+                    """Save directly to the destination folder"""
+                    new_name = f"{name}_{keyword}_{timestamp_for_filename}{ext}"
+                    dest_path = os.path.join(folder_path.get(), new_name)
                     
-                #Add validation comments to cells if saving with errors
-                if validation_errors:
-                    # Create a comments column if it doesn't exist
-                    if ("", "", "Validation Log") not in df.columns:
-                        df[("", "", "Validation Log")] = ""
+                    row_errors = {}
+                    for error in validation_errors:
+                        if error['row'] not in row_errors:
+                            row_errors [error['row']] = []
+                            
+                        if error['role'] is not None:
+                            error_msg = (f"{error['role']} {error['ps_id']}-{error['name']} has invalid grade {error['grade']}")
+                        else:
+                            error_msg = ("Missing data in Role Holder column/columns")
+                        row_errors [error['row']].append(error_msg)
                         
-                    for row_num, errors in row_errors.items():
-                        combined_comment = "VALIDATION ISSUES: \n- "+"\n- ".join(errors)
-                        df.at[row_num-4, ("", "", "Validation Log")] = combined_comment
-                        
-                merge_and_format_rows(df, [1,2], dest_path, validation_errors)
-                update_status(f"Success: {len(file_list)} files saved!", "green")
+                    #Add validation comments to cells if saving with errors
+                    if validation_errors:
+                        # Create a comments column if it doesn't exist
+                        if ("", "", "Validation Log") not in df.columns:
+                            df[("", "", "Validation Log")] = ""
+                            
+                        for row_num, errors in row_errors.items():
+                            combined_comment = "VALIDATION ISSUES: \n- "+"\n- ".join(errors)
+                            df.at[row_num-4, ("", "", "Validation Log")] = combined_comment
+                            
+                    merge_and_format_rows(df, [1,2], dest_path, validation_errors)
+                    update_status(f"Success: {len(file_list)} files saved!", "green")
 
-            def save_for_review():
-                """Ask for review location and save with detailed error log"""
-                review_folder = filedialog.askdirectory(
-                    title="Select Review Folder Location",
-                    initialdir=folder_path.get()
-                )
-
-                if not review_folder:
-                    update_status("Save cancelled", "orange")
-                    return
-                    
-                new_name = f"{name}_{keyword}_{timestamp_for_filename}_REVIEW{ext}"
-                dest_path = os.path.join(review_folder, new_name)
-
-                # Create a workbook with formatted main sheet and simple error Log
-                workbook = Workbook()
-
-                # ===== MAIN DATA SHEET (formatted like original) =====
-                main_sheet = workbook.active
-                main_sheet.title = "Data"
-
-                # Write headers with multi-level formatting
-                for col_idx, col in enumerate(df.columns, 1):
-                    main_sheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
-                    main_sheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
-                    main_sheet.cell(row=3, column=col_idx).value = col[2]
-
-                #Write data (starting from row 4)
-                for row_idx, row_data in enumerate(df.values, 4):
-                    for col_idx, value in enumerate(row_data, 1):
-                        main_sheet.cell(row=row_idx, column=col_idx).value = value
-
-                #Apply the same formatting as merge_and_format_rows
-                thin_border = Border(
-                    left= Side(style='thin'),
-                    right= Side(style='thin'),
-                    top=Side(style='thin'),
-                    bottom=Side(style='thin')
+                def save_for_review():
+                    """Ask for review location and save with detailed error log"""
+                    review_folder = filedialog.askdirectory(
+                        title="Select Review Folder Location",
+                        initialdir=folder_path.get()
                     )
-                    
-                max_col = main_sheet.max_column
-                for row_num in [1, 2]: # Format header rows
-                    start_col = None
-                    prev_value = None
-                    
-                    for col in range(1, max_col + 2): # +2 to catch Last group
-                        curr_cell = main_sheet.cell(row=row_num, column=col)
-                        curr_value = curr_cell.value if col <= max_col else None
+
+                    if not review_folder:
+                        update_status("Save cancelled", "orange")
+                        return
                         
-                        if prev_value is None and isinstance(curr_value, str):
-                            prev_value = curr_value
-                            start_col = col
-                        elif prev_value is not None and curr_value != prev_value:
-                            if start_col is not None and col - start_col > 1:
-                                # Merge range
-                                start_letter = get_column_letter(start_col)
-                                end_letter = get_column_letter(col - 1)
-                                main_sheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
+                    new_name = f"{name}_{keyword}_{timestamp_for_filename}_REVIEW{ext}"
+                    dest_path = os.path.join(review_folder, new_name)
 
-                            #Format merged cell
-                            target_cell = main_sheet.cell(row=row_num, column=start_col)
-                            target_cell.font = Font(bold=True)
-                            target_cell.alignment = Alignment(horizontal='center', vertical='center')
-                            
-                            for c in range(start_col, col):
-                                main_sheet.cell(row=row_num, column=c).border = thin_border
-                                
-                                
-                            prev_value = curr_value
-                            start_col = col if isinstance(curr_value, str) else None
+                    # Create a workbook with formatted main sheet and simple error Log
+                    workbook = Workbook()
 
-                # Highlight validation errors
-                for error in validation_errors:
+                    # ===== MAIN DATA SHEET (formatted like original) =====
+                    main_sheet = workbook.active
+                    main_sheet.title = "Data"
+
+                    # Write headers with multi-level formatting
                     for col_idx, col in enumerate(df.columns, 1):
-                        if col[1] == error['role'] and col[2] in ["PS ID", "Name"]:
-                            main_sheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
+                        main_sheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+                        main_sheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+                        main_sheet.cell(row=3, column=col_idx).value = col[2]
 
-                # Autofit columns for main sheet
-                for col in main_sheet.columns:
-                    max_length = 0
-                    col_letter = get_column_letter(col[0].column)
-                    for cell in col:
-                        try:
-                            if cell.value:
-                                max_length = max(max_length, len(str(cell.value)))
-                        except:
-                            pass
-                    adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
-                    main_sheet.column_dimensions [col_letter].width = adjusted_width
+                    #Write data (starting from row 4)
+                    for row_idx, row_data in enumerate(df.values, 4):
+                        for col_idx, value in enumerate(row_data, 1):
+                            main_sheet.cell(row=row_idx, column=col_idx).value = value
 
-                #===== ERROR LOG SHEET (simple format) =====
-                if validation_errors:
-                    error_sheet = workbook.create_sheet("Validation Errors")
-
-                    # Headers
-                    headers = ["Row", "Role", "PS ID", "Name", "Current Grade", "Validation Rule"]
-                    for col_idx, header in enumerate(headers, 1):
-                        cell = error_sheet.cell(row=1, column=col_idx, value=header)
-                        cell.font = Font(bold=True)
-                        cell.fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
-
-                    #Data rows
-                    for row_idx, error in enumerate (validation_errors, 2):
-                        error_sheet.append([
-                            error['row'],
-                            error['role'],
-                            error['ps_id'],
-                            error['name'],
-                            error['grade'],
-                            error['description']
-                            ])
+                    #Apply the same formatting as merge_and_format_rows
+                    thin_border = Border(
+                        left= Side(style='thin'),
+                        right= Side(style='thin'),
+                        top=Side(style='thin'),
+                        bottom=Side(style='thin')
+                        )
+                        
+                    max_col = main_sheet.max_column
+                    for row_num in [1, 2]: # Format header rows
+                        start_col = None
+                        prev_value = None
+                        
+                        for col in range(1, max_col + 2): # +2 to catch Last group
+                            curr_cell = main_sheet.cell(row=row_num, column=col)
+                            curr_value = curr_cell.value if col <= max_col else None
                             
-                    #Autofit columns for error sheet
-                    for col in error_sheet.columns:
+                            if prev_value is None and isinstance(curr_value, str):
+                                prev_value = curr_value
+                                start_col = col
+                            elif prev_value is not None and curr_value != prev_value:
+                                if start_col is not None and col - start_col > 1:
+                                    # Merge range
+                                    start_letter = get_column_letter(start_col)
+                                    end_letter = get_column_letter(col - 1)
+                                    main_sheet.merge_cells(f"{start_letter}{row_num}: {end_letter}{row_num}")
+
+                                #Format merged cell
+                                target_cell = main_sheet.cell(row=row_num, column=start_col)
+                                target_cell.font = Font(bold=True)
+                                target_cell.alignment = Alignment(horizontal='center', vertical='center')
+                                
+                                for c in range(start_col, col):
+                                    main_sheet.cell(row=row_num, column=c).border = thin_border
+                                    
+                                    
+                                prev_value = curr_value
+                                start_col = col if isinstance(curr_value, str) else None
+
+                    # Highlight validation errors
+                    for error in validation_errors:
+                        for col_idx, col in enumerate(df.columns, 1):
+                            if col[1] == error['role'] and col[2] in ["PS ID", "Name"]:
+                                main_sheet.cell(row=error['row'], column=col_idx).fill = ERROR_FILL
+
+                    # Autofit columns for main sheet
+                    for col in main_sheet.columns:
                         max_length = 0
                         col_letter = get_column_letter(col[0].column)
                         for cell in col:
@@ -559,21 +977,84 @@ def save_files():
                                     max_length = max(max_length, len(str(cell.value)))
                             except:
                                 pass
-                        adjusted_width = (max_length + 2)
-                        error_sheet.column_dimensions[col_letter].width = adjusted_width
+                        adjusted_width = (max_length + 2) if (max_length + 2) < 25 else 25
+                        main_sheet.column_dimensions [col_letter].width = adjusted_width
+
+                    #===== ERROR LOG SHEET (simple format) =====
+                    if validation_errors:
+                        error_sheet = workbook.create_sheet("Validation Errors")
+
+                        # Headers
+                        headers = ["Row", "Role", "PS ID", "Name", "Current Grade", "Validation Rule"]
+                        for col_idx, header in enumerate(headers, 1):
+                            cell = error_sheet.cell(row=1, column=col_idx, value=header)
+                            cell.font = Font(bold=True)
+                            cell.fill = PatternFill(start_color='DDDDDD', end_color='DDDDDD', fill_type='solid')
+
+                        #Data rows
+                        for row_idx, error in enumerate (validation_errors, 2):
+                            error_sheet.append([
+                                error['row'],
+                                error['role'],
+                                error['ps_id'],
+                                error['name'],
+                                error['grade'],
+                                error['description']
+                                ])
+                                
+                        #Autofit columns for error sheet
+                        for col in error_sheet.columns:
+                            max_length = 0
+                            col_letter = get_column_letter(col[0].column)
+                            for cell in col:
+                                try:
+                                    if cell.value:
+                                        max_length = max(max_length, len(str(cell.value)))
+                                except:
+                                    pass
+                            adjusted_width = (max_length + 2)
+                            error_sheet.column_dimensions[col_letter].width = adjusted_width
+                            
+                    workbook.save(dest_path)
+                    update_status(f"Saved for review: {len(file_list)} files to {review_folder}", "orange")
+                    os.startfile(review_folder)
+                    
+                    if validation_errors:
+                        show_validation_popup(validation_errors, proceed_with_saving, save_for_review)
+                    else:
+                        proceed_with_saving()
                         
-                workbook.save(dest_path)
-                update_status(f"Saved for review: {len(file_list)} files to {review_folder}", "orange")
-                os.startfile(review_folder)
-                
-            if validation_errors:
-                show_validation_popup(validation_errors, proceed_with_saving, save_for_review)
-            else:
-                proceed_with_saving()
+                    processed_files += 1
+                    progress.update(file_index * 10 + 9, f"Completed file {file_index + 1}/{len(valid_files)}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing file {file}: {e}")
+                root.after(0, lambda: messagebox.showerror("File Processing Error", 
+                                                         f"Error processing {os.path.basename(file)}:\n{str(e)}"))
+                continue
+        
+        # Final completion update
+        if not progress.is_cancelled():
+            progress.update(len(valid_files) * 10, f"Processing completed! {processed_files}/{len(valid_files)} files processed successfully.")
+            root.after(0, lambda: update_status(f"Success: {processed_files}/{len(valid_files)} files processed!", "green"))
+            logger.info(f"File processing completed: {processed_files}/{len(valid_files)} files processed successfully")
+        
+        # Cleanup old backups if enabled
+        if backup_manager:
+            try:
+                backup_manager.cleanup_old_backups()
+            except Exception as e:
+                logger.warning(f"Backup cleanup failed: {e}")
+        
+        root.after(0, lambda: update_stats())
+        
     except Exception as e:
-        print(e)
-        update_status (f"Error: (str(e)}", "red")
-    update_stats()
+        logger.error(f"Critical error in file processing: {e}")
+        root.after(0, lambda: update_status(f"Critical Error: {str(e)}", "red"))
+        root.after(0, lambda: messagebox.showerror("Critical Error", f"An unexpected error occurred:\n{str(e)}"))
+    finally:
+        if not progress.is_cancelled():
+            root.after(0, lambda: progress.close())
 
 def update_stats():
     stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
@@ -684,7 +1165,7 @@ def process_admin_files():
             else:
                 reviewers_cols = group[reviewers_columns]
                 all_reviewers_same = (reviewers_cols.drop_duplicates().shape[0] == 1)
-				
+                
                 if all_reviewers_same:
                     latest_row = group.loc[group['Submitted time'].idxmax()]
                     no_conflict = pd.concat([no_conflict,latest_row.to_frame().T],ignore_index=True)

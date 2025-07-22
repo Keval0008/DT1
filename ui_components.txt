@@ -1,0 +1,498 @@
+"""
+Minimal UI Components for BSRS Tool
+Clean, simple, and modern tkinter widgets
+"""
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from typing import List, Callable, Optional, Any
+import config
+import utils
+from validation import ValidationError
+
+class MinimalProgressDialog:
+    """Minimal progress dialog for operations"""
+    
+    def __init__(self, parent, title: str = "Processing"):
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title(title)
+        self.dialog.geometry("350x120")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.resizable(False, False)
+        self.dialog.configure(bg=config.COLORS['background'])
+        
+        # Remove window decorations for cleaner look
+        self.dialog.overrideredirect(False)
+        
+        # Center the dialog
+        self.center_dialog(parent)
+        
+        # Create widgets
+        self.setup_widgets()
+        self.cancelled = False
+    
+    def center_dialog(self, parent):
+        """Center dialog on parent window"""
+        self.dialog.update_idletasks()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+        
+        x = parent_x + (parent_w // 2) - (350 // 2)
+        y = parent_y + (parent_h // 2) - (120 // 2)
+        self.dialog.geometry(f"350x120+{x}+{y}")
+    
+    def setup_widgets(self):
+        """Setup minimal dialog widgets"""
+        main_frame = tk.Frame(self.dialog, bg=config.COLORS['background'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+        
+        # Status label
+        self.status_label = tk.Label(
+            main_frame, 
+            text="Starting...",
+            font=config.FONTS['body'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text']
+        )
+        self.status_label.pack(pady=(0, 10))
+        
+        # Progress bar
+        style = ttk.Style()
+        style.configure("Minimal.Horizontal.TProgressbar", 
+                       background=config.COLORS['primary'],
+                       troughcolor=config.COLORS['surface'])
+        
+        self.progress = ttk.Progressbar(
+            main_frame, 
+            length=300, 
+            mode='determinate',
+            style="Minimal.Horizontal.TProgressbar"
+        )
+        self.progress.pack(pady=(0, 10))
+        
+        # Cancel button
+        self.cancel_btn = tk.Button(
+            main_frame,
+            text="Cancel",
+            command=self.cancel,
+            font=config.FONTS['small'],
+            bg=config.COLORS['surface'],
+            fg=config.COLORS['text'],
+            border=0,
+            padx=15,
+            pady=5,
+            cursor='hand2'
+        )
+        self.cancel_btn.pack()
+    
+    def update_progress(self, percent: float, message: str = ""):
+        """Update progress"""
+        if self.cancelled:
+            return
+        
+        self.progress['value'] = percent
+        if message:
+            self.status_label.config(text=message)
+        self.dialog.update()
+    
+    def cancel(self):
+        """Cancel operation"""
+        self.cancelled = True
+        self.dialog.destroy()
+    
+    def close(self):
+        """Close dialog"""
+        if not self.cancelled:
+            self.dialog.destroy()
+
+class SimpleErrorDialog:
+    """Simple, clean error dialog"""
+    
+    def __init__(self, parent, errors: List[ValidationError], 
+                 proceed_callback: Callable, review_callback: Callable):
+        self.result = None
+        
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Validation Issues")
+        self.dialog.geometry("450x300")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.resizable(True, True)
+        self.dialog.configure(bg=config.COLORS['background'])
+        
+        self.center_dialog(parent)
+        self.proceed_callback = proceed_callback
+        self.review_callback = review_callback
+        
+        self.setup_widgets(errors)
+    
+    def center_dialog(self, parent):
+        """Center dialog on parent window"""
+        self.dialog.update_idletasks()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_w = parent.winfo_width()
+        parent_h = parent.winfo_height()
+        
+        x = parent_x + (parent_w // 2) - (450 // 2)
+        y = parent_y + (parent_h // 2) - (300 // 2)
+        self.dialog.geometry(f"450x300+{x}+{y}")
+    
+    def setup_widgets(self, errors: List[ValidationError]):
+        """Setup simple dialog widgets"""
+        main_frame = tk.Frame(self.dialog, bg=config.COLORS['background'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Title
+        title_label = tk.Label(
+            main_frame,
+            text=f"Found {len(errors)} validation issues",
+            font=config.FONTS['heading'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text']
+        )
+        title_label.pack(anchor=tk.W, pady=(0, 15))
+        
+        # Error list
+        self.create_error_list(main_frame, errors)
+        
+        # Simple buttons
+        self.create_buttons(main_frame)
+    
+    def create_error_list(self, parent, errors: List[ValidationError]):
+        """Create simple error list"""
+        # Container for list
+        list_frame = tk.Frame(parent, bg=config.COLORS['surface'], relief=tk.FLAT)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        
+        # Simple text widget with scrollbar
+        text_frame = tk.Frame(list_frame, bg=config.COLORS['surface'])
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        self.error_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text'],
+            border=0,
+            padx=10,
+            pady=10
+        )
+        
+        scrollbar = tk.Scrollbar(text_frame, command=self.error_text.yview)
+        self.error_text.configure(yscrollcommand=scrollbar.set)
+        
+        # Add errors to text widget
+        for i, error in enumerate(errors[:10]):  # Show first 10 errors
+            if error.role:
+                error_msg = f"• Row {error.row}: {error.role} - {error.description}\n"
+            else:
+                error_msg = f"• Row {error.row}: {error.description}\n"
+            self.error_text.insert(tk.END, error_msg)
+        
+        if len(errors) > 10:
+            self.error_text.insert(tk.END, f"\n...and {len(errors)-10} more issues")
+        
+        self.error_text.config(state=tk.DISABLED)
+        
+        self.error_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    def create_buttons(self, parent):
+        """Create simple action buttons"""
+        button_frame = tk.Frame(parent, bg=config.COLORS['background'])
+        button_frame.pack(fill=tk.X)
+        
+        # Cancel button (left)
+        cancel_btn = tk.Button(
+            button_frame,
+            text="Cancel",
+            command=self.cancel,
+            font=config.FONTS['button'],
+            bg=config.COLORS['surface'],
+            fg=config.COLORS['text'],
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        cancel_btn.pack(side=tk.LEFT)
+        
+        # Review button (right)
+        review_btn = tk.Button(
+            button_frame,
+            text="Save for Review",
+            command=self.save_for_review,
+            font=config.FONTS['button'],
+            bg=config.COLORS['warning'],
+            fg='white',
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        review_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Proceed button (right)
+        proceed_btn = tk.Button(
+            button_frame,
+            text="Save Anyway",
+            command=self.proceed,
+            font=config.FONTS['button'],
+            bg=config.COLORS['primary'],
+            fg='white',
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        proceed_btn.pack(side=tk.RIGHT, padx=(5, 0))
+    
+    def proceed(self):
+        """Proceed with saving"""
+        self.result = "proceed"
+        self.proceed_callback()
+        self.dialog.destroy()
+    
+    def save_for_review(self):
+        """Save for review"""
+        self.result = "review"
+        self.review_callback()
+        self.dialog.destroy()
+    
+    def cancel(self):
+        """Cancel operation"""
+        self.result = "cancel"
+        self.dialog.destroy()
+
+class CleanFileSelector:
+    """Minimal file selection component"""
+    
+    def __init__(self, parent, title: str, mode: str = "files", **kwargs):
+        self.parent = parent
+        self.title = title
+        self.mode = mode
+        self.selected_items = []
+        self.callback = None
+        
+        self.create_widgets()
+    
+    def create_widgets(self):
+        """Create clean file selector widgets"""
+        # Main container
+        self.container = tk.Frame(self.parent, bg=config.COLORS['background'])
+        
+        # Title
+        title_label = tk.Label(
+            self.container,
+            text=self.title,
+            font=config.FONTS['body'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text'],
+            anchor='w'
+        )
+        title_label.pack(fill=tk.X, pady=(0, 5))
+        
+        # Selection area
+        select_frame = tk.Frame(
+            self.container, 
+            bg=config.COLORS['surface'],
+            relief=tk.SOLID,
+            bd=1,
+            highlightbackground=config.COLORS['border'],
+            highlightthickness=1
+        )
+        select_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Browse button and info
+        content_frame = tk.Frame(select_frame, bg=config.COLORS['surface'])
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+        
+        # Browse button
+        browse_text = "Choose Files..." if self.mode == "files" else "Choose Folder..."
+        self.browse_btn = tk.Button(
+            content_frame,
+            text=browse_text,
+            command=self.browse,
+            font=config.FONTS['button'],
+            bg=config.COLORS['primary'],
+            fg='white',
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        self.browse_btn.pack(anchor=tk.W)
+        
+        # Selection info
+        self.info_label = tk.Label(
+            content_frame,
+            text="No selection",
+            font=config.FONTS['small'],
+            bg=config.COLORS['surface'],
+            fg=config.COLORS['text_light'],
+            anchor='w'
+        )
+        self.info_label.pack(fill=tk.X, pady=(10, 0))
+    
+    def browse(self):
+        """Open file/folder browser"""
+        if self.mode == "files":
+            files = filedialog.askopenfilenames(
+                title=f"Select Files",
+                filetypes=config.SUPPORTED_FILE_TYPES
+            )
+            
+            if files:
+                valid_files = []
+                for file in files:
+                    if utils.validate_file_path(file):
+                        valid_files.append(file)
+                
+                self.selected_items = valid_files
+                self.update_display()
+                
+                if self.callback:
+                    self.callback(self.selected_items)
+        else:
+            folder = filedialog.askdirectory(title="Select Folder")
+            
+            if folder and utils.validate_directory(folder):
+                self.selected_items = [folder]
+                self.update_display()
+                
+                if self.callback:
+                    self.callback(self.selected_items)
+    
+    def update_display(self):
+        """Update selection display"""
+        if not self.selected_items:
+            self.info_label.config(text="No selection")
+        else:
+            if self.mode == "files":
+                count = len(self.selected_items)
+                self.info_label.config(text=f"{count} file{'s' if count != 1 else ''} selected")
+            else:
+                folder_name = self.selected_items[0].split('/')[-1] or self.selected_items[0]
+                self.info_label.config(text=f"📁 {folder_name}")
+    
+    def set_callback(self, callback: Callable):
+        """Set selection callback"""
+        self.callback = callback
+    
+    def get_selection(self) -> List[str]:
+        """Get current selection"""
+        return self.selected_items
+    
+    def pack(self, **kwargs):
+        """Pack the container"""
+        self.container.pack(**kwargs)
+
+class SimpleStatusBar:
+    """Minimal status bar"""
+    
+    def __init__(self, parent):
+        self.container = tk.Frame(parent, bg=config.COLORS['surface'], height=25)
+        
+        self.status_label = tk.Label(
+            self.container,
+            text="Ready",
+            font=config.FONTS['small'],
+            bg=config.COLORS['surface'],
+            fg=config.COLORS['text_light'],
+            anchor='w'
+        )
+        self.status_label.pack(side=tk.LEFT, padx=10, pady=5)
+    
+    def set_status(self, message: str, color: str = None):
+        """Set status message"""
+        self.status_label.config(text=message)
+        if color:
+            self.status_label.config(fg=color)
+    
+    def pack(self, **kwargs):
+        """Pack the status bar"""
+        self.container.pack(**kwargs)
+
+def show_simple_message(parent, title: str, message: str, msg_type: str = "info"):
+    """Show simple message dialog"""
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.geometry("350x150")
+    dialog.transient(parent)
+    dialog.grab_set()
+    dialog.configure(bg=config.COLORS['background'])
+    dialog.resizable(False, False)
+    
+    # Center dialog
+    dialog.update_idletasks()
+    parent_x = parent.winfo_rootx()
+    parent_y = parent.winfo_rooty()
+    parent_w = parent.winfo_width()
+    parent_h = parent.winfo_height()
+    
+    x = parent_x + (parent_w // 2) - (350 // 2)
+    y = parent_y + (parent_h // 2) - (150 // 2)
+    dialog.geometry(f"350x150+{x}+{y}")
+    
+    main_frame = tk.Frame(dialog, bg=config.COLORS['background'])
+    main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+    
+    # Message
+    msg_label = tk.Label(
+        main_frame,
+        text=message,
+        font=config.FONTS['body'],
+        bg=config.COLORS['background'],
+        fg=config.COLORS['text'],
+        wraplength=300,
+        justify=tk.LEFT
+    )
+    msg_label.pack(expand=True)
+    
+    # OK button
+    color = config.COLORS['primary']
+    if msg_type == "error":
+        color = config.COLORS['error']
+    elif msg_type == "warning":
+        color = config.COLORS['warning']
+    elif msg_type == "success":
+        color = config.COLORS['success']
+    
+    ok_btn = tk.Button(
+        main_frame,
+        text="OK",
+        command=dialog.destroy,
+        font=config.FONTS['button'],
+        bg=color,
+        fg='white',
+        border=0,
+        padx=25,
+        pady=6,
+        cursor='hand2'
+    )
+    ok_btn.pack(pady=(10, 0))
+
+def configure_minimal_style():
+    """Configure minimal ttk styles"""
+    style = ttk.Style()
+    
+    # Use a clean theme
+    available_themes = style.theme_names()
+    if 'clam' in available_themes:
+        style.theme_use('clam')
+    
+    # Configure minimal button style
+    style.configure(
+        "Minimal.TButton",
+        padding=(15, 8),
+        font=config.FONTS['button'],
+        focuscolor='none'
+    )
+    
+    style.map("Minimal.TButton",
+              background=[('active', config.COLORS['primary']),
+                         ('pressed', config.COLORS['primary'])]) 

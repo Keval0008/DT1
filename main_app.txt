@@ -1,0 +1,488 @@
+"""
+BSRS Tool - Minimal Desktop Application
+Clean, simple, and modern interface for BSRS file processing
+"""
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import threading
+from pathlib import Path
+from typing import List, Optional
+
+import config
+import utils
+from utils import logger
+import validation
+import business_logic
+import ui_components
+from ui_components import (SimpleErrorDialog, MinimalProgressDialog, 
+                          CleanFileSelector, SimpleStatusBar, show_simple_message,
+                          configure_minimal_style)
+
+class BSRSApp:
+    """Minimal BSRS Application"""
+    
+    def __init__(self):
+        self.root = None
+        self.processor = business_logic.BSRSProcessor()
+        self.consolidator = business_logic.ConsolidationProcessor()
+        
+        # State variables
+        self.selected_files = []
+        self.destination_folder = ""
+        self.admin_input_folder = ""
+        self.admin_output_folder = ""
+        
+        self.setup_app()
+    
+    def setup_app(self):
+        """Setup the minimal application window"""
+        self.root = tk.Tk()
+        self.root.title(config.APP_NAME)
+        self.root.geometry(config.WINDOW_SIZE)
+        self.root.resizable(True, True)
+        self.root.configure(bg=config.COLORS['background'])
+        
+        # Configure minimal styles
+        configure_minimal_style()
+        
+        # Setup interface
+        self.setup_interface()
+        self.setup_status_bar()
+        
+        # Center window
+        self.center_window()
+        
+        logger.info("Minimal application initialized")
+    
+    def center_window(self):
+        """Center window on screen"""
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+    
+    def setup_interface(self):
+        """Setup minimal interface"""
+        # Main container
+        main_frame = tk.Frame(self.root, bg=config.COLORS['background'])
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=config.PADDING, pady=config.PADDING)
+        
+        # App title
+        title_label = tk.Label(
+            main_frame,
+            text=config.APP_NAME,
+            font=('Segoe UI', 18, 'bold'),
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text']
+        )
+        title_label.pack(pady=(0, 30))
+        
+        # Check if admin user for tab display
+        if config.CURRENT_USER in config.ADMIN_USERS:
+            self.setup_tabbed_interface(main_frame)
+        else:
+            self.setup_user_interface(main_frame)
+    
+    def setup_tabbed_interface(self, parent):
+        """Setup interface with tabs for admin users"""
+        # Simple tab buttons
+        tab_frame = tk.Frame(parent, bg=config.COLORS['background'])
+        tab_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        self.current_tab = "user"
+        
+        # Tab buttons
+        self.user_tab_btn = tk.Button(
+            tab_frame,
+            text="Process Files",
+            command=lambda: self.switch_tab("user"),
+            font=config.FONTS['button'],
+            bg=config.COLORS['primary'],
+            fg='white',
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        self.user_tab_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.admin_tab_btn = tk.Button(
+            tab_frame,
+            text="Consolidate",
+            command=lambda: self.switch_tab("admin"),
+            font=config.FONTS['button'],
+            bg=config.COLORS['surface'],
+            fg=config.COLORS['text'],
+            border=0,
+            padx=20,
+            pady=8,
+            cursor='hand2'
+        )
+        self.admin_tab_btn.pack(side=tk.LEFT)
+        
+        # Content area
+        self.content_frame = tk.Frame(parent, bg=config.COLORS['background'])
+        self.content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Setup both interfaces
+        self.setup_user_interface(self.content_frame)
+        self.setup_admin_interface(self.content_frame)
+        
+        # Show user tab by default
+        self.switch_tab("user")
+    
+    def setup_user_interface(self, parent):
+        """Setup user interface"""
+        if hasattr(self, 'user_frame'):
+            self.user_frame.destroy()
+            
+        self.user_frame = tk.Frame(parent, bg=config.COLORS['background'])
+        
+        # File selection
+        self.file_selector = CleanFileSelector(
+            self.user_frame,
+            "Select BSRS files to process",
+            mode="files"
+        )
+        self.file_selector.pack(fill=tk.X, pady=(0, 15))
+        self.file_selector.set_callback(self.on_files_selected)
+        
+        # Destination selection
+        self.dest_selector = CleanFileSelector(
+            self.user_frame,
+            "Choose destination folder",
+            mode="folder"
+        )
+        self.dest_selector.pack(fill=tk.X, pady=(0, 25))
+        self.dest_selector.set_callback(self.on_destination_selected)
+        
+        # Process button
+        self.process_btn = tk.Button(
+            self.user_frame,
+            text="Process Files",
+            command=self.process_files,
+            font=('Segoe UI', 12, 'bold'),
+            bg=config.COLORS['primary'],
+            fg='white',
+            border=0,
+            padx=30,
+            pady=12,
+            cursor='hand2',
+            state=tk.DISABLED
+        )
+        self.process_btn.pack(pady=10)
+        
+        # Simple help text
+        help_label = tk.Label(
+            self.user_frame,
+            text="Select Excel files and a destination folder, then click Process Files",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light']
+        )
+        help_label.pack(pady=(15, 0))
+        
+        # Pack the user frame if this is not a tabbed interface
+        if not hasattr(self, 'current_tab'):  # Not in tabbed mode
+            self.user_frame.pack(fill=tk.BOTH, expand=True)
+    
+    def setup_admin_interface(self, parent):
+        """Setup admin interface"""
+        if hasattr(self, 'admin_frame'):
+            self.admin_frame.destroy()
+            
+        self.admin_frame = tk.Frame(parent, bg=config.COLORS['background'])
+        
+        # Input folder selection
+        self.admin_input_selector = CleanFileSelector(
+            self.admin_frame,
+            "Select input folder (containing BSRS files)",
+            mode="folder"
+        )
+        self.admin_input_selector.pack(fill=tk.X, pady=(0, 15))
+        self.admin_input_selector.set_callback(self.on_admin_input_selected)
+        
+        # Output folder selection
+        self.admin_output_selector = CleanFileSelector(
+            self.admin_frame,
+            "Choose output folder for consolidated file",
+            mode="folder"
+        )
+        self.admin_output_selector.pack(fill=tk.X, pady=(0, 25))
+        self.admin_output_selector.set_callback(self.on_admin_output_selected)
+        
+        # Consolidate button
+        self.consolidate_btn = tk.Button(
+            self.admin_frame,
+            text="Consolidate Files",
+            command=self.consolidate_files,
+            font=('Segoe UI', 12, 'bold'),
+            bg=config.COLORS['success'],
+            fg='white',
+            border=0,
+            padx=30,
+            pady=12,
+            cursor='hand2',
+            state=tk.DISABLED
+        )
+        self.consolidate_btn.pack(pady=10)
+        
+        # Simple help text
+        help_label = tk.Label(
+            self.admin_frame,
+            text="Merge multiple BSRS files into a consolidated output",
+            font=config.FONTS['small'],
+            bg=config.COLORS['background'],
+            fg=config.COLORS['text_light']
+        )
+        help_label.pack(pady=(15, 0))
+        
+        # Pack the admin frame if this is not a tabbed interface
+        if not hasattr(self, 'current_tab'):  # Not in tabbed mode
+            self.admin_frame.pack(fill=tk.BOTH, expand=True)
+    
+    def switch_tab(self, tab_name: str):
+        """Switch between tabs"""
+        if not hasattr(self, 'user_frame') or not hasattr(self, 'admin_frame'):
+            return
+            
+        self.current_tab = tab_name
+        
+        # Update button styles and show appropriate frame
+        if tab_name == "user":
+            self.user_tab_btn.config(bg=config.COLORS['primary'], fg='white')
+            self.admin_tab_btn.config(bg=config.COLORS['surface'], fg=config.COLORS['text'])
+            self.admin_frame.pack_forget()
+            self.user_frame.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.user_tab_btn.config(bg=config.COLORS['surface'], fg=config.COLORS['text'])
+            self.admin_tab_btn.config(bg=config.COLORS['primary'], fg='white')
+            self.user_frame.pack_forget()
+            self.admin_frame.pack(fill=tk.BOTH, expand=True)
+    
+    def setup_status_bar(self):
+        """Setup minimal status bar"""
+        self.status_bar = SimpleStatusBar(self.root)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    def on_files_selected(self, files: List[str]):
+        """Handle file selection"""
+        self.selected_files = files
+        self.update_process_button()
+        
+        if files:
+            self.status_bar.set_status(f"{len(files)} files selected")
+        else:
+            self.status_bar.set_status("Ready")
+    
+    def on_destination_selected(self, folders: List[str]):
+        """Handle destination selection"""
+        self.destination_folder = folders[0] if folders else ""
+        self.update_process_button()
+    
+    def on_admin_input_selected(self, folders: List[str]):
+        """Handle admin input selection"""
+        self.admin_input_folder = folders[0] if folders else ""
+        self.update_consolidate_button()
+    
+    def on_admin_output_selected(self, folders: List[str]):
+        """Handle admin output selection"""
+        self.admin_output_folder = folders[0] if folders else ""
+        self.update_consolidate_button()
+    
+    def update_process_button(self):
+        """Update process button state"""
+        if self.selected_files and self.destination_folder:
+            self.process_btn.config(state=tk.NORMAL)
+        else:
+            self.process_btn.config(state=tk.DISABLED)
+    
+    def update_consolidate_button(self):
+        """Update consolidate button state"""
+        if hasattr(self, 'consolidate_btn'):
+            if self.admin_input_folder and self.admin_output_folder:
+                self.consolidate_btn.config(state=tk.NORMAL)
+            else:
+                self.consolidate_btn.config(state=tk.DISABLED)
+    
+    def process_files(self):
+        """Process selected files"""
+        if not self.selected_files or not self.destination_folder:
+            show_simple_message(self.root, "Missing Selection", 
+                               "Please select files and destination folder", "error")
+            return
+        
+        # Create progress dialog
+        progress = MinimalProgressDialog(self.root, "Processing Files")
+        
+        # Process in background thread
+        def process():
+            try:
+                self.process_files_with_progress(progress)
+            except Exception as e:
+                logger.error(f"Processing error: {str(e)}")
+                self.root.after(0, lambda: show_simple_message(
+                    self.root, "Error", f"Processing failed: {str(e)}", "error"))
+            finally:
+                self.root.after(0, progress.close)
+        
+        thread = threading.Thread(target=process, daemon=True)
+        thread.start()
+    
+    def process_files_with_progress(self, progress: MinimalProgressDialog):
+        """Process files with progress tracking"""
+        total_files = len(self.selected_files)
+        processed = 0
+        errors = 0
+        all_validation_errors = []
+        
+        for i, file_path in enumerate(self.selected_files):
+            if progress.cancelled:
+                return
+            
+            file_name = Path(file_path).name
+            base_progress = (i / total_files) * 100
+            progress.update_progress(base_progress, f"Processing {file_name}")
+            
+            # Process file
+            success, result, validation_errors = self.processor.process_single_file(
+                file_path,
+                self.destination_folder,
+                lambda p, msg: progress.update_progress(base_progress + (p * 0.9 / total_files), msg)
+            )
+            
+            if success:
+                processed += 1
+                if validation_errors:
+                    all_validation_errors.extend(validation_errors)
+                    self.handle_validation_errors(validation_errors, result)
+            else:
+                errors += 1
+                logger.error(f"Failed to process {file_path}: {result}")
+        
+        progress.update_progress(100, "Complete!")
+        
+        # Show results
+        self.root.after(0, lambda: self.show_results(processed, errors, all_validation_errors))
+    
+    def handle_validation_errors(self, errors: List[validation.ValidationError], output_path: str):
+        """Handle validation errors"""
+        if not errors:
+            return
+        
+        def proceed_anyway():
+            show_simple_message(self.root, "Saved", f"File saved with validation issues", "success")
+        
+        def save_for_review():
+            review_folder = filedialog.askdirectory(
+                title="Select Review Folder",
+                initialdir=self.destination_folder
+            )
+            
+            if review_folder:
+                review_path = self.create_review_file(output_path, review_folder, errors)
+                show_simple_message(self.root, "Review File Created", 
+                                   f"Review file created successfully", "success")
+        
+        # Show validation dialog
+        self.root.after(0, lambda: SimpleErrorDialog(
+            self.root, errors, proceed_anyway, save_for_review
+        ))
+    
+    def create_review_file(self, original_path: str, review_folder: str, 
+                          errors: List[validation.ValidationError]) -> str:
+        """Create review version of file"""
+        import shutil
+        original = Path(original_path)
+        review_name = f"{original.stem}_REVIEW{original.suffix}"
+        review_path = Path(review_folder) / review_name
+        shutil.copy2(original, review_path)
+        return str(review_path)
+    
+    def show_results(self, processed: int, errors: int, validation_errors: List):
+        """Show processing results"""
+        total = processed + errors
+        
+        if errors == 0 and not validation_errors:
+            message = f"Successfully processed all {total} files!"
+            self.status_bar.set_status(f"Completed: {total} files processed")
+            show_simple_message(self.root, "Success", message, "success")
+        else:
+            if validation_errors:
+                message = f"Processed {processed}/{total} files with {len(validation_errors)} validation issues"
+            else:
+                message = f"Processed {processed}/{total} files ({errors} failed)"
+            
+            self.status_bar.set_status("Completed with issues")
+            show_simple_message(self.root, "Complete", message, "warning")
+    
+    def consolidate_files(self):
+        """Consolidate files (admin feature)"""
+        if not self.admin_input_folder or not self.admin_output_folder:
+            show_simple_message(self.root, "Missing Selection", 
+                               "Please select input and output folders", "error")
+            return
+        
+        # Create progress dialog
+        progress = MinimalProgressDialog(self.root, "Consolidating Files")
+        
+        # Consolidate in background
+        def consolidate():
+            try:
+                success, result = self.consolidator.consolidate_files(
+                    self.admin_input_folder,
+                    self.admin_output_folder,
+                    progress.update_progress
+                )
+                
+                self.root.after(0, lambda: self.show_consolidation_result(success, result))
+            except Exception as e:
+                logger.error(f"Consolidation error: {str(e)}")
+                self.root.after(0, lambda: show_simple_message(
+                    self.root, "Error", f"Consolidation failed: {str(e)}", "error"))
+            finally:
+                self.root.after(0, progress.close)
+        
+        thread = threading.Thread(target=consolidate, daemon=True)
+        thread.start()
+    
+    def show_consolidation_result(self, success: bool, result: str):
+        """Show consolidation results"""
+        if success:
+            self.status_bar.set_status("Consolidation completed")
+            show_simple_message(self.root, "Success", 
+                               "Files consolidated successfully!", "success")
+        else:
+            self.status_bar.set_status("Consolidation failed")
+            show_simple_message(self.root, "Failed", result, "error")
+    
+    def run(self):
+        """Run the application"""
+        try:
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+            logger.info("Starting minimal application")
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            logger.info("Application interrupted")
+        except Exception as e:
+            logger.error(f"Application error: {str(e)}")
+            raise
+    
+    def on_closing(self):
+        """Handle application closing"""
+        logger.info("Application closing")
+        self.root.destroy()
+
+def main():
+    """Main entry point"""
+    try:
+        app = BSRSApp()
+        app.run()
+    except Exception as e:
+        logger.error(f"Fatal error: {str(e)}")
+        messagebox.showerror("Error", f"Application error:\n\n{str(e)}")
+
+if __name__ == "__main__":
+    main() 

@@ -136,12 +136,20 @@ class BSRSProcessor:
         # Flatten columns for processing
         df.columns = ['|'.join(col) for col in df.columns]
         
+        # Prepare user info dataframe with consistent data types
+        user_info_df = user_info_df.copy()
+        user_info_df['User ID'] = user_info_df['User ID'].astype(str).apply(utils.format_ps_id)
+        user_info_df['PERSON_ID_EXTERNAL'] = user_info_df['PERSON_ID_EXTERNAL'].astype(str).apply(utils.format_ps_id)
+        
         for role_col in config.ROLE_HOLDERS:
             psid_col = f'Proposed changes|{role_col}|PS ID'
             name_col = f'Proposed changes|{role_col}|Name'
             
             if psid_col not in df.columns:
                 continue
+            
+            # Ensure PS ID column has consistent data type 
+            df[psid_col] = df[psid_col].astype(str).apply(utils.format_ps_id)
             
             # First merge on PS ID
             enriched = pd.merge(
@@ -463,6 +471,12 @@ class ConsolidationProcessor:
         multi_columns = [col for col in master_df.columns if not col.startswith("Unnamed")]
         data_columns = [col for col in master_df.columns if col not in multi_columns]
         
+        # Check if required columns exist
+        if 'Submitted by' not in master_df.columns:
+            master_df['Submitted by'] = config.CURRENT_USER
+        if 'Submitted time' not in master_df.columns:
+            master_df['Submitted time'] = utils.generate_timestamp()
+        
         # Filter non-null data
         reviewers_columns = [col for col in multi_columns if col not in ['Submitted by', 'Submitted time']]
         condition_non_blank = master_df[reviewers_columns].notna().any(axis=1)
@@ -470,12 +484,16 @@ class ConsolidationProcessor:
         filled_df = master_df[condition_non_blank].copy().fillna('NULL')
         outstanding_df = master_df[~condition_non_blank].copy().drop_duplicates().reset_index(drop=True)
         
-        # Process timestamps
-        filled_df['Submitted time'] = pd.to_datetime(
-            filled_df['Submitted time'], 
-            format='%d%m%Y|%H%M%S', 
-            errors='coerce'
-        )
+        # Process timestamps - handle different formats
+        if 'Submitted time' in filled_df.columns:
+            filled_df['Submitted time'] = pd.to_datetime(
+                filled_df['Submitted time'], 
+                format='%d%m%Y|%H%M%S', 
+                errors='coerce'
+            )
+            # If conversion failed, keep original format
+            if filled_df['Submitted time'].isna().all():
+                filled_df['Submitted time'] = master_df[condition_non_blank]['Submitted time'].copy()
         
         # Group and identify conflicts
         grouped = filled_df.groupby(data_columns)

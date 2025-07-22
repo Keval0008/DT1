@@ -76,6 +76,11 @@ class BSRSProcessor:
         drop_columns = [col for col in df.columns if "Comments." in col[2]]
         df = df.drop(columns=drop_columns)
         
+        # Format PS ID columns to remove decimals
+        ps_id_columns = [col for col in df.columns if len(col) > 2 and 'PS ID' in col[2]]
+        for col in ps_id_columns:
+            df[col] = df[col].apply(utils.format_ps_id)
+        
         # Enrich data if user info is available
         if user_info_df is not None:
             df = self._enrich_with_user_info(df, user_info_df)
@@ -94,7 +99,36 @@ class BSRSProcessor:
         df.loc[condition, ("", "", "Submitted by")] = config.CURRENT_USER
         df.loc[condition, ("", "", "Submitted time")] = timestamp
         
+        # Reorder columns to group Role Holder columns together
+        df = self._reorder_columns_for_role_grouping(df)
+        
         return df
+    
+    def _reorder_columns_for_role_grouping(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Reorder columns so that all Role Holder columns are grouped together"""
+        
+        # Separate columns into categories
+        role_holder_cols = []
+        other_cols = []
+        
+        for col in df.columns:
+            # Check if this is a Role Holder column
+            if len(col) > 1 and col[1] in config.ROLE_HOLDERS:
+                role_holder_cols.append(col)
+            else:
+                other_cols.append(col)
+        
+        # Sort role holder columns by role, then by field type
+        role_holder_cols.sort(key=lambda x: (
+            config.ROLE_HOLDERS.index(x[1]) if x[1] in config.ROLE_HOLDERS else 999,
+            x[2] if len(x) > 2 else ""
+        ))
+        
+        # Combine in desired order: other columns first, then grouped role holder columns
+        new_column_order = other_cols + role_holder_cols
+        
+        # Reorder the dataframe
+        return df[new_column_order]
     
     def _enrich_with_user_info(self, df: pd.DataFrame, user_info_df: pd.DataFrame) -> pd.DataFrame:
         """Enrich dataframe with user information"""
@@ -307,10 +341,9 @@ class ConsolidationProcessor:
         try:
             # Find all Excel files
             xlsx_files = []
-            for root, _, files in Path(input_folder).rglob("*"):
-                for file in files:
-                    if file.endswith(".xlsx"):
-                        xlsx_files.append(Path(root) / file)
+            input_path = Path(input_folder)
+            for file_path in input_path.rglob("*.xlsx"):
+                xlsx_files.append(file_path)
             
             if not xlsx_files:
                 return False, "No Excel files found in input folder"
@@ -370,6 +403,12 @@ class ConsolidationProcessor:
             
             # Flatten columns for processing
             df.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
+            
+            # Format PS ID columns to remove decimals
+            ps_id_columns = [col for col in df.columns if 'PS ID' in col]
+            for col in ps_id_columns:
+                df[col] = df[col].apply(utils.format_ps_id)
+            
             dfs.append(df)
         
         # Combine all dataframes

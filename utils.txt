@@ -1,0 +1,178 @@
+"""
+Utility functions for BSRS Tool
+Simple and clean utility functions
+"""
+import logging
+import os
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+import tkinter as tk
+from tkinter import messagebox
+import config
+
+def setup_logging():
+    """Setup application logging"""
+    logging.basicConfig(
+        level=getattr(logging, config.LOG_LEVEL),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(config.LOG_FILE),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging()
+
+def validate_file_path(file_path: str) -> bool:
+    """Validate if file exists and is readable"""
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            logger.error(f"File does not exist: {file_path}")
+            return False
+        if not path.is_file():
+            logger.error(f"Path is not a file: {file_path}")
+            return False
+        if path.suffix.lower() != '.xlsx':
+            logger.error(f"File is not Excel format: {file_path}")
+            return False
+        if path.stat().st_size > config.MAX_FILE_SIZE_MB * 1024 * 1024:
+            logger.error(f"File too large: {file_path}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error validating file {file_path}: {str(e)}")
+        return False
+
+def validate_directory(dir_path: str) -> bool:
+    """Validate if directory exists and is writable"""
+    try:
+        path = Path(dir_path)
+        if not path.exists():
+            logger.error(f"Directory does not exist: {dir_path}")
+            return False
+        if not path.is_dir():
+            logger.error(f"Path is not a directory: {dir_path}")
+            return False
+        # Test write permission
+        test_file = path / "test_write_permission.tmp"
+        try:
+            test_file.touch()
+            test_file.unlink()
+            return True
+        except PermissionError:
+            logger.error(f"No write permission for directory: {dir_path}")
+            return False
+    except Exception as e:
+        logger.error(f"Error validating directory {dir_path}: {str(e)}")
+        return False
+
+def convert_code(x) -> str:
+    """Convert code to standardized format"""
+    if pd.isna(x):
+        return x
+    try:
+        num = int(x)
+        return f"{num:02d}"
+    except (ValueError, TypeError):
+        return str(x)
+
+def format_id(id_value) -> Optional[str]:
+    """Format ID to standardized format"""
+    if pd.isna(id_value):
+        return None
+    id_str = str(id_value).split('.')[0]
+    return id_str.zfill(8)
+
+def normalize_grade(grade) -> Optional[str]:
+    """Normalize grade to standardized format"""
+    if pd.isna(grade):
+        return None
+    grade_str = str(grade).strip().upper()
+    if grade_str == 'MD':
+        return 'MD'
+    grade_str = grade_str.lstrip('0')
+    if grade_str.isdigit():
+        return grade_str.zfill(2)
+    return grade_str
+
+def generate_timestamp(for_filename: bool = False) -> str:
+    """Generate timestamp for filenames or Excel cells"""
+    if for_filename:
+        return datetime.now().strftime("%d%m%Y_%H%M%S")
+    else:
+        return datetime.now().strftime("%d%m%Y|%H%M%S")
+
+def safe_excel_read(file_path: str, sheet_name: str = None, **kwargs) -> Optional[pd.DataFrame]:
+    """Safely read Excel file with error handling"""
+    try:
+        if sheet_name:
+            return pd.read_excel(file_path, sheet_name=sheet_name, **kwargs)
+        else:
+            return pd.read_excel(file_path, **kwargs)
+    except Exception as e:
+        logger.error(f"Error reading Excel file {file_path}: {str(e)}")
+        return None
+
+def create_backup(file_path: str) -> Optional[str]:
+    """Create backup of file if enabled"""
+    if not config.BACKUP_ENABLED:
+        return None
+    
+    try:
+        source = Path(file_path)
+        if not source.exists():
+            return None
+            
+        backup_dir = source.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+        
+        timestamp = generate_timestamp(for_filename=True)
+        backup_name = f"{source.stem}_backup_{timestamp}{source.suffix}"
+        backup_path = backup_dir / backup_name
+        
+        import shutil
+        shutil.copy2(source, backup_path)
+        logger.info(f"Backup created: {backup_path}")
+        return str(backup_path)
+        
+    except Exception as e:
+        logger.error(f"Error creating backup for {file_path}: {str(e)}")
+        return None
+
+def get_file_size_mb(file_path: str) -> float:
+    """Get file size in MB"""
+    try:
+        return Path(file_path).stat().st_size / (1024 * 1024)
+    except:
+        return 0.0
+
+class ProgressTracker:
+    """Simple progress tracking for operations"""
+    
+    def __init__(self, total_steps: int):
+        self.total_steps = total_steps
+        self.current_step = 0
+        self.callbacks = []
+    
+    def add_callback(self, callback):
+        """Add progress callback function"""
+        self.callbacks.append(callback)
+    
+    def update(self, step_description: str = ""):
+        """Update progress"""
+        self.current_step += 1
+        progress = (self.current_step / self.total_steps) * 100
+        
+        for callback in self.callbacks:
+            callback(progress, step_description)
+            
+        logger.info(f"Progress: {progress:.1f}% - {step_description}")
+    
+    def reset(self):
+        """Reset progress"""
+        self.current_step = 0 

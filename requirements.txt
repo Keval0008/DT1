@@ -1,15 +1,113 @@
-Hi Team,
+# BSRS Role Holder Collection Tool
 
-Please find the latest BSRS Role Holder Collection Tool in the attached zip file.
-The tool now generates a conflict log in the Conflict tab of the consolidated output.
+This is a Python-based GUI tool built with **Tkinter** to assist users in validating and processing Excel-based Role Holder submissions for the BSRS process. It includes both user and admin functionalities to ensure seamless validation, conflict resolution, and consolidation of records.
 
-Additionally, the BSRS template has been updated with the main data locked to prevent any alterations. Only the addition of new data rows and the filling in of Role Holder information is permitted.
+## Features
 
-Let us know if you’d like me to set up a call to walk you through the cell-locking functionality in the Excel file.
+### User Panel
+- Select one or multiple Excel files (BSRS templates).
+- Validates structure, size, and required sheets (`Sheet1`, `L&D`).
+- Verifies user roles (Preparer, Reviewer, Account Owner) based on group grade.
+- Enriches data with additional information from the `L&D` sheet.
+- Adds timestamps and usernames for accountability.
+- Generates a styled and validated Excel file.
+- Allows saving for **Review** or directly if validation passes.
 
-@Ravi — Admin access has been granted to your account.
+### 🛠Admin Panel
+- Restricted to users specified in `app_config.json`.
+- Selects a folder of user-submitted templates.
+- Merges and consolidates files into:
+  - `Consolidated Output` – Valid and conflict-resolved data.
+  - `Outstanding Records` – Incomplete submissions.
+  - `Conflict Report` – Rows with reviewer conflicts.
+- Produces a single Excel workbook with three formatted sheets.
 
-Please feel free to share your feedback or reach out if you encounter any issues with the tool.
+---
 
-Best regards,
-[Your Name]
+## Requirements
+
+- Python 3.9+
+- Required packages:
+  - `pandas`
+  - `numpy`
+  - `openpyxl`
+  - `tkinter` (comes pre-installed with Python)
+- For Admin Panel: Must be one of the usernames in `admin_users` list in `app_config.json`.
+
+---
+
+## How to Run
+
+1. Make sure you have Python installed.
+2. Install required libraries:
+
+   ```bash
+   pip install pandas openpyxl numpy
+   ```
+
+3. Run the script:
+
+   ```bash
+   python app_v2.py
+   ```
+
+---
+
+## Configuration
+
+Config settings are stored in `app_config.json`. Default values include:
+
+```json
+{
+  "admin_users": ["admin1", "admin2", "superuser"],
+  "required_sheets": ["Sheet1", "L&D"],
+  "max_file_size_mb": 50,
+  "backup_enabled": true,
+  "log_level": "INFO",
+  "auto_save_backup": true,
+  "validation_strict_mode": false
+}
+```
+
+---
+
+## Output
+
+- **Processed files** are saved with a timestamp and your username.
+- **Review mode** creates a Validation Errors sheet.
+- **Admin mode output**:
+  - `Consolidated_output_<user>_<timestamp>.xlsx`
+
+---
+
+## Logs and Backups
+
+- Logs are stored in the `logs/` directory.
+- Backups of original files are stored in `backups/`.
+
+---
+
+## Developer Notes
+
+- Multi-level Excel headers are handled using `pandas.MultiIndex`.
+- Data validation and enrichment are dynamically controlled by `L&D` sheet content.
+- Tkinter-based modal windows and progress bars prevent UI freezing.
+
+---
+
+## Access Control
+
+- Admin features are hidden for non-admin users.
+- Usernames are fetched using `getpass.getuser()`.
+
+---
+
+## Support
+
+For bug reports or enhancements, contact the Data Science team.
+
+---
+
+## Disclaimer
+
+This tool is for internal processing only. Make sure to review output files, especially when validation warnings are triggered.

@@ -1,3 +1,15 @@
-pandas>=1.5.0
-openpyxl>=3.0.10
-numpy>=1.21.0 
+Hi Team,
+
+Please find the latest BSRS Role Holder Collection Tool in the attached zip file.
+The tool now generates a conflict log in the Conflict tab of the consolidated output.
+
+Additionally, the BSRS template has been updated with the main data locked to prevent any alterations. Only the addition of new data rows and the filling in of Role Holder information is permitted.
+
+Let us know if you’d like me to set up a call to walk you through the cell-locking functionality in the Excel file.
+
+@Ravi — Admin access has been granted to your account.
+
+Please feel free to share your feedback or reach out if you encounter any issues with the tool.
+
+Best regards,
+[Your Name]

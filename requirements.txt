@@ -1,113 +1,140 @@
-# BSRS Role Holder Collection Tool
+Here is a structured skeleton for your project report, along with questions for each section to extract detailed inputs from you before drafting:
 
-This is a Python-based GUI tool built with **Tkinter** to assist users in validating and processing Excel-based Role Holder submissions for the BSRS process. It includes both user and admin functionalities to ensure seamless validation, conflict resolution, and consolidation of records.
-
-## Features
-
-### User Panel
-- Select one or multiple Excel files (BSRS templates).
-- Validates structure, size, and required sheets (`Sheet1`, `L&D`).
-- Verifies user roles (Preparer, Reviewer, Account Owner) based on group grade.
-- Enriches data with additional information from the `L&D` sheet.
-- Adds timestamps and usernames for accountability.
-- Generates a styled and validated Excel file.
-- Allows saving for **Review** or directly if validation passes.
-
-### 🛠Admin Panel
-- Restricted to users specified in `app_config.json`.
-- Selects a folder of user-submitted templates.
-- Merges and consolidates files into:
-  - `Consolidated Output` – Valid and conflict-resolved data.
-  - `Outstanding Records` – Incomplete submissions.
-  - `Conflict Report` – Rows with reviewer conflicts.
-- Produces a single Excel workbook with three formatted sheets.
 
 ---
 
-## Requirements
+📑 Project Report Skeleton
 
-- Python 3.9+
-- Required packages:
-  - `pandas`
-  - `numpy`
-  - `openpyxl`
-  - `tkinter` (comes pre-installed with Python)
-- For Admin Panel: Must be one of the usernames in `admin_users` list in `app_config.json`.
+1. Project Title
+
+Question: What is the title or name of your project?
+
+
 
 ---
 
-## How to Run
+2. Project Summary
 
-1. Make sure you have Python installed.
-2. Install required libraries:
+Brief overview (2–3 sentences) of what the project is, its purpose, and what it delivers.
 
-   ```bash
-   pip install pandas openpyxl numpy
-   ```
+Questions:
 
-3. Run the script:
+What does this project do in simple words?
 
-   ```bash
-   python app_v2.py
-   ```
+Who is it for (end-user, team, business unit)?
 
----
+Is it a standalone project or part of a larger system?
 
-## Configuration
 
-Config settings are stored in `app_config.json`. Default values include:
 
-```json
-{
-  "admin_users": ["admin1", "admin2", "superuser"],
-  "required_sheets": ["Sheet1", "L&D"],
-  "max_file_size_mb": 50,
-  "backup_enabled": true,
-  "log_level": "INFO",
-  "auto_save_backup": true,
-  "validation_strict_mode": false
-}
-```
 
 ---
 
-## Output
+3. Problem Statement
 
-- **Processed files** are saved with a timestamp and your username.
-- **Review mode** creates a Validation Errors sheet.
-- **Admin mode output**:
-  - `Consolidated_output_<user>_<timestamp>.xlsx`
+What problem were you trying to solve?
 
----
+Why was this problem important to solve?
 
-## Logs and Backups
+Questions:
 
-- Logs are stored in the `logs/` directory.
-- Backups of original files are stored in `backups/`.
+What was the exact pain point or inefficiency before your project?
 
----
+Any metrics or qualitative aspects that highlighted this problem?
 
-## Developer Notes
 
-- Multi-level Excel headers are handled using `pandas.MultiIndex`.
-- Data validation and enrichment are dynamically controlled by `L&D` sheet content.
-- Tkinter-based modal windows and progress bars prevent UI freezing.
+
 
 ---
 
-## Access Control
+4. Solution
 
-- Admin features are hidden for non-admin users.
-- Usernames are fetched using `getpass.getuser()`.
+How does your project solve the problem?
+
+Questions:
+
+What is the core idea or approach of the solution?
+
+Did you use any frameworks, technologies, or methodologies to achieve it?
+
+
+
 
 ---
 
-## Support
+5. Design
 
-For bug reports or enhancements, contact the Data Science team.
+System architecture, workflows, or UI/UX design depending on the project type.
+
+Questions:
+
+Did you create any flowcharts, architecture diagrams, or wireframes? Describe them.
+
+What are the major modules or logical components?
+
+
+
 
 ---
 
-## Disclaimer
+6. Components and Features
 
-This tool is for internal processing only. Make sure to review output files, especially when validation warnings are triggered.
+Breakdown of main features and components.
+
+Your specific contribution to one or more features (development, testing, design, analysis).
+
+Questions:
+
+What are the core components of the project?
+
+Which feature(s) did you develop or own?
+
+Any interesting challenge you faced while developing this feature?
+
+
+
+
+---
+
+7. Current State
+
+What is the status of the project now? (e.g. deployed, in testing, pending final review)
+
+Questions:
+
+Is it live and being used?
+
+Any feedback received?
+
+
+
+
+---
+
+8. Learning Outcomes
+
+Key technical or non-technical learnings from this project.
+
+Questions:
+
+What did you learn about the domain, technology, teamwork, or problem-solving?
+
+Any tool, framework, or skill you picked up?
+
+
+
+
+---
+
+9. (Optional) Future Scope
+
+If relevant, what could be improved or expanded next?
+
+
+
+---
+
+📝 Next Step
+
+Please answer these questions (bullet points are okay) so I can draft a strong, detailed project report for you in a clean narrative style suited for your submissions and records.
+

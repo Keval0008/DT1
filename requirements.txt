@@ -1,140 +1,44 @@
-Here is a structured skeleton for your project report, along with questions for each section to extract detailed inputs from you before drafting:
-
-
----
-
-📑 Project Report Skeleton
-
-1. Project Title
-
-Question: What is the title or name of your project?
-
-
-
----
-
-2. Project Summary
-
-Brief overview (2–3 sentences) of what the project is, its purpose, and what it delivers.
-
-Questions:
-
-What does this project do in simple words?
-
-Who is it for (end-user, team, business unit)?
-
-Is it a standalone project or part of a larger system?
-
-
-
-
----
-
-3. Problem Statement
-
-What problem were you trying to solve?
-
-Why was this problem important to solve?
-
-Questions:
-
-What was the exact pain point or inefficiency before your project?
-
-Any metrics or qualitative aspects that highlighted this problem?
-
-
-
-
----
-
-4. Solution
-
-How does your project solve the problem?
-
-Questions:
-
-What is the core idea or approach of the solution?
-
-Did you use any frameworks, technologies, or methodologies to achieve it?
-
-
-
-
----
-
-5. Design
-
-System architecture, workflows, or UI/UX design depending on the project type.
-
-Questions:
-
-Did you create any flowcharts, architecture diagrams, or wireframes? Describe them.
-
-What are the major modules or logical components?
-
-
-
-
----
-
-6. Components and Features
-
-Breakdown of main features and components.
-
-Your specific contribution to one or more features (development, testing, design, analysis).
-
-Questions:
-
-What are the core components of the project?
-
-Which feature(s) did you develop or own?
-
-Any interesting challenge you faced while developing this feature?
-
-
-
-
----
-
-7. Current State
-
-What is the status of the project now? (e.g. deployed, in testing, pending final review)
-
-Questions:
-
-Is it live and being used?
-
-Any feedback received?
-
-
-
-
----
-
-8. Learning Outcomes
-
-Key technical or non-technical learnings from this project.
-
-Questions:
-
-What did you learn about the domain, technology, teamwork, or problem-solving?
-
-Any tool, framework, or skill you picked up?
-
-
-
-
----
-
-9. (Optional) Future Scope
-
-If relevant, what could be improved or expanded next?
-
-
-
----
-
-📝 Next Step
-
-Please answer these questions (bullet points are okay) so I can draft a strong, detailed project report for you in a clean narrative style suited for your submissions and records.
-
+import pandas as pd
+import os
+import warnings
+
+# Optional: suppress engine warnings
+warnings.simplefilter(action='ignore', category=UserWarning)
+
+def read_excel_auto(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+
+    # Load all sheet names first
+    excel_file = pd.ExcelFile(filepath, engine='openpyxl' if ext in ['.xlsx', '.xlsm'] else None)
+    other_sheets = [sheet for sheet in excel_file.sheet_names if sheet.strip().lower() != 'l&d']
+
+    if not other_sheets:
+        raise ValueError("No sheet other than 'L&D' found.")
+
+    target_sheet = other_sheets[0]  # Read the first non-L&D sheet
+
+    # Now read based on format
+    if ext in ['.xlsx', '.xlsm']:
+        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='openpyxl')
+
+    elif ext == '.xlsb':
+        try:
+            import pyxlsb
+        except ImportError:
+            raise ImportError("Please install pyxlsb: pip install pyxlsb")
+        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='pyxlsb')
+
+    elif ext == '.xls':
+        try:
+            import xlrd
+        except ImportError:
+            raise ImportError("Please install xlrd==1.2.0: pip install xlrd==1.2.0")
+        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='xlrd')
+
+    else:
+        raise ValueError(f"Unsupported file format: {ext}")
+
+# Example usage
+filename = "your_excel_file.xlsx"  # Replace with your actual file
+df = read_excel_auto(filename)
+print(df.head())

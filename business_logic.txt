@@ -1,24 +1,34 @@
-import threading
-from tkinter import Toplevel, Label, ttk
-
 class ProgressWindow:
     def __init__(self, parent, title="Processing"):
         self.top = Toplevel(parent)
         self.top.title(title)
-        self.top.geometry("300x100")
+        self.top.geometry("350x120")
         self.top.resizable(False, False)
         
-        self.label = Label(self.top, text="Processing files...")
-        self.label.pack(pady=10)
+        self.label = Label(self.top, text="Initializing...")
+        self.label.pack(pady=(10, 5))
         
-        self.progress = ttk.Progressbar(self.top, orient="horizontal", length=250, mode="determinate")
-        self.progress.pack(pady=10)
+        self.progress = ttk.Progressbar(self.top, orient="horizontal", 
+                                      length=300, mode="determinate")
+        self.progress.pack(pady=5)
+        
+        self.status_label = Label(self.top, text="")
+        self.status_label.pack(pady=5)
         
         self.top.grab_set()
+        self.top.protocol("WM_DELETE_WINDOW", self.disable_close)
         
-    def update_progress(self, value):
+    def disable_close(self):
+        """Prevent closing the window during processing"""
+        pass
+        
+    def update(self, value, message=None, status=None):
         self.progress['value'] = value
-        self.top.update_idletasks()
+        if message:
+            self.label.config(text=message)
+        if status:
+            self.status_label.config(text=status)
+        self.top.update_idletasks()  # Force UI update
         
     def close(self):
         self.top.grab_release()
@@ -33,10 +43,15 @@ def save_files():
         update_status("Error: No folder selected", "red")
         return
 
+    # Disable the submit button during processing
+    submit_button = [w for w in user_frame.winfo_children() 
+                    if isinstance(w, ttk.Button) and w.cget("text") == "Submit"][0]
+    submit_button.config(state="disabled")
+
     # Create progress window
     progress = ProgressWindow(root, "Submitting Files")
-    
-    # Run processing in a separate thread
+    progress.update(0, "Preparing to process files...", f"0/{len(file_list)} files processed")
+
     def process_files():
         try:
             timestamp_for_filename = datetime.now().strftime("%d%m%Y_%H%M%S")
@@ -47,13 +62,39 @@ def save_files():
             total_files = len(file_list)
             
             for i, file in enumerate(file_list, 1):
-                progress.update_progress((i/total_files)*100)
+                # Update progress before processing each file
+                progress.update(
+                    (i-1)/total_files*100,
+                    f"Processing file {i} of {total_files}",
+                    f"{i-1}/{total_files} files completed"
+                )
+                
+                # Simulate some processing time for the progress bar to show
+                root.update_idletasks()
                 
                 df = read_excel_auto(file)
+                progress.update(
+                    (i-0.75)/total_files*100,
+                    f"Processing file {i} of {total_files}",
+                    "Reading user data..."
+                )
+                
                 user_info_df = pd.read_excel(file, sheet_name='L&D', header=1)
                 
-                # Rest of your processing code remains the same...
-                # [Keep all the existing processing code here]
+                progress.update(
+                    (i-0.5)/total_files*100,
+                    f"Processing file {i} of {total_files}",
+                    "Validating data..."
+                )
+                
+                # [Rest of your existing processing code...]
+                
+                # Update progress after each file
+                progress.update(
+                    i/total_files*100,
+                    f"Processed file {i} of {total_files}",
+                    f"{i}/{total_files} files completed"
+                )
                 
             if validation_errors:
                 progress.close()
@@ -66,6 +107,8 @@ def save_files():
             progress.close()
             print(e)
             update_status(f"Error: {str(e)}", "red")
+        finally:
+            submit_button.config(state="normal")
             
     # Start the processing thread
     threading.Thread(target=process_files, daemon=True).start()
@@ -77,16 +120,29 @@ def process_admin_files():
         admin_status_label.config(text="Error: No input folder selected", fg="red")
         return
 
+    # Disable the consolidate button during processing
+    consolidate_button = [w for w in admin_frame.winfo_children() 
+                        if isinstance(w, ttk.Button) and w.cget("text") == "Consolidate"][0]
+    consolidate_button.config(state="disabled")
+
     # Create progress window
     progress = ProgressWindow(root, "Consolidating Files")
-    
+    progress.update(0, "Scanning for Excel files...", "0% complete")
+
     def process_files():
         try:
+            # Phase 1: Find all Excel files
+            progress.update(5, "Scanning for Excel files...", "5% complete")
             xlsx_files = []
             for root, _, files in os.walk(admin_folder_path.get()):
                 for file in files:
                     if file.endswith(".xlsx"):
                         xlsx_files.append(os.path.join(root, file))
+                        progress.update(
+                            5 + len(xlsx_files),
+                            f"Found {len(xlsx_files)} files...",
+                            f"{min(5 + len(xlsx_files), 20)}% complete"
+                        )
             
             total_files = len(xlsx_files)
             if total_files == 0:
@@ -94,19 +150,42 @@ def process_admin_files():
                 admin_status_label.config(text="Error: No Excel files found", fg="red")
                 return
             
-            # Rest of your processing code remains the same...
-            # [Keep all the existing processing code here]
+            # Phase 2: Process each file
+            processed_count = 0
+            dfs = []
+            column_mapping = {}
             
-            progress.update_progress(100)
+            for i, file in enumerate(xlsx_files, 1):
+                progress.update(
+                    20 + (i/total_files)*60,
+                    f"Processing file {i} of {total_files}",
+                    f"{20 + int((i/total_files)*60)}% complete"
+                )
+                
+                df = read_excel_auto(file)
+                
+                # [Rest of your existing processing code...]
+                
+                processed_count += 1
+                
+            # Phase 3: Final consolidation
+            progress.update(85, "Consolidating data...", "85% complete")
+            # [Your consolidation code...]
+            
+            progress.update(95, "Saving output file...", "95% complete")
+            # [Your file saving code...]
+            
+            progress.update(100, "Process completed!", "100% complete")
+            time.sleep(0.5)  # Let user see completion
             progress.close()
-            admin_status_label.config(text=f"Success: Consolidation saved as {output_file}", fg="green")
-            processed_dfs = None
+            admin_status_label.config(text=f"Success: Consolidation saved", fg="green")
             
         except Exception as e:
             progress.close()
             print(e)
             admin_status_label.config(text=f"Error: {str(e)}", fg="red")
-            processed_dfs = None
+        finally:
+            consolidate_button.config(state="normal")
     
     # Start the processing thread
     threading.Thread(target=process_files, daemon=True).start()

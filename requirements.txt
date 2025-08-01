@@ -1,44 +1,1015 @@
+import dash
+from dash import dcc, html, Input, Output, State, callback_context, ALL
+import dash_bootstrap_components as dbc
 import pandas as pd
-import os
-import warnings
+import base64
+import io
+import numpy as np
+import json
+import logging
+from datetime import datetime
+import uuid
+from io import BytesIO
 
-# Optional: suppress engine warnings
-warnings.simplefilter(action='ignore', category=UserWarning)
+# Configure logging
+logging.basicConfig(
+    filename='app.log',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def read_excel_auto(filepath):
-    ext = os.path.splitext(filepath)[1].lower()
+# Initialize Dash app
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-    # Load all sheet names first
-    excel_file = pd.ExcelFile(filepath, engine='openpyxl' if ext in ['.xlsx', '.xlsm'] else None)
-    other_sheets = [sheet for sheet in excel_file.sheet_names if sheet.strip().lower() != 'l&d']
+# Global variables to store uploaded data
+original_data = None
+transformed_data = None
 
-    if not other_sheets:
-        raise ValueError("No sheet other than 'L&D' found.")
+# App layout
+app.layout = html.Div([
+    html.H1("Data Reconciliation Tool", style={
+        'textAlign': 'center', 
+        'marginBottom': '20px',
+        'color': '#2c3e50',
+        'fontSize': '28px',
+        'fontWeight': '300'
+    }),
+    
+    # File upload section
+    dbc.Card([
+        dbc.CardBody([
+            html.H3("Upload Datasets", className="mb-3"),
+            dbc.Row([
+                dbc.Col([
+                    html.H5("Original Dataset", className="mb-2"),
+                    dcc.Upload(
+                        id='upload-original',
+                        children=html.Div([
+                            '📁 Drag and Drop or ',
+                            html.A('Select File', style={'color': '#3498db', 'textDecoration': 'underline'})
+                        ]),
+                        style={
+                            'width': '100%',
+                            'height': '50px',
+                            'lineHeight': '50px',
+                            'borderWidth': '2px',
+                            'borderStyle': 'dashed',
+                            'borderRadius': '8px',
+                            'textAlign': 'center',
+                            'margin': '5px 0',
+                            'backgroundColor': '#f8f9fa',
+                            'borderColor': '#dee2e6',
+                            'color': '#6c757d',
+                            'fontSize': '14px'
+                        },
+                        multiple=False
+                    ),
+                    html.Div(id='original-file-info', className="text-muted small mt-2")
+                ], md=6),
+                dbc.Col([
+                    html.H5("Transformed Dataset", className="mb-2"),
+                    dcc.Upload(
+                        id='upload-transformed',
+                        children=html.Div([
+                            '📁 Drag and Drop or ',
+                            html.A('Select File', style={'color': '#3498db', 'textDecoration': 'underline'})
+                        ]),
+                        style={
+                            'width': '100%',
+                            'height': '50px',
+                            'lineHeight': '50px',
+                            'borderWidth': '2px',
+                            'borderStyle': 'dashed',
+                            'borderRadius': '8px',
+                            'textAlign': 'center',
+                            'margin': '5px 0',
+                            'backgroundColor': '#f8f9fa',
+                            'borderColor': '#dee2e6',
+                            'color': '#6c757d',
+                            'fontSize': '14px'
+                        },
+                        multiple=False
+                    ),
+                    html.Div(id='transformed-file-info', className="text-muted small mt-2")
+                ], md=6),
+            ]),
+        ])
+    ], className="mb-4"),
+    
+    # Column selection section
+    html.Div([
+        html.H3("Column Matching", className="mb-3"),
+        dbc.Card([
+            dbc.CardBody([
+                html.H5("🎯 Matching Thresholds", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        html.Label("Categorical Threshold:", className="fw-bold small mb-1"),
+                        dcc.Slider(
+                            id='categorical-threshold',
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            value=0.1,
+                            marks={0.0: '0.0', 0.25: '0.25', 0.5: '0.5', 0.75: '0.75', 1.0: '1.0'},
+                            tooltip={"placement": "bottom", "always_visible": True}
+                        ),
+                        html.Div(id='categorical-threshold-display', className="text-muted small mt-1")
+                    ], md=4),
+                    dbc.Col([
+                        html.Label("Numerical Threshold:", className="fw-bold small mb-1"),
+                        dcc.Slider(
+                            id='numerical-threshold',
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            value=0.2,
+                            marks={0.0: '0.0', 0.25: '0.25', 0.5: '0.5', 0.75: '0.75', 1.0: '1.0'},
+                            tooltip={"placement": "bottom", "always_visible": True}
+                        ),
+                        html.Div(id='numerical-threshold-display', className="text-muted small mt-1")
+                    ], md=4),
+                    dbc.Col([
+                        html.Label("Anomaly Threshold (%):", className="fw-bold small mb-1"),
+                        dcc.Slider(
+                            id='anomaly-threshold',
+                            min=0.0,
+                            max=50.0,
+                            step=1.0,
+                            value=10.0,
+                            marks={0.0: '0%', 10.0: '10%', 20.0: '20%', 30.0: '30%', 50.0: '50%'},
+                            tooltip={"placement": "bottom", "always_visible": True}
+                        ),
+                        html.Div(id='anomaly-threshold-display', className="text-muted small mt-1")
+                    ], md=4),
+                ])
+            ])
+        ], className="mb-3"),
+        
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H4("📊 Categorical Columns", className="mb-3"),
+                        html.Label("Select Source Columns:", className="fw-bold small mb-1"),
+                        dcc.Dropdown(
+                            id='categorical-source',
+                            options=[],
+                            multi=True,
+                            placeholder="Select categorical columns...",
+                            className="mb-2"
+                        ),
+                        html.Div(id='categorical-matches-text', className="text-muted small mb-2"),  # Add this line
+                        html.Label("Select Transformed Columns:", className="fw-bold small mb-1"),
+                        dcc.Dropdown(
+                            id='categorical-transformed',
+                            options=[],
+                            multi=True,
+                            placeholder="Select transformed columns...",
+                            className="mb-2"
+                        ),
+                        html.Button("Add Selected Pairs", id='add-categorical-pairs', className="btn btn-primary btn-sm mb-2"),
+                        html.Div(id='categorical-pairs-table', children=[])
+                    ])
+                ])
+            ], md=6),
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H4("🔢 Numerical Columns", className="mb-3"),
+                        html.Label("Select Source Columns:", className="fw-bold small mb-1"),
+                        dcc.Dropdown(
+                            id='numerical-source',
+                            options=[],
+                            multi=True,
+                            placeholder="Select numerical columns...",
+                            className="mb-2"
+                        ),
+                        html.Div(id='numerical-matches-text', className="text-muted small mb-2"),  # Add this line
+                        html.Label("Select Transformed Columns:", className="fw-bold small mb-1"),
+                        dcc.Dropdown(
+                            id='numerical-transformed',
+                            options=[],
+                            multi=True,
+                            placeholder="Select transformed columns...",
+                            className="mb-2"
+                        ),
+                        html.Button("Add Selected Pairs", id='add-numerical-pairs', className="btn btn-success btn-sm mb-2"),
+                        html.Div(id='numerical-pairs-table', children=[])
+                    ])
+                ])
+            ], md=6),
+        ], className="mb-4"),
+        
+        html.Div([
+            dbc.Button("🔍 Perform Reconciliation Analysis", id='display-data-btn',
+                      color="info", size="lg", className="mb-3"),
+            html.Div(id='display-results', children=[])
+        ], className="text-center")
+    ], id='main-selection-area', className="mb-4"),
+    
+    # Log display section
+    dbc.Card([
+        dbc.CardBody([
+            html.H5("Debug Logs", className="mb-3"),
+            dcc.Interval(id='log-update-interval', interval=1000, n_intervals=0),
+            html.Pre(id='log-display', style={
+                'maxHeight': '200px',
+                'overflowY': 'auto',
+                'backgroundColor': '#f8f9fa',
+                'padding': '10px',
+                'borderRadius': '5px',
+                'fontSize': '12px'
+            })
+        ])
+    ], className="mb-4"),
+    
+    # Store components
+    dcc.Store(id='original-data-store'),
+    dcc.Store(id='transformed-data-store'),
+    dcc.Store(id='selection-pairs', data={'categorical': [], 'numerical': []})
+], className="container-fluid py-4")
 
-    target_sheet = other_sheets[0]  # Read the first non-L&D sheet
+def parse_contents(contents, filename):
+    """Parse uploaded file contents"""
+    logger.info(f"Parsing file: {filename}")
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    
+    try:
+        if 'csv' in filename.lower():
+            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+        elif any(ext in filename.lower() for ext in ['xlsx', 'xlsb', 'xlsm', 'xls']):
+            df = pd.read_excel(io.BytesIO(decoded))
+        else:
+            logger.error(f"Unsupported file type: {filename}")
+            return None
+        logger.info(f"Successfully parsed {filename}: {len(df)} rows, {len(df.columns)} columns")
+        return df
+    except Exception as e:
+        logger.error(f"Error parsing file {filename}: {str(e)}")
+        return None
 
-    # Now read based on format
-    if ext in ['.xlsx', '.xlsm']:
-        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='openpyxl')
+def jaccard_similarity(set1, set2):
+    """Calculate Jaccard similarity between two sets"""
+    if len(set1) == 0 and len(set2) == 0:
+        return 1.0
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return intersection / union if union > 0 else 0.0
 
-    elif ext == '.xlsb':
-        try:
-            import pyxlsb
-        except ImportError:
-            raise ImportError("Please install pyxlsb: pip install pyxlsb")
-        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='pyxlsb')
+def calculate_numerical_similarity(source_series, target_series):
+    """Calculate similarity between two numerical series"""
+    source_clean = source_series.dropna()
+    target_clean = target_series.dropna()
+    
+    if len(source_clean) == 0 or len(target_clean) == 0:
+        logger.warning("Empty data in numerical similarity calculation")
+        return 0.0
+    
+    similarities = []
+    
+    try:
+        if len(source_clean) > 1 and len(target_clean) > 1:
+            min_len = min(len(source_clean), len(target_clean))
+            if min_len > 1:
+                source_sample = source_clean.iloc[:min_len]
+                target_sample = target_clean.iloc[:min_len]
+                correlation = abs(np.corrcoef(source_sample, target_sample)[0, 1])
+                if not np.isnan(correlation):
+                    similarities.append(correlation)
+    except Exception as e:
+        logger.error(f"Error in correlation calculation: {str(e)}")
+    
+    try:
+        source_min, source_max = source_clean.min(), source_clean.max()
+        target_min, target_max = target_clean.min(), target_clean.max()
+        
+        if source_min == source_max and target_min == target_max:
+            range_sim = 1.0 if source_min == target_min else 0.0
+        else:
+            overlap_min = max(source_min, target_min)
+            overlap_max = min(source_max, target_max)
+            
+            if overlap_max > overlap_min:
+                overlap_range = overlap_max - overlap_min
+                source_range = max(source_max - source_min, 1e-10)
+                target_range = max(target_max - target_min, 1e-10)
+                total_range = max(source_range, target_range)
+                range_sim = overlap_range / total_range
+            else:
+                range_sim = 0.0
+        similarities.append(range_sim)
+    except Exception as e:
+        logger.error(f"Error in range similarity calculation: {str(e)}")
+    
+    try:
+        source_mean, source_std = source_clean.mean(), source_clean.std()
+        target_mean, target_std = target_clean.mean(), target_clean.std()
+        
+        data_range = max(abs(source_mean), abs(target_mean), source_std, target_std, 1e-10)
+        mean_diff = abs(source_mean - target_mean) / data_range
+        mean_sim = max(0, 1 - mean_diff)
+        
+        if source_std == 0 and target_std == 0:
+            std_sim = 1.0
+        else:
+            max_std = max(source_std, target_std, 1e-10)
+            std_diff = abs(source_std - target_std) / max_std
+            std_sim = max(0, 1 - std_diff)
+        
+        dist_sim = (mean_sim + std_sim) / 2
+        similarities.append(dist_sim)
+    except Exception as e:
+        logger.error(f"Error in distribution similarity calculation: {str(e)}")
+    
+    try:
+        source_percentiles = np.percentile(source_clean, [25, 50, 75])
+        target_percentiles = np.percentile(target_clean, [25, 50, 75])
+        
+        percentile_sims = []
+        for sp, tp in zip(source_percentiles, target_percentiles):
+            if sp == 0 and tp == 0:
+                percentile_sims.append(1.0)
+            else:
+                max_val = max(abs(sp), abs(tp), 1e-10)
+                diff = abs(sp - tp) / max_val
+                percentile_sims.append(max(0, 1 - diff))
+        
+        percentile_sim = np.mean(percentile_sims)
+        similarities.append(percentile_sim)
+    except Exception as e:
+        logger.error(f"Error in percentile similarity calculation: {str(e)}")
+    
+    try:
+        source_unique = len(source_clean.unique())
+        target_unique = len(target_clean.unique())
+        
+        if source_unique <= 20 and target_unique <= 20:
+            source_values = set(source_clean.round(6))
+            target_values = set(target_clean.round(6))
+            overlap_sim = jaccard_similarity(source_values, target_values)
+            similarities.append(overlap_sim)
+    except Exception as e:
+        logger.error(f"Error in overlap similarity calculation: {str(e)}")
+    
+    return np.mean(similarities) if similarities else 0.0
 
-    elif ext == '.xls':
-        try:
-            import xlrd
-        except ImportError:
-            raise ImportError("Please install xlrd==1.2.0: pip install xlrd==1.2.0")
-        return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine='xlrd')
-
+def find_matching_columns(source_column_data, target_df, column_type='categorical', categorical_threshold=0.1, numerical_threshold=0.2):
+    """Find matching columns in target dataframe for a given source column"""
+    logger.info(f"Finding matches for column type: {column_type}, thresholds: categorical={categorical_threshold}, numerical={numerical_threshold}")
+    matches = []
+    
+    if column_type == 'categorical':
+        target_columns = target_df.select_dtypes(include=['object', 'category']).columns
+        source_values = set(source_column_data.dropna().astype(str))
+        
+        for col in target_columns:
+            target_values = set(target_df[col].dropna().astype(str))
+            similarity = jaccard_similarity(source_values, target_values)
+            
+            if similarity >= categorical_threshold:
+                matches.append((col, similarity))
+                logger.debug(f"Categorical match: {col} (similarity: {similarity:.2f})")
+                
     else:
-        raise ValueError(f"Unsupported file format: {ext}")
+        target_columns = target_df.select_dtypes(include=[np.number]).columns
+        for col in target_columns:
+            similarity = calculate_numerical_similarity(source_column_data, target_df[col])
+            if similarity >= numerical_threshold:
+                matches.append((col, similarity))
+                logger.debug(f"Numerical match: {col} (similarity: {similarity:.2f})")
+    
+    matches.sort(key=lambda x: x[1], reverse=True)
+    logger.info(f"Found {len(matches)} matches: {matches}")
+    return matches
 
-# Example usage
-filename = "your_excel_file.xlsx"  # Replace with your actual file
-df = read_excel_auto(filename)
-print(df.head())
+@app.callback(
+    [Output('original-data-store', 'data'),
+     Output('transformed-data-store', 'data'),
+     Output('original-file-info', 'children'),
+     Output('transformed-file-info', 'children'),
+     Output('categorical-source', 'options'),
+     Output('numerical-source', 'options'),
+     Output('categorical-transformed', 'options'),
+     Output('numerical-transformed', 'options')],
+    [Input('upload-original', 'contents'),
+     Input('upload-transformed', 'contents')],
+    [State('upload-original', 'filename'),
+     State('upload-transformed', 'filename')]
+)
+def update_output(original_contents, transformed_contents, original_filename, transformed_filename):
+    """Handle file uploads and update data stores and dropdown options"""
+    logger.info("Entering update_output callback")
+    original_uploaded = original_contents is not None
+    transformed_uploaded = transformed_contents is not None
+    
+    original_file_info = ""
+    transformed_file_info = ""
+    cat_source_options = []
+    num_source_options = []
+    cat_trans_options = []
+    num_trans_options = []
+    
+    global original_data, transformed_data
+    
+    if original_uploaded:
+        original_data = parse_contents(original_contents, original_filename)
+        if original_data is not None:
+            original_file_info = f"✅ {original_filename} ({len(original_data)} rows, {len(original_data.columns)} columns)"
+            logger.info(f"Original data uploaded: {original_filename}")
+            cat_source_options = [{'label': col, 'value': col} for col in 
+                                original_data.select_dtypes(include=['object', 'category']).columns]
+            num_source_options = [{'label': col, 'value': col} for col in 
+                                original_data.select_dtypes(include=[np.number]).columns]
+        else:
+            original_file_info = f"❌ {original_filename} - Error reading file"
+    
+    if transformed_uploaded:
+        transformed_data = parse_contents(transformed_contents, transformed_filename)
+        if transformed_data is not None:
+            transformed_file_info = f"✅ {transformed_filename} ({len(transformed_data)} rows, {len(transformed_data.columns)} columns)"
+            logger.info(f"Transformed data uploaded: {transformed_filename}")
+            cat_trans_options = [{'label': col, 'value': col} for col in 
+                               transformed_data.select_dtypes(include=['object', 'category']).columns]
+            num_trans_options = [{'label': col, 'value': col} for col in 
+                               transformed_data.select_dtypes(include=[np.number]).columns]
+        else:
+            transformed_file_info = f"❌ {transformed_filename} - Error reading file"
+    
+    original_json = original_data.to_json(date_format='iso', orient='split') if original_data is not None else None
+    transformed_json = transformed_data.to_json(date_format='iso', orient='split') if transformed_data is not None else None
+    
+    logger.info("Exiting update_output callback")
+    return (original_json, transformed_json, original_file_info, transformed_file_info,
+            cat_source_options, num_source_options, cat_trans_options, num_trans_options)
+
+@app.callback(
+    [Output('categorical-transformed', 'value'),
+     Output('numerical-transformed', 'value')],
+    [Input('categorical-source', 'value'),
+     Input('numerical-source', 'value'),
+     Input('categorical-threshold', 'value'),
+     Input('numerical-threshold', 'value')],
+    [State('original-data-store', 'data'),
+     State('transformed-data-store', 'data'),
+     State('categorical-transformed', 'options'),
+     State('numerical-transformed', 'options')]
+)
+def suggest_transformed_columns(cat_source_cols, num_source_cols, cat_threshold, num_threshold, 
+                              original_json, transformed_json, cat_trans_options, num_trans_options):
+    """Suggest transformed columns based on source column selections"""
+    logger.info(f"Entering suggest_transformed_columns callback, cat_source_cols={cat_source_cols}, num_source_cols={num_source_cols}")
+    
+    cat_trans_values = []
+    num_trans_values = []
+    
+    if not original_json or not transformed_json:
+        logger.warning("Missing datasets, no suggestions possible")
+        return [], []
+    
+    original_df = pd.read_json(original_json, orient='split')
+    transformed_df = pd.read_json(transformed_json, orient='split')
+    
+    # Suggest categorical matches
+    if cat_source_cols:
+        for col in cat_source_cols:
+            if col in original_df.columns:
+                matches = find_matching_columns(original_df[col], transformed_df, 'categorical', 
+                                              categorical_threshold=cat_threshold)
+                # Prefer exact match (same column name) or highest similarity
+                if col in transformed_df.columns and jaccard_similarity(
+                    set(original_df[col].dropna().astype(str)),
+                    set(transformed_df[col].dropna().astype(str))
+                ) >= 0.9:
+                    cat_trans_values.append(col)
+                    logger.info(f"Suggested exact match for categorical column {col}: {col}")
+                elif matches:
+                    cat_trans_values.append(matches[0][0])
+                    logger.info(f"Suggested match for categorical column {col}: {matches[0][0]} ({matches[0][1]:.2f})")
+    
+    # Suggest numerical matches
+    if num_source_cols:
+        for col in num_source_cols:
+            if col in original_df.columns:
+                matches = find_matching_columns(original_df[col], transformed_df, 'numerical', 
+                                              numerical_threshold=num_threshold)
+                if col in transformed_df.columns and pd.api.types.is_numeric_dtype(transformed_df[col]) and calculate_numerical_similarity(
+                    original_df[col], transformed_df[col]
+                ) >= 0.8:
+                    num_trans_values.append(col)
+                    logger.info(f"Suggested exact match for numerical column {col}: {col}")
+                elif matches:
+                    num_trans_values.append(matches[0][0])
+                    logger.info(f"Suggested match for numerical column {col}: {matches[0][0]} ({matches[0][1]:.2f})")
+    
+    logger.info(f"Suggested categorical matches: {cat_trans_values}")
+    logger.info(f"Suggested numerical matches: {num_trans_values}")
+    return cat_trans_values, num_trans_values
+
+@app.callback(
+    [Output('categorical-pairs-table', 'children'),
+     Output('numerical-pairs-table', 'children'),
+     Output('selection-pairs', 'data')],
+    [Input('add-categorical-pairs', 'n_clicks'),
+     Input('add-numerical-pairs', 'n_clicks'),
+     Input({'type': 'remove-pair', 'index': ALL, 'category': ALL}, 'n_clicks')],
+    [State('categorical-source', 'value'),
+     State('categorical-transformed', 'value'),
+     State('numerical-source', 'value'),
+     State('numerical-transformed', 'value'),
+     State('selection-pairs', 'data')]
+)
+def update_selection_pairs(cat_add_clicks, num_add_clicks, remove_clicks, 
+                         cat_source, cat_trans, num_source, num_trans, selection_pairs):
+    """Update the selection pairs and display tables"""
+    logger.info(f"Entering update_selection_pairs callback, cat_add_clicks={cat_add_clicks}, num_add_clicks={num_add_clicks}")
+    logger.debug(f"Current selection_pairs: {json.dumps(selection_pairs, indent=2)}")
+    
+    ctx = callback_context
+    selection_pairs = selection_pairs or {'categorical': [], 'numerical': []}
+    cat_pairs = selection_pairs.get('categorical', [])
+    num_pairs = selection_pairs.get('numerical', [])
+    
+    if not ctx.triggered:
+        logger.info("No trigger in update_selection_pairs")
+        return [], [], selection_pairs
+    
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if triggered_id == 'add-categorical-pairs':
+        if cat_source and cat_trans and len(cat_source) == len(cat_trans):
+            new_pairs = [{'id': str(uuid.uuid4()), 'source': src, 'transformed': trans} 
+                        for src, trans in zip(cat_source, cat_trans)]
+            cat_pairs.extend(new_pairs)
+            logger.info(f"Added {len(new_pairs)} categorical pairs")
+    
+    elif triggered_id == 'add-numerical-pairs':
+        if num_source and num_trans and len(num_source) == len(num_trans):
+            new_pairs = [{'id': str(uuid.uuid4()), 'source': src, 'transformed': trans} 
+                        for src, trans in zip(num_source, num_trans)]
+            num_pairs.extend(new_pairs)
+            logger.info(f"Added {len(new_pairs)} numerical pairs")
+    
+    else:
+        try:
+            button_id = json.loads(triggered_id.replace("'", '"'))
+            pair_id = button_id['index']
+            category = button_id['category']
+            if category == 'categorical':
+                cat_pairs = [pair for pair in cat_pairs if pair['id'] != pair_id]
+                logger.info(f"Removed categorical pair with ID: {pair_id}")
+            elif category == 'numerical':
+                num_pairs = [pair for pair in num_pairs if pair['id'] != pair_id]
+                logger.info(f"Removed numerical pair with ID: {pair_id}")
+        except Exception as e:
+            logger.error(f"Error parsing remove button ID: {str(e)}")
+    
+    selection_pairs['categorical'] = cat_pairs
+    selection_pairs['numerical'] = num_pairs
+    
+    # Create tables for display
+    cat_table = dbc.Table([
+        html.Thead(html.Tr([
+            html.Th("Source Column"),
+            html.Th("Transformed Column"),
+            html.Th("Action")
+        ])),
+        html.Tbody([
+            html.Tr([
+                html.Td(pair['source']),
+                html.Td(pair['transformed']),
+                html.Td(dbc.Button("🗑️", id={'type': 'remove-pair', 'index': pair['id'], 'category': 'categorical'},
+                                  color="danger", size="sm"))
+            ]) for pair in cat_pairs
+        ])
+    ], bordered=True, hover=True, responsive=True, size="sm") if cat_pairs else html.Div("No categorical pairs selected.")
+    
+    num_table = dbc.Table([
+        html.Thead(html.Tr([
+            html.Th("Source Column"),
+            html.Th("Transformed Column"),
+            html.Th("Action")
+        ])),
+        html.Tbody([
+            html.Tr([
+                html.Td(pair['source']),
+                html.Td(pair['transformed']),
+                html.Td(dbc.Button("🗑️", id={'type': 'remove-pair', 'index': pair['id'], 'category': 'numerical'},
+                                  color="danger", size="sm"))
+            ]) for pair in num_pairs
+        ])
+    ], bordered=True, hover=True, responsive=True, size="sm") if num_pairs else html.Div("No numerical pairs selected.")
+    
+    logger.debug(f"Updated selection_pairs: {json.dumps(selection_pairs, indent=2)}")
+    return cat_table, num_table, selection_pairs
+
+@app.callback(
+    Output('categorical-threshold-display', 'children'),
+    [Input('categorical-threshold', 'value')]
+)
+def update_categorical_threshold_display(value):
+    """Update categorical threshold display"""
+    logger.info(f"Updating categorical threshold display: {value}")
+    return f"Current threshold: {value:.2f}"
+
+@app.callback(
+    Output('numerical-threshold-display', 'children'),
+    [Input('numerical-threshold', 'value')]
+)
+def update_numerical_threshold_display(value):
+    """Update numerical threshold display"""
+    logger.info(f"Updating numerical threshold display: {value}")
+    return f"Current threshold: {value:.2f}"
+
+@app.callback(
+    Output('anomaly-threshold-display', 'children'),
+    [Input('anomaly-threshold', 'value')]
+)
+def update_anomaly_threshold_display(value):
+    """Update anomaly threshold display"""
+    logger.info(f"Updating anomaly threshold display: {value}")
+    return f"Current threshold: {value:.1f}%"
+
+@app.callback(
+    Output('log-display', 'children'),
+    [Input('log-update-interval', 'n_intervals')]
+)
+def update_log_display(n_intervals):
+    """Update the log display in the UI"""
+    try:
+        with open('app.log', 'r') as log_file:
+            logs = log_file.read()
+        return logs
+    except Exception as e:
+        logger.error(f"Error reading log file: {str(e)}")
+        return "Error reading logs"
+
+@app.callback(
+    Output('display-results', 'children'),
+    [Input('display-data-btn', 'n_clicks')],
+    [State('selection-pairs', 'data'),
+     State('original-data-store', 'data'),
+     State('transformed-data-store', 'data'),
+     State('anomaly-threshold', 'value')]
+)
+def perform_reconciliation_analysis(n_clicks, selection_pairs, original_json, transformed_json, anomaly_threshold):
+    """Perform comprehensive data reconciliation analysis"""
+    logger.info(f"Entering perform_reconciliation_analysis callback, n_clicks={n_clicks}")
+    logger.debug(f"Current selection_pairs: {json.dumps(selection_pairs, indent=2)}")
+    
+    if n_clicks is None or not original_json or not transformed_json:
+        logger.warning("Missing inputs for reconciliation analysis")
+        return []
+    
+    try:
+        original_df = pd.read_json(original_json, orient='split')
+        transformed_df = pd.read_json(transformed_json, orient='split')
+        
+        selection_pairs = selection_pairs or {'categorical': [], 'numerical': []}
+        cat_pairs = selection_pairs.get('categorical', [])
+        num_pairs = selection_pairs.get('numerical', [])
+        
+        categorical_columns = [pair['source'] for pair in cat_pairs]
+        categorical_matches = [pair['transformed'] for pair in cat_pairs]
+        numerical_columns = [pair['source'] for pair in num_pairs]
+        numerical_matches = [pair['transformed'] for pair in num_pairs]
+        
+        logger.info(f"Categorical columns: {categorical_columns}, matches: {categorical_matches}")
+        logger.info(f"Numerical columns: {numerical_columns}, matches: {numerical_matches}")
+        
+        warnings = []
+        
+        if categorical_columns and not any(categorical_matches):
+            warnings.append("⚠️ Warning: Categorical columns selected but no matches found in transformed data")
+            logger.warning("No categorical matches found")
+        
+        if numerical_columns and not any(numerical_matches):
+            warnings.append("⚠️ Warning: Numerical columns selected but no matches found in transformed data")
+            logger.warning("No numerical matches found")
+        
+        missing_original_cat = [col for col in categorical_columns if col not in original_df.columns]
+        missing_original_num = [col for col in numerical_columns if col not in original_df.columns]
+        missing_transformed_cat = [col for col in categorical_matches if col and col not in transformed_df.columns]
+        missing_transformed_num = [col for col in numerical_matches if col and col not in transformed_df.columns]
+        
+        if missing_original_cat:
+            warnings.append(f"⚠️ Warning: Categorical columns not found in original data: {missing_original_cat}")
+            logger.warning(f"Missing original categorical columns: {missing_original_cat}")
+        if missing_original_num:
+            warnings.append(f"⚠️ Warning: Numerical columns not found in original data: {missing_original_num}")
+            logger.warning(f"Missing original numerical columns: {missing_original_num}")
+        if missing_transformed_cat:
+            warnings.append(f"⚠️ Warning: Categorical columns not found in transformed data: {missing_transformed_cat}")
+            logger.warning(f"Missing transformed categorical columns: {missing_transformed_cat}")
+        if missing_transformed_num:
+            warnings.append(f"⚠️ Warning: Numerical columns not found in transformed data: {missing_transformed_num}")
+            logger.warning(f"Missing transformed numerical columns: {missing_transformed_num}")
+        
+        available_cat_original = [col for col in categorical_columns if col in original_df.columns]
+        available_cat_transformed = [col for col in categorical_matches if col and col in transformed_df.columns]
+        available_num_original = [col for col in numerical_columns if col in original_df.columns]
+        available_num_transformed = [col for col in numerical_matches if col and col in transformed_df.columns]
+        
+        if not available_cat_original and not available_num_original:
+            logger.warning("No valid columns selected for analysis")
+            return html.Div("No valid columns selected for analysis.", 
+                           style={'color': '#6c757d', 'textAlign': 'center', 'margin': '20px 0'})
+        
+        analysis_results = []
+        
+        for orig_num_col, trans_num_col in zip(available_num_original, available_num_transformed):
+            try:
+                logger.info(f"Analyzing numerical pair: {orig_num_col} -> {trans_num_col}")
+                if available_cat_original and available_cat_transformed and len(available_cat_original) == len(available_cat_transformed):
+                    original_grouped = original_df.groupby(available_cat_original)[orig_num_col].sum().reset_index()
+                    transformed_grouped = transformed_df.groupby(available_cat_transformed)[trans_num_col].sum().reset_index()
+                    
+                    original_grouped.columns = [f"orig_{col}" if col != orig_num_col else "orig_sum" for col in original_grouped.columns]
+                    transformed_grouped.columns = [f"trans_{col}" if col != trans_num_col else "trans_sum" for col in transformed_grouped.columns]
+                    
+                    comparison_df = pd.merge(original_grouped, transformed_grouped, 
+                                           left_on=[f"orig_{col}" for col in available_cat_original],
+                                           right_on=[f"trans_{col}" for col in available_cat_transformed],
+                                           how='outer')
+                    
+                    comparison_df['percentage_diff'] = np.where(
+                        (comparison_df['orig_sum'].notna()) & (comparison_df['trans_sum'].notna()),
+                        abs(comparison_df['orig_sum'] - comparison_df['trans_sum']) / comparison_df['orig_sum'] * 100,
+                        np.nan
+                    )
+                    
+                    anomalies = comparison_df[comparison_df['percentage_diff'] > anomaly_threshold]
+                    
+                    analysis_result = {
+                        'numerical_column': f"{orig_num_col} → {trans_num_col}",
+                        'categorical_columns': f"{' + '.join(f'{orig} → {trans}' for orig, trans in zip(available_cat_original, available_cat_transformed))}",
+                        'total_groups': len(comparison_df),
+                        'anomalies': len(anomalies),
+                        'anomaly_percentage': len(anomalies) / len(comparison_df) * 100 if len(comparison_df) > 0 else 0,
+                        'comparison_data': comparison_df,
+                        'anomalies_data': anomalies
+                    }
+                    
+                    analysis_results.append(analysis_result)
+                    logger.info(f"Completed analysis for {orig_num_col}, found {len(anomalies)} anomalies")
+                else:
+                    orig_total = original_df[orig_num_col].sum()
+                    trans_total = transformed_df[trans_num_col].sum()
+                    percentage_diff = abs(orig_total - trans_total) / orig_total * 100 if orig_total != 0 else 0
+                    
+                    comparison_df = pd.DataFrame({
+                        'orig_sum': [orig_total],
+                        'trans_sum': [trans_total],
+                        'percentage_diff': [percentage_diff]
+                    })
+                    
+                    analysis_result = {
+                        'numerical_column': f"{orig_num_col} → {trans_num_col}",
+                        'categorical_columns': "No grouping (totals comparison)",
+                        'total_groups': 1,
+                        'anomalies': 1 if percentage_diff > anomaly_threshold else 0,
+                        'anomaly_percentage': percentage_diff,
+                        'comparison_data': comparison_df,
+                        'orig_total': orig_total,
+                        'trans_total': trans_total,
+                        'percentage_diff': percentage_diff
+                    }
+                    
+                    analysis_results.append(analysis_result)
+                    logger.info(f"Completed totals comparison for {orig_num_col}, percentage_diff={percentage_diff:.2f}%")
+                
+            except Exception as e:
+                logger.error(f"Error analyzing {orig_num_col} -> {trans_num_col}: {str(e)}")
+                analysis_results.append({
+                    'numerical_column': f"{orig_num_col} → {trans_num_col}",
+                    'error': str(e)
+                })
+        
+        display_components = []
+        
+        if warnings:
+            warning_card = dbc.Card([
+                dbc.CardBody([
+                    html.H5("⚠️ Warnings", className="text-warning mb-3"),
+                    html.Ul([html.Li(warning) for warning in warnings])
+                ])
+            ], className="mb-3")
+            display_components.append(warning_card)
+        
+        for result in analysis_results:
+            if 'error' in result:
+                error_card = dbc.Card([
+                    dbc.CardBody([
+                        html.H5(f"❌ Analysis Error: {result['numerical_column']}", className="text-danger mb-2"),
+                        html.P(f"Error: {result['error']}", className="text-muted")
+                    ])
+                ], className="mb-3")
+                display_components.append(error_card)
+            else:
+                status_color = "success" if result['anomalies'] == 0 else "danger"
+                status_icon = "✅" if result['anomalies'] == 0 else "❌"
+                
+                has_comparison_data = 'comparison_data' in result
+                
+                analysis_card = dbc.Card([
+                    dbc.CardBody([
+                        html.H5(f"{status_icon} {result['numerical_column']}", className=f"text-{status_color} mb-3"),
+                        html.P(f"<strong>Categorical Grouping:</strong> {result['categorical_columns']}", className="mb-2"),
+                        html.P(f"<strong>Total Groups:</strong> {result['total_groups']}", className="mb-1"),
+                        html.P(f"<strong>Anomalies Found:</strong> {result['anomalies']} ({result['anomaly_percentage']:.1f}%)", className="mb-1"),
+                        html.P(f"<strong>Anomaly Threshold:</strong> {anomaly_threshold:.1f}%", className="mb-1"),
+                        
+                        html.Div([
+                            html.H6("Data Comparison:", className="mt-3 mb-2"),
+                            dbc.Table([
+                                html.Thead(html.Tr([
+                                    *([html.Th(col.replace('orig_', '').replace('trans_', ''), style={'backgroundColor': '#e9ecef', 'fontWeight': 'bold'}) for col in result['comparison_data'].columns if col.startswith('orig_') and not col == 'orig_sum']),
+                                    html.Th("Original Sum"),
+                                    html.Th("Transformed Sum"),
+                                    html.Th("Difference (%)")
+                                ])),
+                                html.Tbody([
+                                    html.Tr([
+                                        *([html.Td(str(row[col]), style={'backgroundColor': '#f8f9fa', 'fontWeight': '500'}) for col in result['comparison_data'].columns if col.startswith('orig_') and not col == 'orig_sum']),
+                                        html.Td(f"{row['orig_sum']:,.2f}"),
+                                        html.Td(f"{row['trans_sum']:,.2f}"),
+                                        html.Td(f"{row['percentage_diff']:.2f}%", 
+                                               style={'color': '#dc3545' if row['percentage_diff'] > anomaly_threshold else 'inherit',
+                                                      'fontWeight': 'bold' if row['percentage_diff'] > anomaly_threshold else 'normal'})
+                                    ], style={'backgroundColor': '#f8d7da' if row['percentage_diff'] > anomaly_threshold else 'inherit'}) 
+                                    for _, row in result['comparison_data'].iterrows()
+                                ])
+                            ], bordered=True, hover=True, responsive=True, size="sm")
+                        ]) if has_comparison_data else html.Div("❌ No comparison data available", className="text-danger mt-2")
+                    ])
+                ], className="mb-3")
+                display_components.append(analysis_card)
+        
+        if analysis_results:
+            # Create Excel file
+            excel_file = generate_excel_from_results(analysis_results, anomaly_threshold)
+            
+            # Add download button
+            download_card = dbc.Card([
+                dbc.CardBody([
+                    html.H5("📥 Download Results", className="mb-3"),
+                    dcc.Download(id="download-analysis"),
+                    dbc.Button(
+                        "Download Analysis Results (XLSX)",
+                        id="download-button",
+                        color="success",
+                        className="w-100"
+                    )
+                ])
+            ], className="mb-3")
+            
+            display_components.append(download_card)
+        
+        logger.info("Completed reconciliation analysis")
+        return display_components
+    except Exception as e:
+        logger.error(f"Error in perform_reconciliation_analysis: {str(e)}")
+        raise
+
+# Modify the download_analysis_results callback
+@app.callback(
+    Output("download-analysis", "data"),
+    Input("download-button", "n_clicks"),
+    [State('selection-pairs', 'data'),
+     State('original-data-store', 'data'),
+     State('transformed-data-store', 'data'),
+     State('anomaly-threshold', 'value')],
+    prevent_initial_call=True
+)
+def download_analysis_results(n_clicks, selection_pairs, original_json, transformed_json, anomaly_threshold):
+    """Generate and download analysis results in Excel format"""
+    if not n_clicks:
+        return None
+        
+    try:
+        original_df = pd.read_json(original_json, orient='split')
+        transformed_df = pd.read_json(transformed_json, orient='split')
+        
+        cat_pairs = selection_pairs.get('categorical', [])
+        num_pairs = selection_pairs.get('numerical', [])
+        
+        categorical_columns = [pair['source'] for pair in cat_pairs]
+        categorical_matches = [pair['transformed'] for pair in cat_pairs]
+        numerical_columns = [pair['source'] for pair in num_pairs]
+        numerical_matches = [pair['transformed'] for pair in num_pairs]
+        
+        available_cat_original = [col for col in categorical_columns if col in original_df.columns]
+        available_cat_transformed = [col for col in categorical_matches if col and col in transformed_df.columns]
+        available_num_original = [col for col in numerical_columns if col in original_df.columns]
+        available_num_transformed = [col for col in numerical_matches if col and col in transformed_df.columns]
+        
+        analysis_results = []
+        
+        # Perform analysis for each numerical pair
+        for orig_num_col, trans_num_col in zip(available_num_original, available_num_transformed):
+            if available_cat_original and available_cat_transformed:
+                original_grouped = original_df.groupby(available_cat_original)[orig_num_col].sum().reset_index()
+                transformed_grouped = transformed_df.groupby(available_cat_transformed)[trans_num_col].sum().reset_index()
+                
+                original_grouped.columns = [f"orig_{col}" if col != orig_num_col else "orig_sum" for col in original_grouped.columns]
+                transformed_grouped.columns = [f"trans_{col}" if col != trans_num_col else "trans_sum" for col in transformed_grouped.columns]
+                
+                comparison_df = pd.merge(original_grouped, transformed_grouped,
+                                       left_on=[f"orig_{col}" for col in available_cat_original],
+                                       right_on=[f"trans_{col}" for col in available_cat_transformed],
+                                       how='outer')
+                
+                comparison_df['percentage_diff'] = np.where(
+                    (comparison_df['orig_sum'].notna()) & (comparison_df['trans_sum'].notna()),
+                    abs(comparison_df['orig_sum'] - comparison_df['trans_sum']) / comparison_df['orig_sum'] * 100,
+                    np.nan
+                )
+                
+                analysis_results.append({
+                    'numerical_column': f"{orig_num_col} → {trans_num_col}",
+                    'comparison_data': comparison_df
+                })
+        
+        # Generate Excel file
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for idx, result in enumerate(analysis_results):
+                if 'comparison_data' in result:
+                    df = result['comparison_data'].copy()
+                    df['Status'] = np.where(df['percentage_diff'] > anomaly_threshold,
+                                          'Anomaly', 'No Anomaly')
+                    sheet_name = f"Analysis_{idx+1}_{result['numerical_column']}"[:31]  # Excel sheet names limited to 31 chars
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        output.seek(0)
+        return dcc.send_bytes(
+            output.getvalue(),
+            f"reconciliation_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error generating download file: {str(e)}")
+        return None
+
+@app.callback(
+    [Output('categorical-matches-text', 'children'),
+     Output('numerical-matches-text', 'children')],
+    [Input('categorical-source', 'value'),
+     Input('numerical-source', 'value')],
+    [State('original-data-store', 'data'),
+     State('transformed-data-store', 'data')]
+)
+def update_matches_text(cat_source_cols, num_source_cols, original_json, transformed_json):
+    """Update the text showing possible matches and their similarity scores"""
+    if not original_json or not transformed_json:
+        return "", ""
+        
+    original_df = pd.read_json(original_json, orient='split')
+    transformed_df = pd.read_json(transformed_json, orient='split')
+    
+    cat_text = []
+    num_text = []
+    
+    if cat_source_cols:
+        for col in cat_source_cols:
+            matches = find_matching_columns(original_df[col], transformed_df, 'categorical')
+            if matches:
+                match_text = f"'{col}' matches: " + ", ".join(
+                    [f"'{m[0]}' ({m[1]:.2f})" for m in matches]
+                )
+                cat_text.append(match_text)
+    
+    if num_source_cols:
+        for col in num_source_cols:
+            matches = find_matching_columns(original_df[col], transformed_df, 'numerical')
+            if matches:
+                match_text = f"'{col}' matches: " + ", ".join(
+                    [f"'{m[0]}' ({m[1]:.2f})" for m in matches]
+                )
+                num_text.append(match_text)
+    
+    cat_result = html.Div([html.P(text) for text in cat_text]) if cat_text else ""
+    num_result = html.Div([html.P(text) for text in num_text]) if num_text else ""
+    
+    return cat_result, num_result
+
+def generate_excel_from_results(analysis_results, anomaly_threshold):
+    """Generate Excel file from analysis results"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for idx, result in enumerate(analysis_results):
+            if 'comparison_data' in result:
+                df = result['comparison_data'].copy()
+                # Add anomaly status column
+                df['Status'] = np.where(df['percentage_diff'] > anomaly_threshold, 
+                                      'Anomaly', 'No Anomaly')
+                sheet_name = f"Analysis_{idx+1}"[:31]  # Excel sheet names limited to 31 chars
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+    
+    output.seek(0)
+    return output
+
+if __name__ == '__main__':
+    app.run_server(debug=True, port=8050)

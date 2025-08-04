@@ -1,67 +1,216 @@
-import dash
-from dash import dcc, html, Input, Output, State, callback_context, ALL
-import dash_bootstrap_components as dbc
-import pandas as pd
-import base64
-import io
-import numpy as np
-import json
-import logging
-from datetime import datetime
-import uuid
-from io import BytesIO
+Below is the walkthrough script for the Data Reconciliation Tool, updated with a **Frequently Asked Questions (FAQ)** section tailored to anticipate common queries from users or stakeholders. The script remains concise and professional, designed for a 5-7 minute demo, with the FAQ section extending the presentation by 1-2 minutes if included. The walkthrough uses the test datasets (`original_data.xlsx` and `transformed_data.xlsx`) from previous responses and assumes the latest `app.py` implementation. The FAQs address technical, usability, and scalability questions based on the tool’s functionality and the issues encountered (e.g., multiple matches, pair addition).
 
-# Configure logging
-logging.basicConfig(
-    filename='app.log',
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+---
 
-# Initialize Dash app
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+### Walkthrough Script for Data Reconciliation Tool
 
-# Global variables to store uploaded data
-original_data = None
-transformed_data = None
+**Introduction (30 seconds)**  
+[Start with a greeting and context.]  
+"Hello, everyone! I’m thrilled to demonstrate our Data Reconciliation Tool, a Dash-based application that simplifies comparing and validating datasets. Whether you’re reconciling financial records, customer data, or any tabular data, this tool automates column matching and anomaly detection to save time and ensure accuracy. Let’s walk through its features step-by-step!"
 
-# App layout
-app.layout = html.Div([
-    html.H1("Data Reconciliation Tool", style={
-        'textAlign': 'center', 
-        'marginBottom': '20px',
-        'color': '#2c3e50',
-        'fontSize': '28px',
-        'fontWeight': '300'
-    }),
-    
-    # File upload section
-    dbc.Card([
-        dbc.CardBody([
-            html.H3("Upload Datasets", className="mb-3"),
-            dbc.Row([
-                dbc.Col([
-                    html.H5("Original Dataset", className="mb-2"),
-                    dcc.Upload(
-                        id='upload-original',
-                        children=html.Div([
-                            '📁 Drag and Drop or ',
-                            html.A('Select File', style={'color': '#3498db', 'textDecoration': 'underline'})
-                        ]),
-                        style={
-                            'width': '100%',
-                            'height': '50px',
-                            'lineHeight': '50px',
-                            'borderWidth': '2px',
-                            'borderStyle': 'dashed',
-                            'borderRadius': '8px',
-                            'textAlign': 'center',
-                            'margin': '5px 0',
-                            'backgroundColor': '#f8f9fa',
-                            'borderColor': '#dee2e6',
-                            'color': '#6c757d',
-                            'fontSize': '14px'
+---
+
+**Step 1: Overview of the Interface (1 minute)**  
+[Open the dashboard at `http://localhost:8052` and describe the layout.]  
+"Here’s the main interface of the Data Reconciliation Tool, built with Python, Dash, and Bootstrap for a clean, intuitive design. The layout is divided into three key sections:
+
+1. **Upload Datasets**: Upload your original and transformed datasets here, in Excel or CSV format.  
+2. **Column Matching**: Select and pair categorical and numerical columns, with sliders to fine-tune matching thresholds.  
+3. **Debug Logs**: View real-time logs to troubleshoot issues.
+
+Let’s start by uploading sample datasets to see the tool in action."
+
+---
+
+**Step 2: Uploading Datasets (1 minute)**  
+[Demonstrate file uploads.]  
+"I’m using two test files: `original_data.xlsx`, with columns like `Gender`, `Region`, and `Sales`, and `transformed_data.xlsx`, with similar columns renamed as `uppaded_gender`, `Sex`, and `Sales_Transformed`.
+
+[Navigate to the ‘Upload Datasets’ section.]  
+I’ll drag and drop `original_data.xlsx` into the ‘Original Dataset’ area. [Upload the file.] The status shows: ‘✅ original_data.xlsx (10 rows, 6 columns)’. Now, I’ll upload `transformed_data.xlsx`. [Upload the file.] And here: ‘✅ transformed_data.xlsx (5 rows, 6 columns)’."
+
+[Point to dropdowns.]  
+"Notice the dropdowns in the ‘Column Matching’ section. The ‘Categorical Source’ dropdown now lists `Gender` and `Region`, while ‘Numerical Source’ lists `Sales`. The transformed dropdowns show corresponding columns like `uppaded_gender` and `Sex`."
+
+---
+
+**Step 3: Column Matching and Multiple Matches (2 minutes)**  
+[Show column matching and multiple-match handling.]  
+"Let’s move to ‘Column Matching’. I’ll select `Gender` in the ‘Categorical Source’ dropdown. [Select `Gender`.] The tool uses Jaccard similarity to suggest matching columns from the transformed dataset, based on a default threshold of 0.1, adjustable here. [Point to the slider.]
+
+[Point to ‘Categorical Transformed’ dropdown.]  
+The ‘Categorical Transformed’ dropdown now lists `uppaded_gender (Similarity: 1.00)` and `Sex (Similarity: 1.00)`, indicating two perfect matches. The ‘Categorical Matches Info’ div confirms: ‘Multiple matches for 'Gender' with similarity 1.00: uppaded_gender, Sex’. This is great for cases where column names differ but data is identical.
+
+By default, `uppaded_gender` is pre-selected. [Show selection.] I can switch to `Sex` if needed. [Select `Sex`.] I’ll adjust the threshold to 0.5 [move slider] to show how it filters lower-similarity matches, then set it back to 0.1."
+
+---
+
+**Step 4: Adding Column Pairs (1 minute)**  
+[Demonstrate pair addition.]  
+"Now, let’s pair columns for analysis. With `Gender` and `Sex` selected, I’ll click ‘Add Selected Pairs’. [Click the button.]
+
+[Point to ‘Categorical Pairs Table’.]  
+The table updates: `Gender → Sex`. I can remove this pair if needed. [Click the trash icon, then re-add if desired.] Let’s add a numerical pair. I’ll select `Sales` in ‘Numerical Source’, and the tool suggests `Sales_Transformed (Similarity: 1.00)’. [Select and click ‘Add Selected Pairs’.] The ‘Numerical Pairs Table’ shows: `Sales → Sales_Transformed`."
+
+---
+
+**Step 5: Performing Reconciliation Analysis (1.5 minutes)**  
+[Run and explain the analysis.]  
+"With our pairs set, let’s reconcile the data. I’ll click ‘Perform Reconciliation Analysis’. [Click the button.]
+
+[Point to results.]  
+The tool groups data by `Gender → Sex` and compares `Sales → Sales_Transformed` sums for each group. The results table shows original sums, transformed sums, and percentage differences, with anomalies highlighted in red if they exceed the 10% threshold. [Point to the slider.] Our test data is identical, so we see no anomalies, marked with a green checkmark. If discrepancies exist, they’d be flagged for review. I can adjust the anomaly threshold to be stricter or more lenient."
+
+---
+
+**Step 6: Debugging with Logs (30 seconds)**  
+[Show the logs.]  
+"For transparency, the ‘Debug Logs’ section shows real-time activity. [Scroll to logs.] Here, we see entries like ‘Successfully parsed original_data.xlsx’, ‘Suggested match for Gender: uppaded_gender’, and ‘Added 1 categorical pairs’. These logs help diagnose issues, especially with complex datasets."
+
+---
+
+**Step 7: Frequently Asked Questions (1-2 minutes)**  
+[Address common questions to wrap up.]  
+"Before we conclude, let me answer some frequently asked questions about the tool:
+
+1. **What file formats are supported?**  
+   The tool accepts CSV and Excel files, including `.xlsx`, `.xlsb`, `.xlsm`, and `.xls`. Ensure your data is tabular with clear column headers.
+
+2. **How does the tool match columns?**  
+   It uses Jaccard similarity for categorical columns, comparing unique values, and a multi-metric approach for numerical columns, including correlation and range overlap. Threshold sliders let you control match sensitivity.
+
+3. **What if multiple columns match?**  
+   As we saw with `Gender`, the tool detects multiple matches (e.g., `uppaded_gender` and `Sex`) and displays them with similarity scores. You can choose the desired match or let the tool suggest one.
+
+4. **Can it handle large datasets?**  
+   Yes, but for millions of rows, performance may depend on your hardware. We can optimize similarity calculations for larger datasets if needed.
+
+5. **What if the datasets have different row counts?**  
+   The tool handles mismatched row counts, as seen with our 10-row original and 5-row transformed datasets, by focusing on column-level similarities and grouped analysis.
+
+6. **How can I troubleshoot issues?**  
+   Use the debug logs to check for errors like file parsing issues or unmatched columns. The logs are saved to `app.log` for detailed review.
+
+If you have more questions, I’d be happy to dive deeper!"
+
+---
+
+**Conclusion and Q&A (30 seconds)**  
+[Wrap up and invite questions.]  
+"That’s the Data Reconciliation Tool! It automates dataset comparison, handles complex matching scenarios, and delivers clear insights. Whether you’re auditing data or validating transformations, it’s a game-changer. Any questions or use cases you’d like to explore?"
+
+---
+
+### FAQs in Detail
+For reference, here’s an expanded version of the FAQs with answers, which you can use for written documentation or to prepare for audience questions:
+
+1. **What file formats are supported?**  
+   **Answer**: The tool supports CSV and Excel files (`.xlsx`, `.xlsb`, `.xlsm`, `.xls`). Files must be tabular with defined column headers. Non-tabular formats (e.g., PDF, JSON) are not supported, but you can convert them to CSV/Excel first.
+
+2. **How does the tool match columns?**  
+   **Answer**: For categorical columns, it uses Jaccard similarity, calculating the overlap of unique values (e.g., `Gender` vs. `uppaded_gender`). For numerical columns, it combines metrics like Pearson correlation, range overlap, mean/std deviation similarity, and percentile differences. Thresholds (0.1 for categorical, 0.2 for numerical by default) filter matches, adjustable via sliders.
+
+3. **What if multiple columns match?**  
+   **Answer**: The tool detects multiple matches with near-identical similarity scores (within 0.001) and lists them in the transformed dropdown with scores (e.g., `uppaded_gender (Similarity: 1.00)`, `Sex (Similarity: 1.00)`). The ‘Matches Info’ div flags these cases, and the tool suggests the first match but allows manual selection.
+
+4. **Can it handle large datasets?**  
+   **Answer**: Yes, it processes datasets with thousands of rows efficiently. For millions of rows, similarity calculations may slow down, especially for numerical columns. Optimizations like sampling or parallel processing can be added for enterprise use.
+
+5. **What if the datasets have different row counts?**  
+   **Answer**: The tool handles differing row counts (e.g., 10 vs. 5 rows in your datasets) by focusing on column-level similarities and grouped analysis. Reconciliation compares sums within matching groups, and missing rows are treated as potential anomalies.
+
+6. **How can I troubleshoot issues?**  
+   **Answer**: Check the ‘Debug Logs’ section for real-time feedback on file uploads, matching, and errors. The `app.log` file provides detailed logs, including parsing errors or why pairs failed to add (e.g., mismatched source/transformed selections). Common issues include empty dropdowns (check file format) or unresponsive UI (check browser console for JavaScript errors).
+
+7. **Can I export the reconciliation results?**  
+   **Answer**: Currently, results are displayed in the UI. To export, you can extend the tool to save tables as CSV/Excel by adding a download button, which we can implement if needed.
+
+8. **How do I adjust the sensitivity of anomaly detection?**  
+   **Answer**: Use the ‘Anomaly Threshold’ slider (default 10%) to set the percentage difference for flagging anomalies. Lower values make the tool stricter, while higher values are more lenient.
+
+---
+
+### Notes for the Presenter
+- **Preparation**:
+  - Run `python app.py` and ensure the dashboard loads at `http://localhost:8052`.
+  - Use the test datasets provided:
+    ```python
+    # original_data.xlsx
+    import pandas as pd
+    data = {
+        'Gender': ['Male', 'Female', 'Male', 'Female', 'Other', 'Male', 'Female', 'Male', 'Female', 'Other'],
+        'Region': ['North', 'South', 'East', 'West', 'North', 'South', 'East', 'West', 'North', 'South'],
+        'Sales': [100, 200, 150, 300, 250, 120, 180, 160, 290, 240],
+        'Col3': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        'Col4': ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'],
+        'Col5': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    }
+    df = pd.DataFrame(data)
+    df.to_excel('original_data.xlsx', index=False)
+
+    # transformed_data.xlsx
+    data = {
+        'uppaded_gender': ['Male', 'Female', 'Male', 'Female', 'Other'],
+        'Sex': ['Male', 'Female', 'Male', 'Female', 'Other'],
+        'Region': ['North', 'South', 'East', 'West', 'North'],
+        'Sales_Transformed': [100, 200, 150, 300, 250],
+        'Col3': [1, 2, 3, 4, 5],
+        'Col4': ['A', 'B', 'C', 'D', 'E']
+    }
+    df = pd.DataFrame(data)
+    df.to_excel('transformed_data.xlsx', index=False)
+    ```
+  - Clear `app.log` before the demo (`> app.log` on Unix or `echo. > app.log` on Windows).
+  - Test all steps to ensure uploads, dropdowns, pair addition, and analysis work.
+
+- **Timing**:
+  - Main walkthrough: 5-7 minutes.
+  - FAQ section: 1-2 minutes, adjustable based on audience interest.
+  - Skip or shorten FAQs for time-constrained demos, or expand for technical audiences.
+
+- **Visual Aids**:
+  - Use a large screen or screen-sharing to highlight dropdowns, tables, and results.
+  - Zoom in on key elements like the ‘Categorical Matches Info’ div or results table.
+
+- **Troubleshooting**:
+  - If uploads fail, verify file formats and check logs for parsing errors.
+  - If pairs don’t add, ensure `categorical-transformed` has a selected value (e.g., `uppaded_gender` or `Sex`).
+  - If the UI is unresponsive, check the browser console (F12) and `app.log` for errors.
+  - Mention logs during the demo to show robustness: “If anything goes wrong, the logs will guide us.”
+
+- **Customizing for Your Audience**:
+  - **Technical Audience**: Emphasize Jaccard similarity, numerical metrics, and log debugging. Mention the Python/Dash backend.
+  - **Non-Technical Audience**: Focus on ease of use, visual outputs, and practical benefits (e.g., catching data errors).
+  - **Your Datasets**: If using your own data, replace `Gender`, `Sex`, `Sales`, etc., with actual column names in the script. Share column names if you need a tailored script.
+
+- **Extending the Demo**:
+  - If time allows, demonstrate changing the anomaly threshold or removing/re-adding pairs.
+  - For advanced users, show how logs track every action (e.g., open `app.log` in a text editor).
+
+---
+
+### Testing the Walkthrough
+1. Run the app and test all steps with the provided datasets.
+2. Verify:
+   - Uploads show correct file info.
+   - Selecting `Gender` populates `uppaded_gender` and `Sex` with similarity scores.
+   - `Categorical Matches Info` shows multiple matches.
+   - Clicking ‘Add Selected Pairs’ updates the table.
+   - Reconciliation analysis displays results without errors.
+3. Check `app.log` for entries like:
+   ```
+   2025-08-04 ... - INFO - Added 1 categorical pairs
+   2025-08-04 ... - INFO - Multiple matches for Gender: [('uppaded_gender', 1.0), ('Sex', 1.0)]
+   ```
+4. Practice the script to stay within 5-7 minutes (or 7-9 with FAQs).
+
+If you need a tailored script (e.g., specific column names, shorter/longer duration, or additional features like exporting results), or if you encounter issues during testing, please provide:
+- Column names and sample rows of your datasets.
+- Audience details (technical level, size).
+- Time constraints or specific demo goals.
+- Any errors or logs from testing.
+
+Let me know if you’d like a slide deck outline, a video script format, or further assistance with the presentation!                            'fontSize': '14px'
                         },
                         multiple=False
                     ),

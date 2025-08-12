@@ -1,79 +1,30 @@
-"""
-Configuration settings for BSRS Role Holder Collection Tool
-"""
-import getpass
-from pathlib import Path
+Hi all,
 
-# Application Settings
-APP_NAME = "BSRS Tool"
-VERSION = "2.0"
+Please find the feedback and requirements from today’s call:
 
-# User Authentication
-CURRENT_USER = getpass.getuser()
-ADMIN_USERS = ["admin1", "admin2", "superuser"]
+If a PS ID is populated, check the name entered by the user against the L&D data.
 
-# File Settings
-SUPPORTED_FILE_TYPES = [("Excel files", "*.xlsx")]
-MAX_FILE_SIZE_MB = 50
-BACKUP_ENABLED = True
+If there’s a mismatch, replace the name with the one from the L&D data.
 
-# Excel Processing Settings
-HEADER_ROWS = [0, 1, 2]
-DATA_START_ROW = 4
-USER_INFO_SHEET = 'L&D'
-MAIN_SHEET = 'Sheet1'
+Highlight the cell in Excel and add the issue to the validation log.
 
-# Role Validation Rules
-ROLE_GRADE_REQUIREMENTS = {
-    "Role Holder1 Preparer": ['06', '05', '04', '03', '02', '01', 'MD'],
-    "Role Holder2 Reviewer": ['05', '04', '03', '02', '01', 'MD'], 
-    "Role Holder3Account Owner": ['04', '03', '02', '01', 'MD']
-}
+Apply the same process if the name is blank.
 
-ROLE_HOLDERS = ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]
+If the PS ID is not populated, validate using the name (if available).
 
-# Columns to enrich for each role holder
-ENRICHMENT_COLUMNS = [
-    'Manually added column', 
-    'Contact Email Address',
-    'BF Level 1', 'BF Level 2', 'BF Level 3', 'BF Level 4', 'BF Level 5'
-]
+In the tool, move the validation process from the user panel to the admin panel.
 
-# UI Settings - Minimal Design
-WINDOW_SIZE = "700x550"
-BUTTON_WIDTH = 15
-PADDING = 15
+Users will not see any validation or notifications while pasting the data.
 
-# Minimal Color Palette
-COLORS = {
-    'primary': '#2563eb',      # Clean blue
-    'success': '#10b981',      # Clean green  
-    'error': '#ef4444',        # Clean red
-    'warning': '#f59e0b',      # Clean orange
-    'text': '#374151',         # Dark gray
-    'text_light': '#6b7280',   # Light gray
-    'background': '#ffffff',   # Pure white
-    'surface': '#f3f4f6',      # Light gray with better contrast
-    'border': '#d1d5db'        # More visible border
-}
+All validation will occur when the admin consolidates the data.
 
-# Minimal Typography
-FONTS = {
-    'heading': ('Segoe UI', 14, 'bold'),
-    'body': ('Segoe UI', 10),
-    'small': ('Segoe UI', 9),
-    'button': ('Segoe UI', 10)
-}
+A validation error report should be created for each user based on their submitted PS ID.
 
-# Logging
-LOG_LEVEL = "INFO"
-LOG_FILE = Path("bsrs_app.log")
-MAX_LOG_SIZE = 10 * 1024 * 1024  # 10MB
+Add Cadency Validation:
 
-# Output Settings
-OUTPUT_SHEETS = {
-    'consolidated': 'Consolidated Output',
-    'outstanding': 'Outstanding Records', 
-    'conflicts': 'Conflict Report',
-    'errors': 'Validation Errors'
-} 
+Create a column “Cadency User Validation” populated with “Yes” or “No” based on the validation.
+
+Add a Cadency Validation log.
+
+Action: BSRS Team to share Cadency data.
+

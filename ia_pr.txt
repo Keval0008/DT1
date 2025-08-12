@@ -1,0 +1,372 @@
+1. Title Page
+Project Name
+
+Team Members & Roles
+
+Institution / Organization (if applicable)
+
+Date
+
+2. Project Summary (Executive Overview)
+1–2 paragraph high-level summary of the project, its purpose, and what it achieves.
+
+3. Problem Statement
+The context and need for the project.
+
+The main challenges or issues that required solving.
+
+4. Proposed Solution
+Overview of the approach or method chosen.
+
+Why this solution was selected over others.
+
+5. Design Approach
+System architecture / workflow diagram.
+
+Design philosophy and guiding principles.
+
+High-level explanation of how different parts interact.
+
+6. Components & Features
+Component 1 – description + role in the system.
+
+Component 2 – description + role in the system.
+
+… (list all main components with their purpose)
+
+Highlight main features that stand out.
+
+7. My Contribution in Components
+Detailed list of which components or modules you personally worked on.
+
+Specific tasks, challenges tackled, and results delivered.
+
+8. Current State of the Project
+Status (prototype, production-ready, ongoing improvements, etc.).
+
+Any performance metrics or test results.
+
+Future plans / next steps.
+
+9. Learning Outcomes
+Skills gained (technical + soft skills).
+
+Lessons from teamwork, problem-solving, or research.
+
+10. References / Resources (if needed)
+Any tools, libraries, APIs, datasets, or literature used.
+
+--------------------------------------
+
+Project Summary
+The Impairment Analysis Tool is designed to streamline and standardize the calculation of VIU (Value in Use), CV (Carrying Value), and the resulting Headroom across multiple countries and entities. It replaces the previous manual Excel-based process, which was prone to inconsistencies, manual errors, and inefficiencies, and lacked the flexibility for extensive scenario testing.
+
+Currently supporting regions including HBCE, HBAR, HBUK, LATAM, and MENA, the tool provides a consistent methodology and standardized assumptions across markets and CGUs. Users can instantly run multiple valuation scenarios by adjusting key inputs such as growth rate, discount rate, RWA (Risk Weighted Assets), PBT (Profit Before Tax), and free cash flow.
+
+By automating calculations, ensuring transparency, and generating structured outputs, the tool significantly reduces processing time, improves accuracy, and makes the review process more efficient and auditable — all while being easy to access and operate.
+
+--------------------------------------
+
+Problem Statement
+The calculation of VIU (Value in Use), CV (Carrying Value), and Headroom was previously performed through Excel EUCs (End-User Computing spreadsheets). Each site and country maintained its own EUC format, often with variations in both the structure and calculation steps. This lack of standardization created several challenges:
+
+Inconsistencies in results due to differing templates and methodologies.
+
+Higher risk of manual errors arising from repetitive and complex spreadsheet operations.
+
+Slow turnaround times, especially when calculations needed to be repeated or updated.
+
+Difficulty in auditing due to unstructured files and non-uniform assumptions.
+
+Limited flexibility to run multiple scenario analyses on the same dataset.
+
+These inefficiencies directly impacted stakeholders’ ability to quickly understand the drivers behind Headroom changes and to conduct scenario-based evaluations for better decision-making and reporting.
+
+The trigger for this project was the urgent need to streamline and standardize impairment calculations across the organization, ensuring accuracy, transparency, and the ability to perform consistent, multi-scenario analysis across all regions in scope.
+
+--------------------------------------------
+
+Proposed Solution
+The Impairment Analysis Tool was developed to shift the focus from time-consuming manual calculations to insightful analysis during reporting. By automating the entire VIU, CV, and Headroom calculation process, the tool enables teams to dedicate more effort to understanding results, exploring scenarios, and delivering higher-quality reporting.
+
+Built as a Python-based web application and deployed locally on users’ systems, the tool replaces fragmented Excel EUCs with a single, standardized platform. Key capabilities include:
+
+Automated calculations for VIU, CV, and Headroom.
+
+Standardized templates to ensure consistency in inputs and methodology across all markets.
+
+Sensitivity analysis to evaluate the impact of changes in key assumptions.
+
+Headroom breakeven point analysis to identify critical thresholds.
+
+Comparisons with previous reporting periods for trend and variance insights.
+
+Cause of change analysis to explain Headroom movements over time.
+
+This approach ensures consistent results, eliminates manual calculation errors, and makes the entire process faster and more transparent. With the ability to perform calculations and scenario testing at the click of a button, users now save significant time, reduce the risk of errors, and gain access to deeper analysis tools such as sensitivity and breakeven evaluations — all in a single, user-friendly application.
+
+-------------------------------------------
+
+Design Approach
+Architecture Overview
+The Impairment Analysis Tool is a single-user Python web app that runs locally. It uses Dash for the UI and a set of Python functions (no separate modules) for computations and analysis. All data exchange happens through Excel files.
+
+Key building blocks
+
+UI (Dash): Forms for input selection, controls for scenarios, and results pages.
+
+Computation functions: Vectorized pandas/numpy workflows for VIU, CV, and Headroom; sensitivity and breakeven analysis; period-over-period comparison; causality/waterfall.
+
+File I/O layer: Reads standardized input templates and writes structured Excel outputs.
+
+Data Flow
+Input
+Users provide a standard Excel template for an entity/market.
+
+Validation
+The app runs business checks, data-quality checks, input sanity checks, and intermediate calculation checks.
+
+Calculation
+Core engine computes VIU, CV, and Headroom using inputs like RWA, PBT, Growth Rate, Discount Rate, CET1 Actual/Required, Tax values, Saracen values.
+
+Analysis
+
+Sensitivity analysis (vary growth/discount and other drivers)
+
+Breakeven analysis (solve for growth or discount where Headroom = 0)
+
+Historical comparison (same CGUs across periods)
+
+Cause-of-change (waterfall by isolating one variable at a time)
+
+Outputs
+Multiple Excel downloads: calculation details, summary, sensitivity results, breakeven, historical comparison, and causality.
+
+Tech Stack & Storage
+Frontend: Dash
+
+Python libraries: pandas, numpy, scipy (optimize)
+
+Storage: File-based (Excel in/out). No database.
+
+Calculation & Engines
+Core formulas: VIU and CV at CGU level, Headroom = VIU − Carrying Value.
+
+Scenario engine: On-the-fly changes to assumptions (growth, discount, RWA, PBT, etc.) with immediate impact on Headroom.
+
+Breakeven engine: Root-finding to identify discount rate or growth rate at which Headroom hits zero.
+
+Comparison, Causality & Auditability
+Period-over-period: Comparison supported when CGUs are consistent between periods.
+
+Cause-of-change: Waterfall method, changing one variable at a time to attribute movement.
+
+Audit trail: Not implemented.
+
+Security, Permissions & Deployment
+Access: Single-user local.
+
+Deployment options: Executable, Docker, or Python environment. No auto-updates.
+
+Security/Compliance: No encryption or PII handling.
+
+Performance & Scalability
+Typical size: ~5–6 CGUs; any number of scenarios per run.
+
+Optimizations: Vectorized pandas; parallel runs for scenario sweeps.
+
+UX Flow
+Pages: Inputs, Controls, Summary (consolidated), Summary (entity-wise), Sensitivity Analysis, Scenario Projection, Headroom Utilisation, Historical Comparisons.
+
+----------------------------------
+
+Components & Features
+1) Inputs
+Purpose: Display the full input template as-is and visualize key fields.
+What it shows / lets you do:
+
+Table view of all inputs from the standard Excel template
+
+Quick visuals: bar, stacked bar, line charts, and KPI cards
+Output/Downloads: None (view-only)
+
+2) Controls
+Purpose: Central place to run quality checks and show pass/fail.
+Checks covered:
+
+Input checks, intermediate-calculation checks, business-rule checks on outputs
+What it shows / lets you do:
+
+Which rows/fields pass vs fail; reasons for failure
+Output/Downloads: None (diagnostic view)
+
+3) Summary (Consolidated)
+Purpose: One-page summary for all entities in the template.
+Key metrics: VIU, CV, Headroom, Headroom %, NFA before CC Reallocation, NFA after CC Reallocation
+Output/Downloads:
+
+Detailed calculation download
+
+Output summary download (Excel)
+
+4) Summary (Entity-wise)
+Purpose: Deep dive for a selected entity.
+Key metrics & internals:
+
+VIU, CV, Headroom
+
+Intermediate calcs: free cash flow, discount factor, time factor, terminal value, discounted terminal value, discounted cash flows
+
+Inputs recap: RWA, PBT, Tax, CET Required, etc.
+Output/Downloads: None (result display)
+
+5) Sensitivity Analysis
+Purpose: Test impact of changing assumptions.
+Inputs you can tweak: RWA, PBT, Tax, Discount Rate, Growth Rate (by % up/down or absolute value; one or many at once)
+Outputs: Updated VIU, CV, Headroom for each scenario
+Downloads: Multi-scenario results (Excel)
+
+6) Scenario Projection
+Purpose: Find combinations of inputs that drive Headroom → 0, with guardrails.
+Inputs you can tweak: Discount Rate, Growth Rate, RWA, PBT, Cash Flows (individually or in combination)
+Constraints: Each input can be bounded to max/min allowed values
+Downloads: Projection results (Excel)
+
+7) Headroom Utilisation
+Purpose: Find the single-variable change that brings Headroom → 0.
+Inputs you can tweak (one at a time): Discount Rate, Growth Rate, RWA, PBT, Cash Flows
+Downloads: Utilisation results (Excel)
+
+8) Historical Comparisons
+Tab 1: Historical Comparison
+
+Purpose: Compare current run to multiple prior reporting files
+
+Scope: Inputs, intermediate calculations, and outputs
+
+Downloads: Comparison results (Excel)
+
+Tab 2: Causality Analysis
+
+Purpose: Decompose cause-of-change from previous period to current (waterfall-style, isolating one variable at a time)
+
+Scope: Inputs, intermediate, outputs
+
+Downloads: Causality results (Excel)
+
+--------------------------------------
+
+My Contribution in Components
+As one of three developers on the team, my primary responsibility was to design and implement key features of the Impairment Analysis Tool, covering both frontend and backend development. My work spanned across multiple core components, focusing on enabling smooth data input, robust calculations, scenario testing, and historical comparisons.
+
+1. Inputs Tab
+Role: Designed and implemented the frontend and backend for displaying the uploaded input template in both tabular and visual formats.
+
+Tech: Dash callbacks, pandas, plotly.
+
+Highlights: Created an intuitive layout combining raw input tables with bar, stacked bar, and line chart visualizations.
+
+Complexity: Primarily presentation-focused, no complex logic involved.
+
+2. Summary (Consolidated)
+Role: Developed the consolidated summary view showing VIU, CV, and Headroom for all entities in the uploaded template. Implemented NFA calculation as part of this tab.
+
+Tech: Dash callbacks, pandas, plotly, openpyxl.
+
+Logic: Incorporated business rules for VIU, CV, Headroom, and NFA calculations as provided by stakeholders.
+
+Performance: Optimized computations using vectorized pandas operations.
+
+3. Sensitivity Analysis
+Role: Built a feature allowing users to modify key input variables (RWA, PBT, Tax, Discount Rate, Growth Rate) and instantly see the impact on VIU, CV, and Headroom.
+
+Enhancements:
+
+Added ability to store multiple scenario runs.
+
+Implemented an accordion view for easy scenario detail exploration.
+
+Enabled download and re-upload of saved scenarios for continuity between sessions.
+
+Tech: Dash callbacks, pandas, plotly, openpyxl.
+
+Logic: Integrated core VIU, CV, and Headroom formulas.
+
+Performance: Used vectorized pandas to speed up multi-scenario execution.
+
+4. Historical Comparisons – Historical Comparison
+Role: Developed the historical comparison feature to compare current data with one or more prior reporting periods.
+
+Enhancements:
+
+Added visual comparison using line and bar charts.
+
+Embedded comparison charts into Excel downloads alongside tabular data.
+
+Provided both summary and detailed comparison download options.
+
+Tech: Dash callbacks, pandas, plotly, openpyxl.
+
+Logic: Applied standard VIU, CV, and Headroom calculations to historical datasets.
+
+Performance: Leveraged vectorized pandas for faster execution.
+
+Collaboration
+Worked closely with teammates responsible for other features to ensure seamless integration of inputs, calculations, and outputs. Shared and consumed standardized calculation logic for consistency across components.
+
+Impact
+Time savings: Significantly reduced calculation and reporting time per run.
+
+Error reduction: Minimized manual errors through automation and standardized logic.
+
+Enhanced analysis: Enabled multi-scenario sensitivity testing and easy comparison of historical data with current results.
+
+---------------------------------------------
+
+Current State of the Project
+The Impairment Analysis Tool is currently live in HBME, where it is being used for production impairment calculations.
+
+A parallel run has been successfully completed for HBCE and HBME, validating the tool’s results against existing processes and confirming consistency with expected outputs.
+
+For HBUK, testing has been completed, and the tool is ready for deployment once rollout planning is finalized.
+
+------------------------------------------
+
+Learning Outcomes
+Working on the Impairment Analysis Tool provided significant learning across technical, problem-solving, collaboration, and domain areas.
+
+Technical Skills Gained
+
+Developed expertise in Dash callbacks, pandas optimization, plotly visualizations, and Excel automation.
+
+Improved debugging skills, error spotting, and documenting changes for smooth communication.
+
+Problem-Solving Skills
+
+Designed an efficient sensitivity analysis storage system capable of handling multiple scenario runs.
+
+Integrated dynamic visuals directly into Excel outputs.
+
+Balanced functional requirements with performance through vectorized operations.
+
+Collaboration & Teamwork
+
+Learned to leverage each team member’s strengths to solve problems faster.
+
+Designed features with reusability in mind so other developers could build on them without starting from scratch.
+
+Domain Knowledge
+
+Gained a clear understanding of impairment processes, how assets are impaired, and the adjustments and reallocations involved.
+
+Biggest Takeaway
+This project was a masterclass in combining coding, collaboration, domain learning, and forward-thinking design. It reinforced the importance of centralized, well-structured code, anticipating downstream needs, and coding exhaustively to handle edge cases.
+
+Reflections & Improvement Points
+
+The current implementation has all code in a single Python file with calculation functions. Structuring the code into multiple Python files (modular approach) for calculations, UI, and utilities would have made the project more maintainable and easier to debug or enhance.
+
+Requirement changes during development, while inevitable, caused time-consuming iterations. In future projects, a more controlled requirement-freeze period or phased delivery approach could help manage scope changes better.
+
+Extract downloads, especially in the specific formats requested, took longer than expected to implement. Understanding these formatting requirements early in the design phase would have allowed us to build a robust and flexible export framework from the start.
+

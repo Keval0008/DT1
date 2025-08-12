@@ -1,30 +1,53 @@
-Hi all,
+import io
+import msoffcrypto
+from pyxlsb import open_workbook
+import pandas as pd
 
-Please find the feedback and requirements from today’s call:
+def read_protected_xlsb(file_bytes, open_password, write_password=None):
+    """
+    Read a password-protected XLSB file with potential write protection
+    
+    Args:
+        file_bytes: Binary content of the XLSB file
+        open_password: Password to open the file
+        write_password: Password for write protection (if exists)
+    
+    Returns:
+        Dictionary of {sheet_name: pandas DataFrame}
+    """
+    # First decrypt the file (open password)
+    decrypted = io.BytesIO()
+    try:
+        office_file = msoffcrypto.OfficeFile(io.BytesIO(file_bytes))
+        office_file.load_key(password=open_password)
+        office_file.decrypt(decrypted)
+        decrypted.seek(0)
+    except Exception as e:
+        raise ValueError(f"Failed to decrypt with open password: {str(e)}")
+    
+    # Handle XLSB format
+    try:
+        result = {}
+        with open_workbook(decrypted) as wb:
+            for sheet_name in wb.sheets:
+                with wb.get_sheet(sheet_name) as sheet:
+                    # Read all data into a list of lists
+                    data = []
+                    for row in sheet.rows():
+                        data.append([item.v for item in row])
+                    
+                    # Convert to DataFrame
+                    if data:
+                        cols = data[0]
+                        rows = data[1:]
+                        result[sheet_name] = pd.DataFrame(rows, columns=cols)
+        
+        return result
+    
+    except Exception as e:
+        raise ValueError(f"Failed to read XLSB content: {str(e)}")
 
-If a PS ID is populated, check the name entered by the user against the L&D data.
-
-If there’s a mismatch, replace the name with the one from the L&D data.
-
-Highlight the cell in Excel and add the issue to the validation log.
-
-Apply the same process if the name is blank.
-
-If the PS ID is not populated, validate using the name (if available).
-
-In the tool, move the validation process from the user panel to the admin panel.
-
-Users will not see any validation or notifications while pasting the data.
-
-All validation will occur when the admin consolidates the data.
-
-A validation error report should be created for each user based on their submitted PS ID.
-
-Add Cadency Validation:
-
-Create a column “Cadency User Validation” populated with “Yes” or “No” based on the validation.
-
-Add a Cadency Validation log.
-
-Action: BSRS Team to share Cadency data.
-
+# Example usage:
+# with open('protected.xlsb', 'rb') as f:
+#     file_bytes = f.read()
+# data = read_protected_xlsb(file_bytes, 'open123', 'edit456')

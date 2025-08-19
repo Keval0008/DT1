@@ -1,11 +1,137 @@
-Hi Ishita,
+def save_files():
+    if not file_list:
+        update_status("Error: No files selected", "red")
+        return
+    if not folder_path.get():
+        update_status("Error: No folder selected", "red")
+        return
 
-I’ve incorporated the change for validating names based on the PSID and added cadence validation to the admin panel.
+    # Disable the submit button during processing
+    submit_button = [w for w in user_frame.winfo_children() 
+                    if isinstance(w, ttk.Button) and w.cget("text") == "Submit"][0]
+    submit_button.config(state="disabled")
 
-Regarding the removal of L&D validation from the user panel and keeping it only in the admin panel, this would be a major change. Can we have a discussion and align with the wider group on this?
+    # Create progress window
+    progress = ProgressWindow(root, "Submitting Files")
+    progress.update(0, "Preparing to process files...", f"0/{len(file_list)} files processed")
 
-I also agree with your point that while we can use names to populate the PSID, there’s a chance of duplicate names across individuals. Let’s discuss this as well.
+    def process_files():
+        try:
+            timestamp_for_filename = datetime.now().strftime("%d%m%Y_%H%M%S")
+            timestamp_for_excel = datetime.now().strftime("%d%m%Y|%H%M%S")
+            
+            validation_errors = []
+            total_files = len(file_list)
+            
+            for i, file in enumerate(file_list, 1):
+                progress.update((i-1)/total_files*100, f"Processing file {i} of {total_files}", f"{i-1}/{total_files} files completed")
+                
+                root.update_idletasks()
 
-Could you please schedule a call with the group?
+                df = read_excel_auto(file)
+                progress.update((i-0.75)/total_files*100, f"Processing file {i} of {total_files}", "Performing basic validation...")
 
-Thanks,
+                # Process the file (columns dropping etc.)
+                drop_columns = []
+                for col_idx in range(len(df.columns)):
+                    if "Comments." in df.columns[col_idx][2]:
+                        drop_columns.append(df.columns[col_idx])
+
+                df = df.drop(columns=drop_columns)
+
+                multi_column = []
+                for col_idx in range(len(df.columns)):
+                    if "Unnamed" in df.columns[col_idx][0]:
+                        multi_column.append(df.columns[col_idx])
+
+                df = df.replace("'nan", np.nan)
+                df.columns = pd.MultiIndex.from_tuples([tuple(s.replace('\n','') for s in col) for col in df.columns])
+
+                col_to_check = [col for col in df.columns if col not in multi_column]
+
+                role_holders = ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]
+
+                # BASIC VALIDATION ONLY (no L&D data enrichment)
+                for row_idx, row in df.iterrows():
+                    for role_col in role_holders:
+                        ps_id = row[("Proposed changes", role_col, "PS ID")]
+                        name = row[("Proposed changes", role_col, "Name")]
+
+                        # Validation 1: PSID should be numeric
+                        if pd.notna(ps_id):
+                            try:
+                                float(ps_id)
+                            except (ValueError, TypeError):
+                                validation_errors.append({
+                                    'file': file,
+                                    'row': row_idx+4,
+                                    'role': role_col,
+                                    'ps_id': ps_id,
+                                    'name': name,
+                                    'description': f"PS ID must be numeric"
+                                })
+
+                        # Validation 2: If Name exists, PSID must also exist
+                        if pd.notna(name) and pd.isna(ps_id):
+                            validation_errors.append({
+                                'file': file,
+                                'row': row_idx+4,
+                                'role': role_col,
+                                'ps_id': ps_id,
+                                'name': name,
+                                'description': f"Name provided but PS ID is missing"
+                            })
+
+                df[("", "", "Submitted by")] = np.nan
+                df[("", "", "Submitted time")] = np.nan
+                
+                condition = df[col_to_check].notna().any(axis=1)
+                
+                df.loc[condition, ("", "", "Submitted by")] = keyword
+                df.loc[condition, ("", "", "Submitted time")] = timestamp_for_excel
+                
+                base_name = os.path.basename(file)
+                name, ext = os.path.splitext(base_name)
+
+                def save_directly():
+                    """Save directly to the destination folder"""
+                    new_name = f"{name}_{keyword}_{timestamp_for_filename}{ext}"
+                    dest_path = os.path.join(folder_path.get(), new_name)
+                    
+                    # Add validation comments if any
+                    if validation_errors:
+                        if ("", "", "Validation Log") not in df.columns:
+                            df[("", "", "Validation Log")] = ""
+                            
+                        row_errors = {}
+                        for error in validation_errors:
+                            if error['row'] not in row_errors:
+                                row_errors[error['row']] = []
+                            row_errors[error['row']].append(error['description'])
+                            
+                        for row_num, errors in row_errors.items():
+                            combined_comment = "BASIC VALIDATION ISSUES: \n- " + "\n- ".join(errors)
+                            df.at[row_num-4, ("", "", "Validation Log")] = combined_comment
+                            
+                    merge_and_format_rows(df, [1,2], dest_path)
+                    update_status(f"Success: {len(file_list)} files saved!", "green")
+
+                progress.update(i/total_files*100, f"Processed file {i} of {total_files}", f"{i}/{total_files} files completed")
+                    
+            if validation_errors:
+                progress.close()
+                # Show basic validation errors popup
+                show_basic_validation_popup(validation_errors, save_directly)
+            else:
+                progress.close()
+                save_directly()
+                
+        except Exception as e:
+            progress.close()
+            print(e)
+            update_status(f"Error: {str(e)}", "red")
+        finally:
+            submit_button.config(state="normal")
+            
+    # Start the processing thread
+    threading.Thread(target=process_files, daemon=True).start()

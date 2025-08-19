@@ -1,20 +1,166 @@
-def show_basic_validation_popup(errors, proceed_callback):
-    popup = tk.Toplevel()
-    popup.title("Basic Validation Errors")
-    popup.geometry("500x300")
-    popup.grab_set()
-    
-    msg = f"Found {len(errors)} basic validation errors:\n\n"
-    for error in errors[:10]:  # Show first 10 errors
-        msg += f"- {error['description']} (File: {os.path.basename(error['file'])}, Row: {error['row']})\n"
-    
-    if len(errors) > 10:
-        msg += f"\n...and {len(errors)-10} more errors"
-    
-    tk.Label(popup, text=msg, justify=tk.LEFT, wraplength=450).pack(padx=20, pady=10)
-    
-    button_frame = tk.Frame(popup)
-    button_frame.pack(pady=10)
-    
-    tk.Button(button_frame, text="Save Anyway", command=lambda: [proceed_callback(), popup.destroy()]).pack(side=tk.LEFT, padx=10)
-    tk.Button(button_frame, text="Cancel", command=popup.destroy).pack(side=tk.RIGHT, padx=10)
+def process_admin_files():
+    global processed_dfs, user_info_df
+    if not admin_folder_path.get():
+        admin_status_label.config(text="Error: No input folder selected", fg="red")
+        return
+
+    consolidate_button = [w for w in admin_frame.winfo_children() if isinstance(w, ttk.Button) and w.cget("text") == "Consolidate"][0]
+    consolidate_button.config(state="disabled")
+
+    # Create progress window
+    progress = ProgressWindow(root, "Consolidating Files")
+    progress.update(0, "Scanning for Excel files...", "0% complete")
+
+    def process_files():
+        try:
+            progress.update(5, "Scanning for Excel files...", "5% complete")
+            xlsx_files = []
+            for root, _, files in os.walk(admin_folder_path.get()):
+                for file in files:
+                    if file.endswith(".xlsx"):
+                        xlsx_files.append(os.path.join(root, file))
+                        progress.update(5 + len(xlsx_files), f"Found {len(xlsx_files)} files...", f"{min(5 + len(xlsx_files), 20)}% complete")
+            
+            total_files = len(xlsx_files)
+            if total_files == 0:
+                progress.close()
+                admin_status_label.config(text="Error: No Excel files found", fg="red")
+                return
+            
+            # Read L&D data from first file
+            progress.update(25, "Loading L&D data for validation...", "25% complete")
+            user_info_df = pd.read_excel(xlsx_files[0], sheet_name='L&D', header=1)
+            
+            # Read all files and check column structure
+            processed_count = 0
+            dfs = []
+            column_mapping = {}
+            first_columns = None
+            validation_errors = []
+            
+            for i, file in enumerate(xlsx_files, 1):
+                progress.update(30 + (i/total_files)*40, f"Processing file {i} of {total_files}", f"{30 + int((i/total_files)*40)}% complete")
+                df = read_excel_auto(file)
+                
+                if first_columns is None:
+                    first_columns = df.columns
+                    for col in df.columns:
+                        flattened_name = "|".join([str(c) for c in col if c]).strip('_')
+                        column_mapping[flattened_name] = col
+                elif not df.columns.equals(first_columns):
+                    admin_status_label.config(text=f"Error: Inconsistent column structure in {file}", fg="red")
+                    return
+                    
+                df.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
+                
+                # ENRICH DATA WITH L&D INFORMATION
+                for role_col in ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]:
+                    psid_col = f'Proposed changes|{role_col}|PS ID'
+                    name_col = f'Proposed changes|{role_col}|Name'
+
+                    if psid_col in df.columns:
+                        # First merge on PS ID
+                        enriched = pd.merge(
+                            df[[psid_col, name_col]],
+                            user_info_df.drop_duplicates(),
+                            how='left',
+                            left_on=psid_col,
+                            right_on='User ID',
+                            suffixes=('', '_map')
+                        )
+
+                        # If no match, try Personal PS ID
+                        missing = enriched['Manually added column'].isnull()
+                        if missing.any():
+                            missing_df = enriched[missing][[psid_col]].copy()
+                            missing_df['original_index'] = missing_df.index
+                            fallback = pd.merge(
+                                missing_df,
+                                user_info_df,
+                                how='inner',
+                                left_on=psid_col,
+                                right_on='PERSON_ID_EXTERNAL'
+                            )
+                            fallback = fallback.groupby('original_index').first().reset_index()
+                            fallback = fallback.set_index('original_index')
+                            enriched = enriched.join(fallback[['Manually added column','Contact Email Address','BF Level 1','BF Level 2','BF Level 3','BF Level 4','BF Level 5']], rsuffix="_fallback")
+
+                            for col in ['Manually added column', 'Contact Email Address', 'BF Level 1', 'BF Level 2', 'BF Level 3', 'BF Level 4', 'BF Level 5']:
+                                enriched[col] = enriched[col].combine_first(enriched[f'{col}_fallback'])
+                                enriched = enriched.drop(f'{col}_fallback', axis=1, errors='ignore')
+
+                        # Add enriched columns to dataframe
+                        for col in ['Manually added column', 'Contact Email Address', 'BF Level 1', 'BF Level 2', 'BF Level 3', 'BF Level 4', 'BF Level 5']:
+                            new_col = f'Proposed changes|{role_col}|{col}'
+                            if new_col not in df.columns:
+                                df[new_col] = enriched[col]
+                
+                # PERFORM ADVANCED VALIDATIONS (Name and Grade)
+                df_multi = df.copy()
+                df_multi.columns = pd.MultiIndex.from_tuples([tuple(col.split("|")) for col in df.columns])
+                
+                for row_idx, row in df_multi.iterrows():
+                    for role_col in ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]:
+                        ps_id = row[("Proposed changes", role_col, "PS ID")]
+                        name = row[("Proposed changes", role_col, "Name")]
+                        manual_name = row[("Proposed changes", role_col, "Manually added column")]
+
+                        if pd.notna(ps_id):
+                            # Name validation
+                            if pd.notna(manual_name) and name != manual_name:
+                                validation_errors.append({
+                                    'file': file,
+                                    'row': row_idx+4,
+                                    'role': role_col,
+                                    'ps_id': ps_id,
+                                    'name': name,
+                                    'manual_name': manual_name,
+                                    'description': f"Name Validation Fail - For {role_col}, '{name}' should be '{manual_name}'",
+                                    'is_name_mismatch': True
+                                })
+
+                            # Grade validation
+                            valid, grade = validate_group_grade(ps_id, role_col)
+                            if not valid:
+                                description = f"{role_col} require grade to be "
+                                if role_col == "Role Holder1 Preparer":
+                                    description += "GCB6 and above"
+                                elif role_col == "Role Holder2 Reviewer":
+                                    description += "GCB5 and above"
+                                elif role_col == "Role Holder3Account Owner":
+                                    description += "GCB4 and above"
+
+                                validation_errors.append({
+                                    'file': file,
+                                    'row': row_idx+4,
+                                    'role': role_col,
+                                    'ps_id': ps_id,
+                                    'name': name,
+                                    'grade': grade,
+                                    'description': description
+                                })
+                
+                dfs.append(df)
+                processed_count += 1
+
+            # Continue with original consolidation logic...
+            # [REST OF THE ORIGINAL process_admin_files CODE REMAINS THE SAME]
+            
+            # After consolidation, show validation report if there are errors
+            if validation_errors:
+                progress.close()
+                show_advanced_validation_report(validation_errors, proceed_with_saving)
+            else:
+                progress.close()
+                proceed_with_saving()
+                
+        except Exception as e:
+            progress.close()
+            print(e)
+            admin_status_label.config(text=f"Error: {str(e)}", fg="red")
+            
+        finally:
+            consolidate_button.config(state="normal")
+            
+    # Start the processing thread
+    threading.Thread(target=process_files, daemon=True).start()

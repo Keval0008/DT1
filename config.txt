@@ -2,69 +2,53 @@ import numpy as np
 import pandas as pd
 from typing import Iterable
 
-def normalize_and_move_multiindex_tail(
-    df: pd.DataFrame,
-    specials: Iterable[str],
-) -> pd.DataFrame:
+def normalize_and_move_multiindex_tail(df: pd.DataFrame, specials: Iterable[str]) -> pd.DataFrame:
     """
     For a 3-level MultiIndex columns DF:
-      - If a column is (X, NaN/blank, NaN/blank) where X is in `specials`,
+      - If a column is (X, NaN/blank, NaN/blank) where X ∈ specials,
         rename it to (NaN, NaN, X).
-      - Finally, move all (NaN, NaN, X) columns to the end in the exact
-        order given by `specials`. Missing ones are skipped.
-
-    Treats None/np.nan/''/'  ' and 'nan' (string) as empty.
-    Returns a new DataFrame.
+      - Then move all (NaN, NaN, X) columns to the end in the given order (skip missing).
     """
     if not isinstance(df.columns, pd.MultiIndex) or df.columns.nlevels < 3:
         raise ValueError("This function expects a DataFrame with 3-level MultiIndex columns.")
 
+    specials = list(specials)  # preserve order
+
     def is_empty(x) -> bool:
         if x is None:
             return True
-        # np.nan (float) or pandas NA
         try:
             if pd.isna(x):
                 return True
         except Exception:
             pass
-        # empty/whitespace or literal 'nan'
         return isinstance(x, str) and (x.strip() == "" or x.strip().lower() == "nan")
 
     def match_singleton(col_tup, target: str) -> bool:
-        """True if col_tup has exactly one non-empty element and it equals target (trimmed)."""
+        """True if exactly one non-empty element equals target."""
         non_empty = [(i, v) for i, v in enumerate(col_tup) if not is_empty(v)]
         if len(non_empty) != 1:
             return False
         _, v = non_empty[0]
         return str(v).strip() == str(target).strip()
 
-    specials = list(specials)  # keep caller's order
-    out = df.copy()
-
-    # --- 1) Rename ("X", NA, NA) -> (NA, NA, "X"), for X in specials
-    rename_map = {}
-    for col in out.columns:
+    # --- 1) Canonicalize with callable: ("X", NA, NA) -> (NA, NA, "X")
+    def canonicalize(col):
         for X in specials:
             if match_singleton(col, X):
-                new_col = (np.nan, np.nan, X)  # canonical final shape
-                # Avoid creating duplicates if it's already present
-                if new_col != col and new_col not in out.columns:
-                    rename_map[col] = new_col
-                break  # stop at first matching X
+                return (np.nan, np.nan, X)
+        return col
 
-    if rename_map:
-        out = out.rename(columns=rename_map)
+    out = df.copy()
+    out = out.rename(columns=canonicalize)
 
-    # --- 2) Move these canonical columns to the end in the given order
+    # --- 2) Move canonical columns to the end in the caller's order
     def is_canonical(col_tup, X: str) -> bool:
         return is_empty(col_tup[0]) and is_empty(col_tup[1]) and str(col_tup[2]).strip() == str(X).strip()
 
     tail = []
     for X in specials:
-        # Include all canonical columns for this X (usually one), preserving their current order
-        x_cols = [c for c in out.columns if is_canonical(c, X)]
-        tail.extend(x_cols)
+        tail.extend([c for c in out.columns if is_canonical(c, X)])
 
     others = [c for c in out.columns if c not in tail]
     out = out.loc[:, others + tail]

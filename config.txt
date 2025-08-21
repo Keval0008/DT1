@@ -1,194 +1,84 @@
-import pandas as pd
-import numpy as np
+from typing import Iterable, Optional
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import Font, Alignment, Border, Side
 
-# ---------- Validation 1 (DQ) ----------
-def _run_validation1(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    roles = {
-        'RH1': 'Role Holder1 Preparer',
-        'RH2': 'Role Holder2 Reviewer',
-        'RH3': 'Role Holder3Account Owner',   # as provided
-    }
-    expected_suffixes = ['|PS ID', '|Name', '|Group Grade', '|Manually added column']
-
-    for prefix in roles.values():
-        for suf in expected_suffixes:
-            col = f'{prefix}{suf}'
-            if col not in df.columns:
-                df[col] = np.nan
-
-    for rh, prefix in roles.items():
-        ps     = f'{prefix}|PS ID'
-        name   = f'{prefix}|Name'
-        grade  = f'{prefix}|Group Grade'
-        manual = f'{prefix}|Manually added column'
-        vcol   = f'Validation1|_|{rh}'
-
-        m_null     = df[ps].isna() & df[name].isna()
-        m_inv_ps   = (~m_null) & df[grade].isna()
-        m_inv_name = (~m_null) & (~m_inv_ps) & (df[name] != df[manual])
-
-        df[vcol] = np.select(
-            [m_null, m_inv_ps, m_inv_name],
-            ['NULL', 'INVALID PS ID', 'INVALID NAME'],
-            default='CORRECT'
-        )
-
-        # Overwrite Name with Manual where invalid name
-        df.loc[m_inv_name, name] = df.loc[m_inv_name, manual]
-
-    all_correct = (df['Validation1|_|RH1'] == 'CORRECT') & \
-                  (df['Validation1|_|RH2'] == 'CORRECT') & \
-                  (df['Validation1|_|RH3'] == 'CORRECT')
-
-    df['Validation1|Yes/No|DQ Validation'] = np.where(all_correct, 'Yes', 'No')
-
-    tmp_cols = []
-    for rh in ['RH1', 'RH2', 'RH3']:
-        vcol = f'Validation1|_|{rh}'
-        tcol = f'__v1_{rh}'
-        df[tcol] = np.where(df[vcol] != 'CORRECT', rh + ' - ' + df[vcol], '')
-        tmp_cols.append(tcol)
-
-    def _join_v1(row):
-        parts = [row[c] for c in tmp_cols if row[c]]
-        return ' and '.join(parts)
-
-    comment_col = 'Validation1|Comments|DQ Validation Comments for "No"'
-    df[comment_col] = ''
-    mask_no = df['Validation1|Yes/No|DQ Validation'] == 'No'
-    df.loc[mask_no, comment_col] = df.loc[mask_no, tmp_cols].apply(_join_v1, axis=1)
-    df.drop(columns=tmp_cols, inplace=True)
-
-    return df
-
-
-# ---------- Validation 2 (Grade) ----------
-def _run_validation2(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    src = {
-        'R1': 'Role Holder1 Preparer|Group Grade',
-        'R2': 'Role Holder2 Reviewer|Group Grade',
-        'R3': 'Role Holder3Account Owner|Group Grade',
-    }
-    out = {
-        'R1': 'Validation 2|6 or contractor|RH1',
-        'R2': 'Validation 2|5|RH2',
-        'R3': 'Validation 2|4|RH3',
-    }
-
-    yesno_col = 'Validation 2|Yes/No|DQ Validation'
-    comments_col = 'Validation 2|Comments|GCB Validation Comments for "No"'
-
-    for c in src.values():
-        if c not in df.columns:
-            df[c] = np.nan
-
-    for rk, c in src.items():
-        df[out[rk]] = df[c]
-
-    # Role-specific allowed sets (normalized to upper-case strings)
-    allowed = {
-        'R1': {'01','02','03','04','05','06','1','2','3','4','5','6','MD','CONTRACTOR'},
-        'R2': {'01','02','03','04','05','1','2','3','4','5','MD'},
-        'R3': {'01','02','03','04','1','2','3','4','MD'},
-    }
-
-    norm = {rk: df[c].astype(str).str.strip().str.upper() for rk, c in src.items()}
-
-    display = {}
-    for rk, c in src.items():
-        disp = df[c].astype(str)
-        disp = disp.mask(df[c].isna(), 'NULL').replace('nan', 'NULL')
-        display[rk] = disp
-
-    valid = {rk: norm[rk].isin(allowed[rk]) & (display[rk] != 'NULL') for rk in src}
-
-    all_valid = valid['R1'] & valid['R2'] & valid['R3']
-    df[yesno_col] = np.where(all_valid, 'Yes', 'No')
-
-    tmp_cols = []
-    for rk in ['R1', 'R2', 'R3']:
-        tcol = f'__v2_{rk}'
-        df[tcol] = np.where(~valid[rk], rk + ' is GCB' + display[rk], '')
-        tmp_cols.append(tcol)
-
-    def _join_v2(row):
-        parts = [row[c] for c in tmp_cols if row[c]]
-        return ' and '.join(parts)
-
-    df[comments_col] = ''
-    mask_no = df[yesno_col] == 'No'
-    df.loc[mask_no, comments_col] = df.loc[mask_no, tmp_cols].apply(_join_v2, axis=1)
-    df.drop(columns=tmp_cols, inplace=True)
-
-    return df
-
-
-# ---------- Validation 3 (Cadency) ----------
-def _run_validation3(df: pd.DataFrame) -> pd.DataFrame:
+def format_multiindex_header(
+    ws: Worksheet,
+    header_rows: Iterable[int] = (1, 2, 3),
+    start_col: int = 1,
+    end_col: Optional[int] = None,
+) -> Worksheet:
     """
-    Cadency User Validation:
-      - Add:
-          'Validation 3|Yes/No|Cadency User Validation'
-          'Validation 3|Comments|Cadency User Validation Comments for "No"'
-      - Check Active == "Yes" for each role.
-      - If any is not "Yes" (including NaN), overall = "No" and add comments:
-          "R1 is inactive", "R2 is inactive", "R3 is inactive" joined with " and ".
+    Format a 3-level (or any N-level) MultiIndex header in an openpyxl worksheet.
+
+    - Bolds all header cells
+    - Centers text (horizontal & vertical)
+    - Applies thin border around each header cell
+    - For each header row, merges horizontally adjacent cells with identical values
+
+    Parameters
+    ----------
+    ws : Worksheet
+        Target worksheet.
+    header_rows : Iterable[int], default (1, 2, 3)
+        1-based row numbers that contain the MultiIndex column headers (top -> bottom).
+        Adjust if you wrote the DataFrame starting lower in the sheet.
+    start_col : int, default 1
+        First column index of the header block (1-based).
+    end_col : int | None, default None
+        Last column index of the header block (1-based). If None, uses ws.max_column.
+
+    Returns
+    -------
+    Worksheet
+        The same worksheet, mutated in place, returned for convenience.
     """
-    df = df.copy()
+    if end_col is None:
+        end_col = ws.max_column
 
-    # If your dataset uses different columns for RH2/RH3, edit here:
-    src = {
-        'R1': 'Role Holder1 Preparer|Active',
-        'R2': 'Role Holder2 Reviewer|Active',         # assumed Active (not Group Grade)
-        'R3': 'Role Holder3Account Owner|Active',     # assumed Active (not Group Grade)
-    }
+    # Styles
+    thin = Side(border_style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    font_bold = Font(bold=True)
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    # Ensure columns exist
-    for c in src.values():
-        if c not in df.columns:
-            df[c] = np.nan
+    # 1) Apply font/alignment/border to each header cell
+    for r in header_rows:
+        for c in range(start_col, end_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = font_bold
+            cell.alignment = align_center
+            cell.border = border
 
-    # Normalize to check equals "YES"
-    norm = {rk: df[c].astype(str).str.strip().str.upper() for rk, c in src.items()}
-    is_yes = {rk: (norm[rk] == 'YES') for rk in src}
+    # 2) Merge horizontally where adjacent header labels are identical (per header row)
+    merged_ranges = []
+    for r in header_rows:
+        c = start_col
+        while c <= end_col:
+            start_c = c
+            start_val = ws.cell(row=r, column=c).value
 
-    all_active = is_yes['R1'] & is_yes['R2'] & is_yes['R3']
-    yesno_col = 'Validation 3|Yes/No|Cadency User Validation'
-    df[yesno_col] = np.where(all_active, 'Yes', 'No')
+            # Skip blanks (don't merge empty runs)
+            if start_val is None or str(start_val).strip() == "":
+                c += 1
+                continue
 
-    # Comments for any inactive (No/NaN/anything not "Yes")
-    tmp_cols = []
-    for rk in ['R1', 'R2', 'R3']:
-        tcol = f'__v3_{rk}'
-        df[tcol] = np.where(~is_yes[rk], rk + ' is inactive', '')
-        tmp_cols.append(tcol)
+            # Extend run while value stays identical
+            c += 1
+            while c <= end_col and ws.cell(row=r, column=c).value == start_val:
+                c += 1
 
-    def _join_v3(row):
-        return ' and '.join([row[c] for c in tmp_cols if row[c]])
+            # If run length >= 2, merge [start_c .. c-1]
+            end_run = c - 1
+            if end_run > start_c:
+                ws.merge_cells(start_row=r, start_column=start_c, end_row=r, end_column=end_run)
+                merged_ranges.append((r, start_c, r, end_run))
 
-    comments_col = 'Validation 3|Comments|Cadency User Validation Comments for "No"'
-    df[comments_col] = ''
-    mask_no = df[yesno_col] == 'No'
-    df.loc[mask_no, comments_col] = df.loc[mask_no, tmp_cols].apply(_join_v3, axis=1)
-    df.drop(columns=tmp_cols, inplace=True)
+    # 3) Re-apply styles to the top-left cells of merged regions (Excel uses top-left style)
+    for (r1, c1, r2, c2) in merged_ranges:
+        top_left = ws.cell(row=r1, column=c1)
+        top_left.font = font_bold
+        top_left.alignment = align_center
+        top_left.border = border
 
-    return df
-
-
-# ---------- Public Pipeline ----------
-def run_all_validations(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Runs:
-      1) Validation 1 (DQ)
-      2) Validation 2 (Grade)
-      3) Validation 3 (Cadency)
-    Returns a new DataFrame with all validation columns added.
-    """
-    out = _run_validation1(df)
-    out = _run_validation2(out)
-    out = _run_validation3(out)
-    return out
+    return ws

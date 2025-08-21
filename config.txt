@@ -1,61 +1,21 @@
-import pandas as pd
-import numpy as np
-from typing import List, Tuple, Any
+Hi Team,
 
-def move_multiindex_columns_to_end(
-    df: pd.DataFrame,
-    cols_to_move: List[Tuple[Any, ...]],
-) -> pd.DataFrame:
-    """
-    Move the specified MultiIndex columns (tuples) to the end of the DataFrame
-    in the exact order provided. Columns not present are skipped. No renaming.
+Please find attached the latest version of the BSRS Role Holders Collection Tool (in the zip file).
 
-    Handles tuples containing NaN by treating NaN == NaN for matching.
-    Works even if some target labels appear multiple times (moves all matches).
+Tool link:
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame with MultiIndex columns.
-    cols_to_move : list of tuple
-        Column labels (tuples) to move, in desired end order.
+Here are the updates in this version of the tool:
 
-    Returns
-    -------
-    pd.DataFrame
-        Reordered DataFrame.
-    """
+GCB Validation has been moved from the User Panel to the Admin Panel to ensure L&D data is not shared with users. It will remain accessible to Admin only.
 
-    def _val_eq(a, b) -> bool:
-        # Treat NaN as equal to NaN
-        if (a is None or (isinstance(a, float) and np.isnan(a))) and \
-           (b is None or (isinstance(b, float) and np.isnan(b))):
-            return True
-        return a == b
+Users can update and share templates through the tool. Basic data validation will be applied (e.g., PSID must be numeric, and if a Name is present, the PSID should match).
 
-    def _label_eq(t1, t2) -> bool:
-        if not (isinstance(t1, tuple) and isinstance(t2, tuple)):
-            return False
-        if len(t1) != len(t2):
-            return False
-        return all(_val_eq(a, b) for a, b in zip(t1, t2))
+Only Admin can now validate templates for GCB Validation.
 
-    # Current columns as list of tuples (MultiIndex preserves order)
-    cols = list(df.columns)
+If a Name is missing or incorrect, it can be corrected using L&D data and logged accordingly.
 
-    # Find positions of targets in the given order; include all duplicates
-    tail_pos: List[int] = []
-    for target in cols_to_move:
-        matches = [i for i, col in enumerate(cols) if _label_eq(col, target)]
-        tail_pos.extend(matches)
+Cadency User Validation has been added for all role holders.
 
-    # If none matched, just return a copy
-    if not tail_pos:
-        return df.copy()
+The output is now formatted into a consolidated file, aligned with the current process.
 
-    all_pos = list(range(len(cols)))
-    tail_pos_set = set(tail_pos)
-    keep_pos = [i for i in all_pos if i not in tail_pos_set]
-
-    # Reorder by positions to preserve duplicates and original relative order
-    return df.iloc[:, keep_pos + tail_pos]
+Please share your feedback or let us know if you face any issues while using the tool.

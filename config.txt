@@ -1,84 +1,59 @@
+import pandas as pd
 from typing import Iterable, Optional
-from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.styles import Font, Alignment, Border, Side
 
-def format_multiindex_header(
-    ws: Worksheet,
-    header_rows: Iterable[int] = (1, 2, 3),
-    start_col: int = 1,
-    end_col: Optional[int] = None,
-) -> Worksheet:
+def move_and_prefix_trailing_columns(
+    df: pd.DataFrame,
+    cols: Iterable[str],
+    prefix: str = " | |",
+) -> pd.DataFrame:
     """
-    Format a 3-level (or any N-level) MultiIndex header in an openpyxl worksheet.
+    Rename specific columns by adding a prefix (default: ' | |') and move them
+    to the end of the DataFrame in the *exact* order provided in `cols`.
 
-    - Bolds all header cells
-    - Centers text (horizontal & vertical)
-    - Applies thin border around each header cell
-    - For each header row, merges horizontally adjacent cells with identical values
+    - If a column is already prefixed, it won't be re-prefixed.
+    - Columns not present are ignored (no errors).
+    - Non-target columns keep their original left-to-right order.
 
-    Parameters
-    ----------
-    ws : Worksheet
-        Target worksheet.
-    header_rows : Iterable[int], default (1, 2, 3)
-        1-based row numbers that contain the MultiIndex column headers (top -> bottom).
-        Adjust if you wrote the DataFrame starting lower in the sheet.
-    start_col : int, default 1
-        First column index of the header block (1-based).
-    end_col : int | None, default None
-        Last column index of the header block (1-based). If None, uses ws.max_column.
-
-    Returns
-    -------
-    Worksheet
-        The same worksheet, mutated in place, returned for convenience.
+    Example:
+        cols = ["Comments", "Submitted by", "Submitted time"]
+        -> DataFrame ends with [' | |Comments', ' | |Submitted by', ' | |Submitted time']
+           in that order.
     """
-    if end_col is None:
-        end_col = ws.max_column
+    df = df.copy()
 
-    # Styles
-    thin = Side(border_style="thin", color="000000")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    font_bold = Font(bold=True)
-    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    # 1) Build a mapping for renames (only if target is present and not yet prefixed)
+    #    We treat a column as "target" if either:
+    #      - its base name matches an item in `cols`, or
+    #      - it already equals prefix + base name
+    base_order = list(cols)  # preserve caller's order
+    base_set = set(base_order)
 
-    # 1) Apply font/alignment/border to each header cell
-    for r in header_rows:
-        for c in range(start_col, end_col + 1):
-            cell = ws.cell(row=r, column=c)
-            cell.font = font_bold
-            cell.alignment = align_center
-            cell.border = border
+    # Helper to detect base from a possibly prefixed column
+    def base_name(col: str) -> str:
+        if isinstance(col, str) and col.startswith(prefix):
+            return col[len(prefix):]
+        return col if isinstance(col, str) else col
 
-    # 2) Merge horizontally where adjacent header labels are identical (per header row)
-    merged_ranges = []
-    for r in header_rows:
-        c = start_col
-        while c <= end_col:
-            start_c = c
-            start_val = ws.cell(row=r, column=c).value
+    # Determine desired final names and what exists now
+    rename_map = {}
+    for col in df.columns:
+        b = base_name(col)
+        if b in base_set:
+            desired = f"{prefix}{b}"
+            # Only rename if it's not already the desired name
+            if col != desired and desired not in df.columns:
+                rename_map[col] = desired
 
-            # Skip blanks (don't merge empty runs)
-            if start_val is None or str(start_val).strip() == "":
-                c += 1
-                continue
+    if rename_map:
+        df = df.rename(columns=rename_map)
 
-            # Extend run while value stays identical
-            c += 1
-            while c <= end_col and ws.cell(row=r, column=c).value == start_val:
-                c += 1
+    # 2) Build final order: others first, then targets in the caller's order
+    #    Collect the (now possibly renamed) target names that actually exist.
+    target_final_names = [f"{prefix}{b}" for b in base_order if f"{prefix}{b}" in df.columns]
 
-            # If run length >= 2, merge [start_c .. c-1]
-            end_run = c - 1
-            if end_run > start_c:
-                ws.merge_cells(start_row=r, start_column=start_c, end_row=r, end_column=end_run)
-                merged_ranges.append((r, start_c, r, end_run))
+    # Keep original order for non-target columns
+    others = [c for c in df.columns if c not in target_final_names]
 
-    # 3) Re-apply styles to the top-left cells of merged regions (Excel uses top-left style)
-    for (r1, c1, r2, c2) in merged_ranges:
-        top_left = ws.cell(row=r1, column=c1)
-        top_left.font = font_bold
-        top_left.alignment = align_center
-        top_left.border = border
-
-    return ws
+    # 3) Reorder
+    df = df[others + target_final_names]
+    return df

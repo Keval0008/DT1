@@ -1,59 +1,71 @@
+import numpy as np
 import pandas as pd
-from typing import Iterable, Optional
+from typing import Iterable
 
-def move_and_prefix_trailing_columns(
+def normalize_and_move_multiindex_tail(
     df: pd.DataFrame,
-    cols: Iterable[str],
-    prefix: str = " | |",
+    specials: Iterable[str],
 ) -> pd.DataFrame:
     """
-    Rename specific columns by adding a prefix (default: ' | |') and move them
-    to the end of the DataFrame in the *exact* order provided in `cols`.
+    For a 3-level MultiIndex columns DF:
+      - If a column is (X, NaN/blank, NaN/blank) where X is in `specials`,
+        rename it to (NaN, NaN, X).
+      - Finally, move all (NaN, NaN, X) columns to the end in the exact
+        order given by `specials`. Missing ones are skipped.
 
-    - If a column is already prefixed, it won't be re-prefixed.
-    - Columns not present are ignored (no errors).
-    - Non-target columns keep their original left-to-right order.
-
-    Example:
-        cols = ["Comments", "Submitted by", "Submitted time"]
-        -> DataFrame ends with [' | |Comments', ' | |Submitted by', ' | |Submitted time']
-           in that order.
+    Treats None/np.nan/''/'  ' and 'nan' (string) as empty.
+    Returns a new DataFrame.
     """
-    df = df.copy()
+    if not isinstance(df.columns, pd.MultiIndex) or df.columns.nlevels < 3:
+        raise ValueError("This function expects a DataFrame with 3-level MultiIndex columns.")
 
-    # 1) Build a mapping for renames (only if target is present and not yet prefixed)
-    #    We treat a column as "target" if either:
-    #      - its base name matches an item in `cols`, or
-    #      - it already equals prefix + base name
-    base_order = list(cols)  # preserve caller's order
-    base_set = set(base_order)
+    def is_empty(x) -> bool:
+        if x is None:
+            return True
+        # np.nan (float) or pandas NA
+        try:
+            if pd.isna(x):
+                return True
+        except Exception:
+            pass
+        # empty/whitespace or literal 'nan'
+        return isinstance(x, str) and (x.strip() == "" or x.strip().lower() == "nan")
 
-    # Helper to detect base from a possibly prefixed column
-    def base_name(col: str) -> str:
-        if isinstance(col, str) and col.startswith(prefix):
-            return col[len(prefix):]
-        return col if isinstance(col, str) else col
+    def match_singleton(col_tup, target: str) -> bool:
+        """True if col_tup has exactly one non-empty element and it equals target (trimmed)."""
+        non_empty = [(i, v) for i, v in enumerate(col_tup) if not is_empty(v)]
+        if len(non_empty) != 1:
+            return False
+        _, v = non_empty[0]
+        return str(v).strip() == str(target).strip()
 
-    # Determine desired final names and what exists now
+    specials = list(specials)  # keep caller's order
+    out = df.copy()
+
+    # --- 1) Rename ("X", NA, NA) -> (NA, NA, "X"), for X in specials
     rename_map = {}
-    for col in df.columns:
-        b = base_name(col)
-        if b in base_set:
-            desired = f"{prefix}{b}"
-            # Only rename if it's not already the desired name
-            if col != desired and desired not in df.columns:
-                rename_map[col] = desired
+    for col in out.columns:
+        for X in specials:
+            if match_singleton(col, X):
+                new_col = (np.nan, np.nan, X)  # canonical final shape
+                # Avoid creating duplicates if it's already present
+                if new_col != col and new_col not in out.columns:
+                    rename_map[col] = new_col
+                break  # stop at first matching X
 
     if rename_map:
-        df = df.rename(columns=rename_map)
+        out = out.rename(columns=rename_map)
 
-    # 2) Build final order: others first, then targets in the caller's order
-    #    Collect the (now possibly renamed) target names that actually exist.
-    target_final_names = [f"{prefix}{b}" for b in base_order if f"{prefix}{b}" in df.columns]
+    # --- 2) Move these canonical columns to the end in the given order
+    def is_canonical(col_tup, X: str) -> bool:
+        return is_empty(col_tup[0]) and is_empty(col_tup[1]) and str(col_tup[2]).strip() == str(X).strip()
 
-    # Keep original order for non-target columns
-    others = [c for c in df.columns if c not in target_final_names]
+    tail = []
+    for X in specials:
+        # Include all canonical columns for this X (usually one), preserving their current order
+        x_cols = [c for c in out.columns if is_canonical(c, X)]
+        tail.extend(x_cols)
 
-    # 3) Reorder
-    df = df[others + target_final_names]
-    return df
+    others = [c for c in out.columns if c not in tail]
+    out = out.loc[:, others + tail]
+    return out

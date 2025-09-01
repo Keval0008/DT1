@@ -1,1 +1,15 @@
-I wanted to check in on the status of the sign-off for the tool I shared with you. Could you also let me know the expected date for the incoming Q3 data? I’d like to make sure I’m available at that time to provide support.
+Hi Ritu,
+
+Please find attached the slide and a snippet with the latest status of the VIU tool across different regions.
+
+Summary:
+
+Mexico: Live in Q2 2025
+
+HBCE: Ready for go-live in Q3 2025
+
+HBME: Awaiting sign-off; go-live planned for Q3 2025
+
+HBUK: Ready for parallel run in Q3 2025
+
+HBAP: UAT in progress with financial controllers

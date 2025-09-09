@@ -1,15 +1,51 @@
-Hi Ritu,
+pip install msoffcrypto-tool pandas openpyxl
 
-Please find attached the slide and a snippet with the latest status of the VIU tool across different regions.
+from io import BytesIO
+from pathlib import Path
+import msoffcrypto
+import pandas as pd
 
-Summary:
+def read_encrypted_excel(path, password, sheet_name=0, **read_kwargs):
+    """
+    Decrypt an Excel file in memory and read with pandas.
 
-Mexico: Live in Q2 2025
+    Args:
+        path (str/Path): path to .xlsx or .xls (and .xlsb after decrypt)
+        password (str): workbook password
+        sheet_name: same as pandas.read_excel (0, name, list, or None for all)
+        **read_kwargs: passed through to pandas.read_excel (e.g., dtype=..., usecols=...)
 
-HBCE: Ready for go-live in Q3 2025
+    Returns:
+        DataFrame or dict[str, DataFrame] if sheet_name=None
+    """
+    path = Path(path)
 
-HBME: Awaiting sign-off; go-live planned for Q3 2025
+    # Decrypt to memory
+    decrypted = BytesIO()
+    with open(path, "rb") as f:
+        office_file = msoffcrypto.OfficeFile(f)
+        office_file.load_key(password=password)
+        office_file.decrypt(decrypted)
 
-HBUK: Ready for parallel run in Q3 2025
+    # Rewind the buffer so pandas can read it
+    decrypted.seek(0)
 
-HBAP: UAT in progress with financial controllers
+    # Choose engine if you know the type, else let pandas infer from content
+    # For .xlsb (after decrypt), force engine="pyxlsb"
+    engine = "pyxlsb" if path.suffix.lower() == ".xlsb" else None
+
+    return pd.read_excel(decrypted, sheet_name=sheet_name, engine=engine, **read_kwargs)
+
+# --- Usage examples ---
+
+# Single sheet (first sheet)
+df = read_encrypted_excel("protected.xlsx", password="YourPassword123")
+print(df.head())
+
+# Specific sheet by name
+orders = read_encrypted_excel("protected.xlsx", password="YourPassword123", sheet_name="Orders")
+
+# All sheets at once (dict of DataFrames)
+all_sheets = read_encrypted_excel("protected.xlsx", password="YourPassword123", sheet_name=None)
+for name, df in all_sheets.items():
+    print(name, df.shape)

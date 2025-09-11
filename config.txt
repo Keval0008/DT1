@@ -1,118 +1,73 @@
+# pip install msoffcrypto-tool pandas openpyxl xlrd
+import io
+import msoffcrypto
 import pandas as pd
 from pathlib import Path
-import pythoncom
-import win32com.client as win32
 
-def _sheet_to_df(ws, header=True):
-    used = ws.UsedRange
-    values = used.Value
-    if values is None:
-        return pd.DataFrame()
-
-    # Normalize to a list of rows
-    if not isinstance(values, (list, tuple)):
-        values = [[values]]
-    elif isinstance(values, tuple):
-        values = [list(r) if isinstance(r, (list, tuple)) else [r] for r in values]
-    else:
-        values = [list(r) if isinstance(r, (list, tuple)) else [r] for r in values]
-
-    # Replace None with NaN-friendly None and trim trailing empty columns
-    # (COM often returns ragged rows)
-    max_len = max(len(r) for r in values)
-    for r in values:
-        if len(r) < max_len:
-            r += [None] * (max_len - len(r))
-
-    if header and len(values) >= 1:
-        cols = [str(c) if c is not None else f"col_{i+1}" for i, c in enumerate(values[0])]
-        df = pd.DataFrame(values[1:], columns=cols)
-    else:
-        df = pd.DataFrame(values)
-
-    return df
-
-def read_excel_via_com(
-    path,
-    open_password=None,           # password to OPEN the workbook (encryption)
-    modify_password=None,         # password to MODIFY (write reservation). Omit to stay read-only.
-    sheet=None,                   # None=first sheet, str=by name, int=1-based index, "*"=all sheets
-    header=True                   # treat first row as header
-):
+def read_encrypted_excel(path_or_bytes, read_password, sheet_name=0, **read_excel_kwargs):
     """
-    Open an Excel file via COM in read-only mode and return pandas DataFrame(s).
+    Decrypt a password-protected Excel file (with OPEN/READ password) and return a pandas DataFrame
+    or a dict of DataFrames (if sheet_name=None or 'all').
 
-    Returns:
-        - DataFrame if sheet is None/str/int
-        - dict[name -> DataFrame] if sheet="*"
+    Parameters
+    ----------
+    path_or_bytes : str | Path | bytes | file-like
+        Path to the file or file-like/bytes of the encrypted workbook.
+    read_password : str
+        The OPEN/READ password used to unlock the file. (You don't need the write/modify password.)
+    sheet_name : int | str | list | None | 'all'
+        Same as pandas.read_excel. Use None or 'all' to load all sheets.
+    **read_excel_kwargs :
+        Any extra kwargs to pass to pandas.read_excel (e.g., header=0, dtype=..., engine=...)
+
+    Returns
+    -------
+    DataFrame or dict[str, DataFrame]
     """
-    pythoncom.CoInitialize()  # needed in some environments
-    excel = win32.gencache.EnsureDispatch("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
+    # Accept bytes/streams/paths
+    if isinstance(path_or_bytes, (str, Path)):
+        fin = open(path_or_bytes, "rb")
+        close_fin = True
+    elif isinstance(path_or_bytes, (bytes, bytearray)):
+        fin = io.BytesIO(path_or_bytes)
+        close_fin = False
+    else:
+        fin = path_or_bytes  # assume file-like
+        close_fin = False
 
-    path = Path(path)
-    wb = None
     try:
-        wb = excel.Workbooks.Open(
-            str(path),
-            UpdateLinks=0,
-            ReadOnly=True,                   # force read-only open
-            Password=open_password or None,  # open/encryption password
-            WriteResPassword=modify_password or None,
-            IgnoreReadOnlyRecommended=True   # suppress read-only recommended prompt
-        )
+        # Load and decrypt with msoffcrypto
+        office_file = msoffcrypto.OfficeFile(fin)
+        office_file.load_key(password=read_password)  # OPEN/READ password goes here
+        decrypted = io.BytesIO()
+        office_file.decrypt(decrypted)
 
-        def get_ws(target):
-            if target is None:
-                return wb.Worksheets(1)
-            if target == "*":
-                return [wb.Worksheets(i) for i in range(1, wb.Worksheets.Count + 1)]
-            if isinstance(target, int):
-                return wb.Worksheets(int(target))
-            return wb.Worksheets(target)  # by name
+        # Rewind the buffer so pandas can read it
+        decrypted.seek(0)
 
-        if sheet == "*":
-            out = {}
-            for i in range(1, wb.Worksheets.Count + 1):
-                ws = wb.Worksheets(i)
-                df = _sheet_to_df(ws, header=header)
-                out[ws.Name] = df
-            return out
-        else:
-            ws = get_ws(sheet)
-            df = _sheet_to_df(ws, header=header)
-            return df
+        # If user asked for all sheets with 'all', normalize to None (pandas convention)
+        sn = None if sheet_name == "all" else sheet_name
 
+        # Let pandas pick the right engine:
+        # - .xlsx/.xlsm -> openpyxl
+        # - .xls -> xlrd (install xlrd)
+        # - .xlsb -> use engine="pyxlsb" (pip install pyxlsb) and pass engine explicitly
+        df = pd.read_excel(decrypted, sheet_name=sn, **read_excel_kwargs)
+        return df
     finally:
-        if wb is not None:
-            wb.Close(SaveChanges=False)
-        excel.Quit()
-        pythoncom.CoUninitialize()
+        if close_fin:
+            fin.close()
 
-# ------------------ Examples ------------------
+# ------------------ Usage examples ------------------
 
-# 1) Has both passwords, but you just want to READ:
-df = read_excel_via_com(
-    r"C:\path\yourfile.xlsx",
-    open_password="open_pwd_here",   # required if workbook is encrypted
-    # modify_password omitted ⇒ stays read-only; no modify prompt
-    sheet=1                          # first sheet
-)
-print(df.head())
+# 1) Single sheet (first sheet)
+# df = read_encrypted_excel("protected.xlsx", read_password="your_read_password")
 
-# 2) Only write-reserved (no open password), read-only:
-df2 = read_excel_via_com(
-    r"C:\path\write_reserved.xlsx",
-    sheet="Orders"                   # by sheet name
-)
-print(df2.shape)
+# 2) Specific sheet by name
+# df = read_encrypted_excel("protected.xlsx", read_password="your_read_password", sheet_name="Data")
 
-# 3) Get ALL sheets at once:
-all_sheets = read_excel_via_com(
-    r"C:\path\yourfile.xlsx",
-    open_password="open_pwd_here",
-    sheet="*"
-)
-for name, d in all_sheets.items():
-    print(name, d.shape)
+# 3) All sheets as a dict of DataFrames
+# dfs = read_encrypted_excel("protected.xlsx", read_password="your_read_password", sheet_name="all")
+
+# 4) If the file is .xlsb, pass engine="pyxlsb"
+# df = read_encrypted_excel("protected.xlsb", read_password="your_read_password", engine="pyxlsb")

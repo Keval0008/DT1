@@ -1,73 +1,105 @@
-# pip install msoffcrypto-tool pandas openpyxl xlrd
+# pip install --upgrade msoffcrypto-tool pandas openpyxl xlrd pyxlsb olefile cryptography
+import os
 import io
-import msoffcrypto
-import pandas as pd
+import sys
+import tempfile
 from pathlib import Path
+from getpass import getpass
 
-def read_encrypted_excel(path_or_bytes, read_password, sheet_name=0, **read_excel_kwargs):
+import pandas as pd
+import msoffcrypto
+
+try:
+    from msoffcrypto.exceptions import InvalidKeyError
+except Exception:
+    class InvalidKeyError(Exception):
+        pass
+
+SUPPORTED_EXTS = {".xlsx", ".xlsm", ".xls", ".xlsb"}
+
+def _pick_engine(ext: str) -> str:
+    ext = ext.lower()
+    if ext in (".xlsx", ".xlsm"):
+        return "openpyxl"
+    if ext == ".xls":
+        return "xlrd"
+    if ext == ".xlsb":
+        return "pyxlsb"
+    raise ValueError(f"Unsupported extension: {ext}")
+
+def _decrypt_to_temp(path: Path, password: str, ext: str) -> str:
+    """Decrypts the file to a temporary file and returns its path."""
+    with open(path, "rb") as f:
+        of = msoffcrypto.OfficeFile(f)
+        of.load_key(password=password)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp_name = tmp.name
+            of.decrypt(tmp)
+    return tmp_name
+
+def _is_encrypted(path: Path) -> bool:
+    with open(path, "rb") as f:
+        of = msoffcrypto.OfficeFile(f)
+        return bool(getattr(of, "is_encrypted", True))  # default True for safety
+
+def read_excel_all_sheets(path: str | Path, password: str | None = None, max_tries: int = 3) -> dict:
     """
-    Decrypt a password-protected Excel file (with OPEN/READ password) and return a pandas DataFrame
-    or a dict of DataFrames (if sheet_name=None or 'all').
+    Returns a dict: {sheet_name: DataFrame} for the provided Excel file.
+    If the file is read-password protected and no password is provided,
+    it will prompt (masked) up to max_tries times.
 
     Parameters
     ----------
-    path_or_bytes : str | Path | bytes | file-like
-        Path to the file or file-like/bytes of the encrypted workbook.
-    read_password : str
-        The OPEN/READ password used to unlock the file. (You don't need the write/modify password.)
-    sheet_name : int | str | list | None | 'all'
-        Same as pandas.read_excel. Use None or 'all' to load all sheets.
-    **read_excel_kwargs :
-        Any extra kwargs to pass to pandas.read_excel (e.g., header=0, dtype=..., engine=...)
-
-    Returns
-    -------
-    DataFrame or dict[str, DataFrame]
+    path : str | Path
+    password : str | None
+        Open/read password. If None and file is encrypted, you'll be prompted.
+    max_tries : int
+        How many times to prompt for a password if the first attempt fails.
     """
-    # Accept bytes/streams/paths
-    if isinstance(path_or_bytes, (str, Path)):
-        fin = open(path_or_bytes, "rb")
-        close_fin = True
-    elif isinstance(path_or_bytes, (bytes, bytearray)):
-        fin = io.BytesIO(path_or_bytes)
-        close_fin = False
-    else:
-        fin = path_or_bytes  # assume file-like
-        close_fin = False
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext not in SUPPORTED_EXTS:
+        raise ValueError(f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_EXTS))}")
 
-    try:
-        # Load and decrypt with msoffcrypto
-        office_file = msoffcrypto.OfficeFile(fin)
-        office_file.load_key(password=read_password)  # OPEN/READ password goes here
-        decrypted = io.BytesIO()
-        office_file.decrypt(decrypted)
+    engine = _pick_engine(ext)
 
-        # Rewind the buffer so pandas can read it
-        decrypted.seek(0)
+    # If not encrypted, read directly
+    if not _is_encrypted(path):
+        return pd.read_excel(path, sheet_name=None, engine=engine)
 
-        # If user asked for all sheets with 'all', normalize to None (pandas convention)
-        sn = None if sheet_name == "all" else sheet_name
+    # If encrypted, get (or ask for) password and try decrypting
+    tries = 0
+    last_err = None
+    while tries < max_tries:
+        pw = password
+        if not pw:
+            # Show filename in prompt
+            pw = getpass(f"Enter OPEN password for '{path.name}': ")
 
-        # Let pandas pick the right engine:
-        # - .xlsx/.xlsm -> openpyxl
-        # - .xls -> xlrd (install xlrd)
-        # - .xlsb -> use engine="pyxlsb" (pip install pyxlsb) and pass engine explicitly
-        df = pd.read_excel(decrypted, sheet_name=sn, **read_excel_kwargs)
-        return df
-    finally:
-        if close_fin:
-            fin.close()
+        try:
+            tmp_name = _decrypt_to_temp(path, pw, ext)
+            try:
+                # Read all sheets
+                dfs = pd.read_excel(tmp_name, sheet_name=None, engine=engine)
+                return dfs
+            finally:
+                try:
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
+        except InvalidKeyError as e:
+            print("Password incorrect. Please try again.", file=sys.stderr)
+            last_err = e
+            password = None  # force prompt again
+            tries += 1
+        except Exception as e:
+            # Any other decryption error
+            raise RuntimeError(f"Failed to decrypt '{path.name}': {e}") from e
 
-# ------------------ Usage examples ------------------
+    raise InvalidKeyError(f"Failed to open '{path.name}' after {max_tries} attempts (wrong password).")
 
-# 1) Single sheet (first sheet)
-# df = read_encrypted_excel("protected.xlsx", read_password="your_read_password")
-
-# 2) Specific sheet by name
-# df = read_encrypted_excel("protected.xlsx", read_password="your_read_password", sheet_name="Data")
-
-# 3) All sheets as a dict of DataFrames
-# dfs = read_encrypted_excel("protected.xlsx", read_password="your_read_password", sheet_name="all")
-
-# 4) If the file is .xlsb, pass engine="pyxlsb"
-# df = read_encrypted_excel("protected.xlsb", read_password="your_read_password", engine="pyxlsb")
+# ----------------------- Example usage -----------------------
+# dfs = read_excel_all_sheets("your_file.xlsx")
+# for sheet, df in dfs.items():
+#     print(f"\n--- {sheet} ---")
+#     print(df.head())

@@ -1,13 +1,14 @@
 # pip install --upgrade msoffcrypto-tool pandas openpyxl xlrd pyxlsb olefile cryptography
-import os
-import io
-import sys
-import tempfile
+from typing import Union, Optional, Dict
 from pathlib import Path
 from getpass import getpass
-
 import pandas as pd
 import msoffcrypto
+import zipfile
+import olefile
+import tempfile
+import sys
+import os
 
 try:
     from msoffcrypto.exceptions import InvalidKeyError
@@ -25,10 +26,53 @@ def _pick_engine(ext: str) -> str:
         return "xlrd"
     if ext == ".xlsb":
         return "pyxlsb"
-    raise ValueError(f"Unsupported extension: {ext}")
+    raise ValueError(f"Unsupported file type: {ext}")
 
-def _decrypt_to_temp(path: Path, password: str, ext: str) -> str:
-    """Decrypts the file to a temporary file and returns its path."""
+def _file_signature(path: Path) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(8)
+
+def _ole_has_encryption_streams(path: Path) -> bool:
+    """True if the OLE container has EncryptionInfo/EncryptedPackage streams."""
+    if not olefile.isOleFile(str(path)):
+        return False
+    ole = olefile.OleFileIO(str(path))
+    try:
+        names = {"%s" % "/".join(parts) for parts in ole.listdir()}
+        return ("EncryptionInfo" in names) or ("EncryptedPackage" in names)
+    finally:
+        ole.close()
+
+def _is_probably_encrypted(path: Path) -> bool:
+    """
+    Robust encryption detection across Excel types.
+    """
+    ext = path.suffix.lower()
+    sig = _file_signature(path)
+
+    is_zip = sig.startswith(b"PK")  # normal OOXML xlsx/xlsm are ZIPs
+
+    if ext in (".xlsx", ".xlsm"):
+        # Normal case: ZIP => not encrypted; OLE with encryption streams => encrypted
+        if is_zip:
+            return False
+        # If it's not a ZIP, it should be an OLE "Binary Encrypted Package"
+        return _ole_has_encryption_streams(path)
+
+    if ext == ".xlsb":
+        # Always OLE; check encryption streams
+        return _ole_has_encryption_streams(path)
+
+    if ext == ".xls":
+        # Old binary format. Best heuristic: try reading; if it fails, treat as encrypted later.
+        # Here we just return None-like behavior by saying "unknown"; caller will try direct read first.
+        return None  # type: ignore
+
+    return None  # should not reach here
+
+def _decrypt_to_temp(path: Path, password: str) -> str:
+    """Decrypts using msoffcrypto to a temp file; returns temp file path."""
+    ext = path.suffix.lower()
     with open(path, "rb") as f:
         of = msoffcrypto.OfficeFile(f)
         of.load_key(password=password)
@@ -37,69 +81,70 @@ def _decrypt_to_temp(path: Path, password: str, ext: str) -> str:
             of.decrypt(tmp)
     return tmp_name
 
-def _is_encrypted(path: Path) -> bool:
-    with open(path, "rb") as f:
-        of = msoffcrypto.OfficeFile(f)
-        return bool(getattr(of, "is_encrypted", True))  # default True for safety
-
-def read_excel_all_sheets(path: str | Path, password: str | None = None, max_tries: int = 3) -> dict:
+def read_excel_all_sheets(
+    path: Union[str, Path],
+    password: Optional[str] = None,
+    max_tries: int = 3
+) -> Dict[str, pd.DataFrame]:
     """
-    Returns a dict: {sheet_name: DataFrame} for the provided Excel file.
-    If the file is read-password protected and no password is provided,
-    it will prompt (masked) up to max_tries times.
+    Reads all sheets from an Excel file into a dict of DataFrames.
+    - Detects if the file is read-password protected.
+    - If encrypted, prompts for the OPEN (read) password with filename visible.
+    - Uses temp-file decryption to avoid BytesIO-related bugs.
 
-    Parameters
-    ----------
-    path : str | Path
-    password : str | None
-        Open/read password. If None and file is encrypted, you'll be prompted.
-    max_tries : int
-        How many times to prompt for a password if the first attempt fails.
+    Returns: {sheet_name: DataFrame}
     """
     path = Path(path)
     ext = path.suffix.lower()
+
     if ext not in SUPPORTED_EXTS:
         raise ValueError(f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_EXTS))}")
 
     engine = _pick_engine(ext)
 
-    # If not encrypted, read directly
-    if not _is_encrypted(path):
+    # 1) Fast path: try to read directly. If it works, it's not encrypted.
+    try:
         return pd.read_excel(path, sheet_name=None, engine=engine)
+    except Exception as e_direct:
+        # 2) If direct read failed, decide whether it's likely encryption or a different error.
+        enc_guess = _is_probably_encrypted(path)
 
-    # If encrypted, get (or ask for) password and try decrypting
-    tries = 0
-    last_err = None
-    while tries < max_tries:
-        pw = password
-        if not pw:
-            # Show filename in prompt
-            pw = getpass(f"Enter OPEN password for '{path.name}': ")
+        # For .xls: if direct read failed, assume encryption (or corrupted). We'll try decrypt next.
+        if ext == ".xls":
+            enc_guess = True
 
-        try:
-            tmp_name = _decrypt_to_temp(path, pw, ext)
-            try:
-                # Read all sheets
-                dfs = pd.read_excel(tmp_name, sheet_name=None, engine=engine)
-                return dfs
-            finally:
+        if enc_guess:
+            # 3) Encrypted path: prompt up to max_tries times
+            tries = 0
+            last_err = None
+            while tries < max_tries:
+                pw = password or getpass(f"Enter OPEN password for '{path.name}': ")
                 try:
-                    os.remove(tmp_name)
-                except OSError:
-                    pass
-        except InvalidKeyError as e:
-            print("Password incorrect. Please try again.", file=sys.stderr)
-            last_err = e
-            password = None  # force prompt again
-            tries += 1
-        except Exception as e:
-            # Any other decryption error
-            raise RuntimeError(f"Failed to decrypt '{path.name}': {e}") from e
+                    tmp_name = _decrypt_to_temp(path, pw)
+                    try:
+                        dfs = pd.read_excel(tmp_name, sheet_name=None, engine=engine)
+                        return dfs
+                    finally:
+                        try:
+                            os.remove(tmp_name)
+                        except OSError:
+                            pass
+                except InvalidKeyError as e:
+                    print("Password incorrect. Please try again.", file=sys.stderr)
+                    last_err = e
+                    password = None  # force prompt again
+                    tries += 1
+                except Exception as e_dec:
+                    # Decryption error that isn't "wrong password"
+                    raise RuntimeError(f"Failed to decrypt '{path.name}': {e_dec}") from e_dec
+            # Exhausted tries
+            raise InvalidKeyError(f"Failed to open '{path.name}' after {max_tries} attempts (wrong password).") from last_err
 
-    raise InvalidKeyError(f"Failed to open '{path.name}' after {max_tries} attempts (wrong password).")
+        # 4) Not encrypted per our checks → surface the original read error
+        raise
 
-# ----------------------- Example usage -----------------------
+# ---------------------- Example ----------------------
 # dfs = read_excel_all_sheets("your_file.xlsx")
 # for sheet, df in dfs.items():
-#     print(f"\n--- {sheet} ---")
+#     print(f"--- {sheet} ---")
 #     print(df.head())

@@ -16,7 +16,8 @@ except Exception:
     class InvalidKeyError(Exception):
         pass
 
-SUPPORTED_EXTS = {".xlsx", ".xlsm", ".xls", ".xlsb"}
+SUPPORTED_EXCEL_EXTS = {".xlsx", ".xlsm", ".xls", ".xlsb"}
+SUPPORTED_TEXT_EXTS  = {".csv", ".tsv"}
 
 def _pick_engine(ext: str) -> str:
     ext = ext.lower()
@@ -26,7 +27,7 @@ def _pick_engine(ext: str) -> str:
         return "xlrd"
     if ext == ".xlsb":
         return "pyxlsb"
-    raise ValueError(f"Unsupported file type: {ext}")
+    raise ValueError(f"Unsupported Excel file type: {ext}")
 
 def _file_signature(path: Path) -> bytes:
     with open(path, "rb") as f:
@@ -43,20 +44,20 @@ def _ole_has_encryption_streams(path: Path) -> bool:
     finally:
         ole.close()
 
-def _is_probably_encrypted(path: Path) -> bool:
+def _is_probably_encrypted_excel(path: Path) -> Optional[bool]:
     """
-    Robust encryption detection across Excel types.
+    Robust encryption detection for Excel types.
+    Returns True/False, or None if uncertain (we'll try normal read first).
     """
     ext = path.suffix.lower()
     sig = _file_signature(path)
-
-    is_zip = sig.startswith(b"PK")  # normal OOXML xlsx/xlsm are ZIPs
+    is_zip = sig.startswith(b"PK")  # OOXML .xlsx/.xlsm are plain ZIPs when not encrypted
 
     if ext in (".xlsx", ".xlsm"):
-        # Normal case: ZIP => not encrypted; OLE with encryption streams => encrypted
+        # If it's a ZIP, it's a normal (not encrypted) OOXML workbook.
+        # Encrypted OOXML usually comes as OLE "Binary Encrypted Package".
         if is_zip:
             return False
-        # If it's not a ZIP, it should be an OLE "Binary Encrypted Package"
         return _ole_has_encryption_streams(path)
 
     if ext == ".xlsb":
@@ -64,11 +65,10 @@ def _is_probably_encrypted(path: Path) -> bool:
         return _ole_has_encryption_streams(path)
 
     if ext == ".xls":
-        # Old binary format. Best heuristic: try reading; if it fails, treat as encrypted later.
-        # Here we just return None-like behavior by saying "unknown"; caller will try direct read first.
-        return None  # type: ignore
+        # Old binary format; leave as unknown. We'll try normal read first.
+        return None
 
-    return None  # should not reach here
+    return None
 
 def _decrypt_to_temp(path: Path, password: str) -> str:
     """Decrypts using msoffcrypto to a temp file; returns temp file path."""
@@ -81,70 +81,96 @@ def _decrypt_to_temp(path: Path, password: str) -> str:
             of.decrypt(tmp)
     return tmp_name
 
-def read_excel_all_sheets(
+def _read_csv_like(path: Path) -> pd.DataFrame:
+    """
+    Read CSV/TSV with a couple of sensible fallbacks for encoding and delimiter.
+    """
+    ext = path.suffix.lower()
+    # choose delimiter
+    sep = "\t" if ext == ".tsv" else ","
+
+    # try a couple encodings
+    for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            return pd.read_csv(path, sep=sep, encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    # last attempt lets pandas guess
+    return pd.read_csv(path, sep=sep, engine=None)
+
+def read_tablelike_any(
     path: Union[str, Path],
     password: Optional[str] = None,
     max_tries: int = 3
 ) -> Dict[str, pd.DataFrame]:
     """
-    Reads all sheets from an Excel file into a dict of DataFrames.
-    - Detects if the file is read-password protected.
-    - If encrypted, prompts for the OPEN (read) password with filename visible.
-    - Uses temp-file decryption to avoid BytesIO-related bugs.
+    Generalized reader:
+    - Excel (.xlsx, .xlsm, .xls, .xlsb): returns all sheets as {sheet_name: DataFrame}.
+      If file is read-password protected, prompts for OPEN password (filename shown).
+    - CSV/TSV: returns {file_stem: DataFrame}.
 
-    Returns: {sheet_name: DataFrame}
+    Always returns a dict for consistency.
     """
     path = Path(path)
     ext = path.suffix.lower()
 
-    if ext not in SUPPORTED_EXTS:
-        raise ValueError(f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_EXTS))}")
+    # 1) Text formats: CSV/TSV (these cannot be password-protected by Excel)
+    if ext in SUPPORTED_TEXT_EXTS:
+        df = _read_csv_like(path)
+        return {path.stem: df}
+
+    # 2) Excel formats
+    if ext not in SUPPORTED_EXCEL_EXTS:
+        raise ValueError(
+            f"Unsupported file type: {ext}. "
+            f"Supported: {', '.join(sorted(SUPPORTED_TEXT_EXTS | SUPPORTED_EXCEL_EXTS))}"
+        )
 
     engine = _pick_engine(ext)
 
-    # 1) Fast path: try to read directly. If it works, it's not encrypted.
+    # Fast path: try to read directly (not encrypted, or .xls w/out protection)
     try:
-        return pd.read_excel(path, sheet_name=None, engine=engine)
-    except Exception as e_direct:
-        # 2) If direct read failed, decide whether it's likely encryption or a different error.
-        enc_guess = _is_probably_encrypted(path)
+        dfs = pd.read_excel(path, sheet_name=None, engine=engine)
+        return dfs
+    except Exception:
+        # Determine if likely encrypted; for .xls treat unknown as possibly encrypted
+        enc_guess = _is_probably_encrypted_excel(path)
+        if enc_guess is False:
+            # Not encrypted by our check → raise the original error for visibility
+            raise
 
-        # For .xls: if direct read failed, assume encryption (or corrupted). We'll try decrypt next.
-        if ext == ".xls":
-            enc_guess = True
-
-        if enc_guess:
-            # 3) Encrypted path: prompt up to max_tries times
-            tries = 0
-            last_err = None
-            while tries < max_tries:
-                pw = password or getpass(f"Enter OPEN password for '{path.name}': ")
+        # Encrypted or uncertain: prompt and attempt decrypt-to-temp
+        tries = 0
+        last_err = None
+        while tries < max_tries:
+            pw = password or getpass(f"Enter OPEN password for '{path.name}': ")
+            try:
+                tmp_name = _decrypt_to_temp(path, pw)
                 try:
-                    tmp_name = _decrypt_to_temp(path, pw)
+                    dfs = pd.read_excel(tmp_name, sheet_name=None, engine=engine)
+                    return dfs
+                finally:
                     try:
-                        dfs = pd.read_excel(tmp_name, sheet_name=None, engine=engine)
-                        return dfs
-                    finally:
-                        try:
-                            os.remove(tmp_name)
-                        except OSError:
-                            pass
-                except InvalidKeyError as e:
-                    print("Password incorrect. Please try again.", file=sys.stderr)
-                    last_err = e
-                    password = None  # force prompt again
-                    tries += 1
-                except Exception as e_dec:
-                    # Decryption error that isn't "wrong password"
-                    raise RuntimeError(f"Failed to decrypt '{path.name}': {e_dec}") from e_dec
-            # Exhausted tries
-            raise InvalidKeyError(f"Failed to open '{path.name}' after {max_tries} attempts (wrong password).") from last_err
+                        os.remove(tmp_name)
+                    except OSError:
+                        pass
+            except InvalidKeyError as e:
+                print("Password incorrect. Please try again.", file=sys.stderr)
+                last_err = e
+                password = None
+                tries += 1
+            except Exception as e_dec:
+                raise RuntimeError(f"Failed to decrypt '{path.name}': {e_dec}") from e_dec
 
-        # 4) Not encrypted per our checks → surface the original read error
-        raise
+        raise InvalidKeyError(f"Failed to open '{path.name}' after {max_tries} attempts (wrong password).") from last_err
 
-# ---------------------- Example ----------------------
-# dfs = read_excel_all_sheets("your_file.xlsx")
-# for sheet, df in dfs.items():
-#     print(f"--- {sheet} ---")
-#     print(df.head())
+# ----------------------- Examples -----------------------
+# Excel (auto-detect; prompt if needed):
+# sheets = read_tablelike_any("data.xlsx")
+# for name, df in sheets.items():
+#     print(name, df.shape)
+
+# CSV:
+# data = read_tablelike_any("data.csv")
+# print(list(data.keys()))  # ['data']
+# print(data['data'].head())

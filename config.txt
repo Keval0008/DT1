@@ -1,272 +1,29 @@
-Absolutely—this is a great way to attack it. Think of every record as carrying a tiny “GPS tag” through the pipeline. We log what touches it, then we compress that journey into the smallest set of rules that achieves the same result.
 
-Here’s the technical plan, tight and practical.
 
-1) Tag each row + log every adjustment
-
-Row token (trace key)
-
-Pick a stable business key (e.g., account_id + as_of_date [+ other dims]).
-Create a token you can carry across stages:
-
-trace_key = SHA256(CONCAT(account_id, '|', as_of_date, '|', target_variable))
-
-(Use the real keys that uniquely identify a row at your reporting grain.)
-
-Minimal audit tables
-
-rules_dim
-
-rule_id (stable hash of rule signature)
-
-process_id, stage (WD1/WD5/…)
-
-step_order, operation, target_variable
-
-parameter (formula/filter), lookup metadata
-
-rule_signature (canonicalized string)
-
-
-adjustment_event
-
-run_id, stage, rule_id, step_order
-
-trace_key, target_variable
-
-before_value, after_value, delta_value
-
-event_type (create/update/delete), event_ts
-
-
-(optional) lineage_map — only if you aggregate/re-key
-
-child_trace_key → parent_trace_key, weight (contribution share)
-
-
-> You don’t have to log 100% of rows on day one. Start with: (a) full aggregates (rows_affected, sum_delta) for all rows + (b) exact per-key logs for a 1–5% sample of trace_keys. That’s usually enough to find patterns fast.
-
-
-
-2) Instrument the pipeline (thin wrappers)
-
-Wrap each rule execution with:
-
-1. Compute before_value and after_value for target_variable.
-
-
-2. Write one adjustment_event per affected row (or per sampled row).
-
-
-3. Also record per-rule aggregates (rows_affected, sum_delta) for the full dataset.
-
-
-
-For joins/aggregations:
-
-Write lineage_map for sampled keys so you can reconstruct how groups were formed.
-
-
-3) Reconstruct each row’s journey (paths)
-
-For any row (trace_key, target_variable):
-
-SELECT stage, step_order, rule_id, operation, parameter, before_value, after_value, delta_value
-FROM adjustment_event e
-JOIN rules_dim r USING(rule_id)
-WHERE trace_key = :key AND target_variable = :var
-ORDER BY stage, step_order;
-
-That gives you the exact path a value took from WD1 → WD15.
-
-4) Detect problems from the logs
-
-These use simple math over the events you just logged.
-
-A) Repeats / duplicates
-
-Same rule_signature applied multiple times on the same target and overlapping filters:
-
-SELECT rule_signature, COUNT(*) AS uses
-FROM rules_dim GROUP BY 1 HAVING COUNT(*) > 1;
-
-And at the key level: multiple events with identical (operation, normalized parameter) → merge.
-
-B) No-ops / bypassed
-
-Rules where delta_value = 0 for ≥ 95% of affected keys across runs → remove or tighten.
-
-C) Reverse / undo chains
-
-For a (trace_key, var), consecutive events where deltas cancel:
-
-SELECT *
-FROM (
-  SELECT trace_key, target_variable,
-         SUM(delta_value) OVER (PARTITION BY trace_key, target_variable ORDER BY stage, step_order
-                                ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS two_step_sum,
-         stage, step_order, rule_id
-  FROM adjustment_event
-) x
-WHERE ABS(two_step_sum) < :tiny_tol;
-
-Or earlier + later rules that net to ~0 on most keys → reorder or drop one.
-
-D) Conflicts / overlaps
-
-Two rules writing different values to the same keys in close succession:
-
-Find keys touched by both rule_id A and rule_id B within a stage window, with different after_value.
-
-If the final value depends on order, mark as order-sensitive and propose a guard (stricter predicate) or a merge.
-
-
-E) Club/merge candidates
-
-Adjacent rules with same target_variable and compatible ops:
-
-Multiple fill → single coalesce.
-
-calculate chains that are algebraically composable (e.g., x = round((x*1.18) - rebate, 2)).
-
-
-5) Compress the path (suggest a smaller, safer route)
-
-Treat each event as a tiny function on the value and compose them.
-
-Per path (for a target_variable):
-
-1. Convert each event to a function f_i:
-
-fill: v := COALESCE(v, c)
-
-calculate: v := expr(v, dims, lookups)
-
-sum/subtract: v := v ± k
-
-lookup: v := join(v, dim)
-
-drop: terminal
-
-
-
-2. Compose and simplify f = f_n ∘ ... ∘ f_1:
-
-fold constants (+k then -k → remove both)
-
-reorder commutative ops (safe swaps only)
-
-fuse sequential calculates into one expression
-
-merge multiple lookups to the same dimension into a single join
-
-
-
-3. Respect dependencies (don’t move a lookup before its key exists).
-
-
-4. Validate on sampled keys: replay the compressed path and compare final after_value. If equal (within tolerance), you’ve found a smaller path.
-
-
-
-Output (what you hand to the team):
-
-Original chain of rule_ids
-
-Proposed compressed chain (fewer steps)
-
-Proof: % keys matching exactly, max absolute difference, runtime saved
-
-
-6) Flow chart (from raw logs to suggestions)
-
-[Tag rows with trace_key]
+[Start]
+   |
+   v
+[Combine all rulebooks into one table]
+   |
+   v
+[Clean columns + add helper fields
+ (parameter_clean, scope_key, rule_signature)]
+   |
+   v
+[Run checks]
+  |----> (A) Duplicates? -> Merge
+  |----> (B) No-ops?     -> Delete/Tighten
+  |----> (C) Club?       -> Combine
+  |----> (D) Reverse?    -> Reorder/Remove
+  |----> (E) Conflict?   -> Pick owner/Tighten
+   |
+   v
+[Apply fixes and re-run tiny test dataset]
+   |
+   v
+[Numbers stable? Yes] ----> [Publish & add guardrails]
+          |
+         No
           |
           v
-[Execute rule → write adjustment_event (+ aggregates)]
-          |
-          v
-[Build per-row paths (stage, step_order)]
-          |
-          v
-[Detectors]
-  |-- duplicates
-  |-- no-ops
-  |-- reverse/undo
-  |-- conflicts
-  |-- club/merge
-          |
-          v
-[Path compression]
-  - compose functions
-  - simplify
-  - respect deps
-  - validate on sample
-          |
-          v
-[Recommendations]
-  - merge/delete/reorder
-  - compressed rule chain
-  - guardrails & tests
-
-7) Guardrails so it stays clean
-
-Rule signatures: block new rules that duplicate an existing signature.
-
-Unit checks per target_variable: required deltas, idempotence (re-running rules doesn’t change values).
-
-Config constants: one source of truth for rates/thresholds to avoid “same logic, different numbers.”
-
-
-8) What you’ll gain
-
-Shorter pipelines for key variables (often 20–40% fewer effective steps).
-
-Fewer “add then remove” mistakes.
-
-Clear ownership per target variable.
-
-Faster WD1→WD15 cycles and simpler audits.
-
-
-
----
-
-Copy-paste starters
-
-Stable rule_id (SQL-ish)
-
-SELECT
-  MD5(LOWER(CONCAT_WS('|',
-    target_system, target_variable, operation,
-    normalize(parameter), lookup_table, lookup_key, lookup_column
-  ))) AS rule_id
-FROM rules_raw;
-
-Event writer (pattern)
-
--- before applying rule
-SELECT trace_key, target_variable, value AS before_value
-INTO TEMP t_before
-FROM target_table
-WHERE <rule filter>;
-
--- apply rule (update/calc/fill/lookup/...)
--- ... your rule logic here ...
-
--- after applying rule
-INSERT INTO adjustment_event
-SELECT
-  :run_id, :stage, :rule_id, :step_order,
-  b.trace_key, b.target_variable,
-  b.before_value, a.value AS after_value,
-  a.value - b.before_value AS delta_value,
-  'update', CURRENT_TIMESTAMP
-FROM t_before b
-JOIN target_table a USING(trace_key, target_variable);
-
-
----
-
-If you share a tiny mock (a few rules + 50 rows), I can show a worked example of the path compression step so you see the “before → after” rule chains and the exact compressed formula we’d propose.
-
+     [Adjust and retest]

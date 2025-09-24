@@ -1,9 +1,101 @@
-strings = ["2023.0", "abc", "2025.0", "123.45"]
+def parse_local_rwa_years(years: list[int], bsm_dict: dict[str, float]) -> dict[int, dict[str, float]]:
+    """
+    6A–6G: 'Submission (Cap Plan)'
+      - anchor 'Forecast/ Base (USD millions)' -> (lookup_row, lookup_col)
+      - find exact keys 'Total','IWPB','CIB','CC','CC (BSM)' rows/cols
+      - for 'Total', in (Total_row+2) pick 'Dec-YY' else 'YYYY' column
+      - in (Total_row+1), find substring 'Forecast' and capture whole string as lookup key
+      - in lookup column, find 'Total {forecast_key}' FIRST row after each anchor row (Total/IWPB/CIB/CC/CC (BSM))
+      - values by stream come from those found rows at the chosen year column
+      - final per year: Total; IWPB = IWPB + bsm*BSM; CIB = CIB + bsm*BSM; CC = CC + bsm*BSM
+    """
+    book = open_frp_rwa_book(cfg, "local rwa")
+    target_sheet = "Submission (Cap Plan)"
+    if target_sheet not in book:
+        target_sheet = next((k for k in book if k.strip().lower() == "submission (cap plan)"), None)
+        if target_sheet is None:
+            return {y: {"Total": 0, "IWPB": 0, "CIB": 0, "CC": 0} for y in years}
 
-result = [
-    str(int(float(s))) if s.replace(".", "", 1).isdigit() and float(s).is_integer() else s
-    for s in strings
-]
+    df = book[target_sheet]
+    df_str = df_str_view(df)
 
-print(result)
-# ['2023', 'abc', '2025', '123.45']
+    # 6B: anchor
+    r_fb, c_fb = find_first(df_str, "Forecast/ Base (USD millions)")
+
+    # 6C: positions for exact keys (row, col)
+    def pos_for_exact(label: str) -> tuple[int, int] | None:
+        hits = np.argwhere(np.vectorize(lambda x: str(x).strip().lower() == label.lower())(df_str.values))
+        if hits.size:
+            r, c = hits[0]
+            return int(r), int(c)
+        return None
+
+    pos_total = pos_for_exact("Total")
+    pos_iwpb  = pos_for_exact("IWPB")
+    pos_cib   = pos_for_exact("CIB")
+    pos_cc    = pos_for_exact("CC")
+    pos_ccbsm = pos_for_exact("CC (BSM)")
+
+    if pos_total is None:
+        return {y: {"Total": 0, "IWPB": 0, "CIB": 0, "CC": 0} for y in years}
+
+    r_total, c_total = pos_total
+
+    # 6E: in (Total_row+1), capture the full cell containing 'Forecast' as forecast_key
+    forecast_key = ""
+    for txt in df_str.iloc[r_total + 1, :].tolist():
+        t = str(txt).strip()
+        if "forecast" in t.lower():
+            forecast_key = t
+            break
+
+    def pick_year_col_anyrow(year_row: int, year: int) -> int | None:
+        all_cols = list(range(df_str.shape[1]))
+        return pick_year_col_in_range(df_str, year_row, all_cols, year)
+
+    def find_total_forecast_row(after_row: int) -> int | None:
+        """Find first row AFTER `after_row` in lookup col that matches 'Total {forecast_key}' (exact, else substring)."""
+        token = f"Total {forecast_key}".strip()
+        # exact first
+        for i in range(after_row + 1, df_str.shape[0]):
+            if str(df_str.iat[i, c_fb]).strip().lower() == token.lower():
+                return i
+        # substring fallback
+        for i in range(after_row + 1, df_str.shape[0]):
+            if token.lower() in str(df_str.iat[i, c_fb]).strip().lower():
+                return i
+        return None
+
+    def safe_at(r: int | None, c: int | None) -> float:
+        if r is None or c is None:
+            return 0.0
+        return to_float(df.iat[r, c])
+
+    out_by_year = {}
+    for y in years:
+        # 6D: select the year column using Total_row + 2 (Dec-YY then YYYY)
+        year_row = r_total + 2
+        c_year = pick_year_col_anyrow(year_row, y)
+
+        # Find the appropriate "Total {forecast_key}" row AFTER each anchor row
+        row_total = find_total_forecast_row(r_total)
+        row_iwpb  = find_total_forecast_row(pos_iwpb[0])  if pos_iwpb  else None
+        row_cib   = find_total_forecast_row(pos_cib[0])   if pos_cib   else None
+        row_cc    = find_total_forecast_row(pos_cc[0])    if pos_cc    else None
+        row_bsm   = find_total_forecast_row(pos_ccbsm[0]) if pos_ccbsm else None
+
+        # Fetch raw values at those found rows/selected year column
+        total_v = safe_at(row_total, c_year)
+        iwpb_v  = safe_at(row_iwpb,  c_year)
+        cib_v   = safe_at(row_cib,   c_year)
+        cc_v    = safe_at(row_cc,    c_year)
+        bsm_v   = safe_at(row_bsm,   c_year)
+
+        out_by_year[y] = {
+            "Total": total_v,
+            "IWPB": iwpb_v + bsm_dict.get("IWPB", 0.0) * bsm_v,
+            "CIB":  cib_v  + bsm_dict.get("CIB",  0.0) * bsm_v,
+            "CC":   cc_v   + bsm_dict.get("CC",   0.0) * bsm_v,
+        }
+
+    return out_by_year

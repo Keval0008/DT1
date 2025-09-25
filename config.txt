@@ -1,43 +1,107 @@
-def adjust_cc_and_total(rows: list[dict]) -> list[dict]:
-    # index rows by entity for grouped recalculation
-    from collections import defaultdict
+import os
+import re
+from pathlib import Path
+from typing import Dict, Tuple, List, Optional
+import pandas as pd
 
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[row["entity"]].append(row)
+DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 
-    adjusted = []
-    for entity, erows in grouped.items():
-        # pull rows by business_line for easier lookup
-        row_map = {r["business_line"].strip(): r for r in erows}
+# File name must contain this (case-insensitive)
+REPORT_SUBSTR = "derivatives alf report"
 
-        total_row = row_map.get("Total")
-        cib_row   = row_map.get("CIB")
-        iwpb_row  = row_map.get("IWPB")
-        cc_row    = row_map.get("CC")
+# Which extensions to consider as Excel files
+EXCEL_EXTS = {".xlsx", ".xls", ".xlsm", ".xlsb"}
 
-        # figure out year keys dynamically
-        year_keys = [k for k in total_row.keys() if k.startswith("Actual|")]
+def find_report_in_date_dir(date_dir: Path) -> Optional[Path]:
+    """
+    Search under a single YYYY-MM-DD folder for any directory whose name contains 'input'
+    and inside it any file whose name contains 'derivatives alf report'.
+    If multiple matches are found, pick the most recently modified file.
+    Returns the Path to the chosen report file or None if not found.
+    """
+    candidates: List[Path] = []
 
-        for yk in year_keys:
-            if yk == "Actual|Opening":
-                continue  # keep CC opening
-            if cc_row:
-                cc_row[yk] = 0  # zero out later CC
+    # Walk everything under the date_dir
+    for root, dirs, files in os.walk(date_dir):
+        root_path = Path(root)
 
-            # recalc total = cib + iwpb + cc
-            total_val = 0
-            if cib_row:
-                total_val += cib_row.get(yk, 0)
-            if iwpb_row:
-                total_val += iwpb_row.get(yk, 0)
-            if cc_row:
-                total_val += cc_row.get(yk, 0)
+        # Only consider folders whose name contains "input"
+        if "input" not in root_path.name.lower():
+            continue
 
-            if total_row:
-                total_row[yk] = total_val
+        # Look for matching report files within this "input" folder
+        for fname in files:
+            fpath = root_path / fname
+            if fpath.suffix.lower() in EXCEL_EXTS and REPORT_SUBSTR in fname.lower():
+                candidates.append(fpath)
 
-        # push all rows back
-        adjusted.extend(erows)
+    if not candidates:
+        return None
 
-    return adjusted
+    # Choose the most recently modified file among candidates
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def load_reports_by_date(master_folder: str, sheet: Optional[str | int] = 0
+                        ) -> Tuple[Dict[str, pd.DataFrame], List[str], Dict[str, str]]:
+    """
+    Walk master_folder, find date-named subfolders (YYYY-MM-DD), locate the desired Excel in
+    the 'input' folder(s), read it, and return:
+      - reports: { date_str: DataFrame }
+      - missing_dates: [date_str with no matching report]
+      - chosen_files: { date_str: full path to the selected file }
+    You can change 'sheet' to a sheet name or index. Use sheet=None to read all sheets.
+    """
+    master = Path(master_folder)
+    if not master.is_dir():
+        raise NotADirectoryError(f"{master_folder!r} is not a directory")
+
+    reports: Dict[str, pd.DataFrame] = {}
+    missing_dates: List[str] = []
+    chosen_files: Dict[str, str] = {}
+
+    # Only immediate subfolders that look like YYYY-MM-DD
+    for entry in master.iterdir():
+        if entry.is_dir() and DATE_DIR_RE.match(entry.name):
+            date_str = entry.name
+            report_path = find_report_in_date_dir(entry)
+
+            if report_path is None:
+                missing_dates.append(date_str)
+                continue
+
+            # Read the Excel (first sheet by default)
+            try:
+                if sheet is None:
+                    # returns dict of DataFrames if you want all sheets
+                    df = pd.read_excel(report_path, sheet_name=None)
+                else:
+                    df = pd.read_excel(report_path, sheet_name=sheet)
+                reports[date_str] = df
+                chosen_files[date_str] = str(report_path)
+            except Exception as e:
+                # If reading fails, mark as missing with an explanation
+                missing_dates.append(f"{date_str} (read error: {e})")
+
+    return reports, missing_dates, chosen_files
+
+
+# ------------ Example usage ------------
+if __name__ == "__main__":
+    master_folder = r"/path/to/master"  # <- change this
+    reports_by_date, missing, picked = load_reports_by_date(master_folder, sheet=0)
+
+    print("Loaded dates and shapes:")
+    for d, df in reports_by_date.items():
+        # df can be a DataFrame or a dict of DataFrames if sheet=None
+        if isinstance(df, dict):
+            sheet_info = {k: v.shape for k, v in df.items()}
+            print(f"  {d}: multiple sheets {sheet_info}  | file: {picked[d]}")
+        else:
+            print(f"  {d}: {df.shape}  | file: {picked[d]}")
+
+    if missing:
+        print("\nMissing or failed dates:")
+        for d in missing:
+            print(" ", d)

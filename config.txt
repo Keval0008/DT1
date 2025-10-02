@@ -1,4 +1,12 @@
 import pandas as pd
+import locale
+
+# Set locale for Indian number formatting (xx,xx,xxx.xx)
+locale.setlocale(locale.LC_ALL, 'en_IN')
+
+# Function to format numbers as xx,xx,xxx.xx
+def format_currency(amount):
+    return locale.format_string("%.2f", amount, grouping=True)
 
 # Load the data (adjust path if needed)
 df = pd.read_csv('data.csv')
@@ -43,13 +51,13 @@ print(f"2. Unique accounts with some adjustment applied: {accounts_with_adjust}"
 accounts_with_reclass = reclass_df['account_key'].nunique()
 print(f"3. Unique accounts with reclass adjustment applied: {accounts_with_reclass}")
 
-# 4. Table with adjustments (by purpose) and unique GRCA account id count
+# 4. Table with adjustments (by purpose) and unique GRCA account id count, sorted descending
 adjust_count_table = df.groupby('Adj Purpose Desc')['account_key'].nunique().reset_index(name='unique_account_count')
-print("4. Table of adjustment purposes and unique account counts:")
+adjust_count_table = adjust_count_table.sort_values(by='unique_account_count', ascending=False)
+print("4. Table of adjustment purposes and unique account counts (sorted by count descending):")
 print(adjust_count_table.to_string(index=False))
 
 # 5. Original and adjustment balance associated with each reclass adjustment
-# For each reclass type: sum of Adjustments, and sum of unique FTPBalance for affected accounts
 reclass_metrics = []
 for purpose in reclass_purposes:
     purpose_df = reclass_df[reclass_df['Adj Purpose Desc'] == purpose]
@@ -58,8 +66,8 @@ for purpose in reclass_purposes:
     original_sum = df[df['account_key'].isin(affected_accounts)].groupby('account_key')['FTPBalance'].first().sum()
     reclass_metrics.append({
         'Reclass Type': purpose,
-        'Total Adjustment Balance': adj_sum,
-        'Total Original Balance': original_sum
+        'Total Adjustment Balance': format_currency(adj_sum),
+        'Total Original Balance': format_currency(original_sum)
     })
 reclass_table = pd.DataFrame(reclass_metrics)
 print("5. Original and adjustment balances for each reclass type:")
@@ -70,10 +78,9 @@ accounts_zero_final = ((account_groups['FTPBalance'] != 0) & (account_groups['Fi
 print(f"6. Unique accounts with non-zero original FTPBalance and zero Final Balance: {accounts_zero_final}")
 
 # 7. Total balance adjusted for accounts where original FTP != 0 and final == 0
-# (Interpreted as total sum of Adjustment for those accounts)
 zero_final_accounts = account_groups[((account_groups['FTPBalance'] != 0) & (account_groups['Final Balance'] == 0))].index
 total_adjusted_balance = df[df['account_key'].isin(zero_final_accounts)]['Adjustment'].sum()
-print(f"7. Total adjusted balance for accounts with non-zero original and zero final: {total_adjusted_balance}")
+print(f"7. Total adjusted balance for accounts with non-zero original and zero final: {format_currency(total_adjusted_balance)}")
 
 # Additional metrics
 print("\nAdditional Metrics for Reclass Adjustments:")
@@ -84,8 +91,9 @@ print(reclass_table[['Reclass Type', 'Total Adjustment Balance']].to_string(inde
 
 # Average adjustment per account for each reclass type
 avg_adjust = reclass_df.groupby('Adj Purpose Desc').apply(lambda g: g['Adjustment'].sum() / g['account_key'].nunique())
+avg_adjust_formatted = avg_adjust.apply(format_currency)
 print("- Average adjustment amount per account by reclass type:")
-print(avg_adjust.to_string())
+print(avg_adjust_formatted.to_string())
 
 # Percentage of total accounts affected by reclass
 reclass_pct = (accounts_with_reclass / total_unique_accounts) * 100 if total_unique_accounts > 0 else 0
@@ -94,20 +102,21 @@ print(f"- Percentage of accounts affected by reclass: {reclass_pct:.2f}%")
 # Total original FTPBalance for all accounts with any reclass (no double-counting)
 all_reclass_accounts = reclass_df['account_key'].unique()
 total_reclass_original = df[df['account_key'].isin(all_reclass_accounts)].groupby('account_key')['FTPBalance'].first().sum()
-print(f"- Total original FTPBalance for accounts with reclass: {total_reclass_original}")
+print(f"- Total original FTPBalance for accounts with reclass: {format_currency(total_reclass_original)}")
 
 # Number of accounts where reclass adjustments result in net zero final balance
-# (Filter only reclass adjustments and check if their sum == -FTPBalance)
 reclass_account_groups = reclass_df.groupby('account_key').agg({'Adjustment': 'sum', 'FTPBalance': 'first', 'Final Balance': 'first'})
 reclass_zero_final = ((reclass_account_groups['FTPBalance'] + reclass_account_groups['Adjustment'] == 0) & (reclass_account_groups['FTPBalance'] != 0)).sum()
 print(f"- Accounts where reclass adjustments fully offset to zero final balance: {reclass_zero_final}")
 
 # Distribution stats for reclass adjustment amounts
 reclass_dist = reclass_df['Adjustment'].describe()[['min', 'max', 'mean', '50%']].rename({'50%': 'median'})
+reclass_dist_formatted = reclass_dist.apply(format_currency)
 print("- Distribution of reclass adjustment amounts (min, max, mean, median):")
-print(reclass_dist.to_string())
+print(reclass_dist_formatted.to_string())
 
 # Largest 5 reclass adjustments by absolute amount
 largest_reclass = reclass_df.loc[reclass_df['Adjustment'].abs().nlargest(5).index][['account_key', 'Adj Purpose Desc', 'Adjustment']]
+largest_reclass['Adjustment'] = largest_reclass['Adjustment'].apply(format_currency)
 print("- Largest 5 reclass adjustments by absolute amount:")
 print(largest_reclass.to_string(index=False))

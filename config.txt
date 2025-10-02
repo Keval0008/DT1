@@ -1,505 +1,113 @@
-
-from pathlib import Path
-import os
-import re
-import sys
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 import pandas as pd
-import numpy as np
-
-try:
-    # Tkinter might not be available in some environments; guard imports.
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
-    TK_AVAILABLE = True
-except Exception:
-    TK_AVAILABLE = False
-
-# -------------------------
-# Helpers & Normalization
-# -------------------------
-
-def norm_multiindex(mi) -> pd.MultiIndex:
-    """
-    Clean a 3-level MultiIndex by removing newlines and trimming whitespace.
-    If given a simple Index, promote to 3-level (last two empty).
-    """
-    if isinstance(mi, pd.MultiIndex):
-        tuples = []
-        for tup in mi:
-            # Ensure 3-tuple
-            if len(tup) == 3:
-                a, b, c = tup
-            elif len(tup) == 2:
-                a, b = tup
-                c = ""
-            else:
-                a = tup[0] if len(tup) else ""
-                b = ""
-                c = ""
-            a = str(a).replace("\n", "").strip()
-            b = str(b).replace("\n", "").strip()
-            c = str(c).replace("\n", "").strip()
-            tuples.append((a, b, c))
-        return pd.MultiIndex.from_tuples(tuples)
-    else:
-        # Promote to 3-level by repeating or filling
-        return pd.MultiIndex.from_tuples([(str(x), "", "") for x in mi])
-
-
-_name_clean_regex = re.compile(r"[^a-z]")
-
-def norm_name_series(s: pd.Series) -> pd.Series:
-    """Lowercase, remove spaces and non-letters; safe for NA."""
-    if s is None:
-        return pd.Series([], dtype="string")
-    s = s.astype("string")
-    s = s.str.lower().str.replace(r"\s+", "", regex=True)
-    s = s.str.replace(_name_clean_regex, "", regex=True)
-    return s
-
-
-def coerce_psid(s: pd.Series) -> pd.Series:
-    """
-    Coerce PSID to Int64, keep NA for invalid. Zero-pad when converted back to string.
-    """
-    ps = pd.to_numeric(s, errors="coerce").astype("Int64")
-    return ps
-
-
-# -------------------------
-# Master Data Loading
-# -------------------------
-
-def find_master_files(admin_folder: str):
-    """
-    Walk the admin folder to find L&D and Cadency files.
-    """
-    admin_folder = str(admin_folder or "").strip()
-    lnd_path = None
-    cad_path = None
-    for dirpath, _, files in os.walk(admin_folder):
-        for f in files:
-            lf = f.lower()
-            if not lf.endswith((".xlsx", ".xlsm", ".xlsb", ".xls")):
-                continue
-            full = os.path.join(dirpath, f)
-            if ("l&d" in lf or "l and d" in lf or "learning" in lf) and lnd_path is None:
-                lnd_path = full
-            if ("cadency" in lf or "cadance" in lf or "cadence" in lf) and cad_path is None:
-                cad_path = full
-        if lnd_path and cad_path:
-            break
-    return lnd_path, cad_path
-
-
-def load_lnd(path: str) -> pd.DataFrame | None:
-    """
-    Load minimal columns from L&D file. Columns are heuristically detected.
-    Expected: PSID, Name, Group Grade (GCB).
-    """
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        xf = pd.ExcelFile(path, engine="openpyxl")
-        # Pick first sheet that contains PSID-like column
-        target_sheet = None
-        for sh in xf.sheet_names:
-            peek = pd.read_excel(xf, sheet_name=sh, nrows=10)
-            cols = [c for c in peek.columns]
-            if any("ps" in str(c).lower() and "id" in str(c).lower() for c in cols):
-                target_sheet = sh
-                break
-        if target_sheet is None:
-            target_sheet = xf.sheet_names[0]
-        df = pd.read_excel(
-            xf,
-            sheet_name=target_sheet,
-            dtype=str  # read as string to avoid dtype chaos
-        )
-        # Heuristic column mapping
-        colmap = {}
-        for c in df.columns:
-            lc = str(c).lower()
-            if "ps" in lc and "id" in lc and "ps id" not in colmap.values():
-                colmap["PSID"] = c
-            elif ("name" in lc or "emp name" in lc) and "Name" not in colmap:
-                colmap["Name"] = c
-            elif ("group grade" in lc or "gcb" in lc or "grade" in lc) and "GCB" not in colmap:
-                colmap["GCB"] = c
-        df = df.rename(columns=colmap)
-        keep = [c for c in ["PSID", "Name", "GCB"] if c in df.columns]
-        df = df[keep].copy()
-        df["PSID"] = coerce_psid(df["PSID"]) if "PSID" in df.columns else pd.Series(dtype="Int64")
-        if "Name" in df.columns:
-            df["Name_norm"] = norm_name_series(df["Name"])
-        return df.drop_duplicates(subset=["PSID"])
-    except Exception:
-        return None
-
-
-def load_cadency(path: str) -> pd.DataFrame | None:
-    """
-    Load minimal columns from Cadency file. Expected at least PSID.
-    """
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        xf = pd.ExcelFile(path, engine="openpyxl")
-        df = pd.read_excel(xf, sheet_name=0, dtype=str)
-        colmap = {}
-        for c in df.columns:
-            lc = str(c).lower()
-            if "ps" in lc and "id" in lc and "PSID" not in colmap:
-                colmap["PSID"] = c
-        if not colmap:
-            return None
-        df = df.rename(columns=colmap)
-        df["PSID"] = coerce_psid(df["PSID"])
-        return df.drop_duplicates(subset=["PSID"])
-    except Exception:
-        return None
-
-
-# -------------------------
-# Input Reading
-# -------------------------
-
-def read_input_excel(path: str) -> pd.DataFrame:
-    """
-    Read an input Excel that may have 3-level headers.
-    We'll attempt to read header rows 0-2 as a MultiIndex; fallback to single row.
-    """
-    # Try to read a 3-row header
-    try:
-        df = pd.read_excel(path, header=[0, 1, 2], engine="openpyxl")
-        df.columns = norm_multiindex(df.columns)
-        return df
-    except Exception:
-        # Fallback to single header row
-        df = pd.read_excel(path, engine="openpyxl")
-        df.columns = norm_multiindex(df.columns)
-        return df
-
-
-# -------------------------
-# Vectorized Validations
-# -------------------------
-
-ROLE_PREFIXES = {
-    "RH1": "Proposed changes|Role Holder1 Preparer",
-    "RH2": "Proposed changes|Role Holder2 Reviewer",
-    "RH3": "Proposed changes|Role Holder3Account Owner",
-}
-
-def ensure_cols(df: pd.DataFrame, cols: list[str]) -> None:
-    for c in cols:
-        if c not in df.columns:
-            df[c] = pd.NA
-
-
-def run_validations(df: pd.DataFrame, lnd: pd.DataFrame | None) -> pd.DataFrame:
-    """
-    Vectorized validations:
-      - Name mismatch per role (if L&D is available)
-      - GCB presence check
-    Adds boolean columns like RH1_name_mismatch, RH1_gcb_missing, etc.
-    """
-    df = df.copy()
-
-    # Build Series lookups once
-    if lnd is not None and not lnd.empty and "PSID" in lnd and "Name_norm" in lnd:
-        lnd = lnd.set_index("PSID")
-        name_by_psid = lnd["Name_norm"]
-        gcb_by_psid = lnd["GCB"] if "GCB" in lnd else None
-    else:
-        name_by_psid = pd.Series(dtype="string")
-        gcb_by_psid = None
-
-    for rh, pref in ROLE_PREFIXES.items():
-        ps_col = (pref, "PS ID") if (pref, "PS ID") in df.columns else f"{pref}|PS ID"
-        nm_col = (pref, "Name") if (pref, "Name") in df.columns else f"{pref}|Name"
-        gcb_col = (pref, "Group Grade") if (pref, "Group Grade") in df.columns else f"{pref}|Group Grade"
-
-        # Normalize column keys to string MultiIndex form
-        if isinstance(ps_col, tuple):
-            ps_key = ps_col
-        else:
-            parts = tuple(ps_col.split("|"))
-            ps_key = (parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
-
-        if isinstance(nm_col, tuple):
-            nm_key = nm_col
-        else:
-            parts = tuple(nm_col.split("|"))
-            nm_key = (parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
-
-        if isinstance(gcb_col, tuple):
-            gcb_key = gcb_col
-        else:
-            parts = tuple(gcb_col.split("|"))
-            gcb_key = (parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
-
-        ensure_cols(df, [ps_key, nm_key, gcb_key])
-
-        psid = coerce_psid(df[ps_key])
-        df[f"{rh}_psid_valid"] = psid.notna()
-
-        if not name_by_psid.empty:
-            expected_name = name_by_psid.reindex(psid).astype("string")
-            nm_norm = norm_name_series(df[nm_key])
-            mismatch = (nm_norm != expected_name) & psid.notna()
-            df[f"{rh}_name_mismatch"] = mismatch.fillna(False)
-        else:
-            df[f"{rh}_name_mismatch"] = False
-
-        # GCB present check
-        gcb = df[gcb_key].astype("string")
-        df[f"{rh}_gcb_missing"] = gcb.str.strip().eq("").fillna(True)
-
-    return df
-
-
-# -------------------------
-# Excel Writing (fast)
-# -------------------------
-
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import PatternFill, Alignment
-from openpyxl.formatting.rule import FormulaRule
-
-HEADER_FILL = PatternFill(fill_type="solid", start_color="EEEFEF", end_color="EEEFEF")
-ERROR_FILL = PatternFill(fill_type="solid", start_color="FDEBEC", end_color="FDEBEC")
-
-def write_excel_fast(df: pd.DataFrame, dest_path: str, sheet_name: str = "Sheet1") -> None:
-    """
-    Write df with 3 header rows (from MultiIndex), minimal formatting, and
-    conditional formatting for error flags.
-    """
-    dest_path = str(dest_path)
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-
-    # Flatten columns for data write
-    flat = df.copy()
-    if isinstance(flat.columns, pd.MultiIndex):
-        tuples = list(flat.columns)
-        row1 = [t[0] for t in tuples]
-        row2 = [t[1] for t in tuples]
-        row3 = [t[2] for t in tuples]
-        flat.columns = [" | ".join((t[0], t[1], t[2])).strip(" |") for t in tuples]
-    else:
-        row1 = list(flat.columns)
-        row2 = [""] * len(row1)
-        row3 = [""] * len(row1)
-
-    with pd.ExcelWriter(dest_path, engine="openpyxl") as xw:
-        # Leave space for 3 header rows
-        flat.to_excel(xw, sheet_name=sheet_name, index=False, startrow=3)
-        ws = xw.book[sheet_name]
-
-        # Write header rows
-        for j in range(1, len(row1) + 1):
-            ws.cell(row=1, column=j, value=row1[j-1])
-            ws.cell(row=2, column=j, value=row2[j-1])
-            ws.cell(row=3, column=j, value=row3[j-1])
-            # Simple header fill + alignment
-            for r in (1, 2, 3):
-                c = ws.cell(row=r, column=j)
-                c.fill = HEADER_FILL
-                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-        # Auto column widths (approximate)
-        # Compute max width from data + headers
-        strlens = flat.astype(str).applymap(len)
-        # Max per column
-        data_widths = strlens.max(axis=0).tolist()
-        header_widths = [max(len(str(a)), len(str(b)), len(str(c))) for a, b, c in zip(row1, row2, row3)]
-        widths = [min(60, max(10, int(1.1 * max(dw, hw)))) for dw, hw in zip(data_widths, header_widths)]
-        for j, w in enumerate(widths, 1):
-            ws.column_dimensions[get_column_letter(j)].width = w
-
-        # Conditional formatting: any column ending with "_name_mismatch" or "_gcb_missing"
-        nrows = ws.max_row
-        for idx, colname in enumerate(flat.columns, start=1):
-            if colname.endswith("_name_mismatch") or colname.endswith("_gcb_missing"):
-                # highlight TRUE values
-                col_letter = get_column_letter(idx)
-                rng = f"{col_letter}4:{col_letter}{nrows}"
-                ws.conditional_formatting.add(
-                    rng,
-                    FormulaRule(formula=[f'{col_letter}4=TRUE'], fill=ERROR_FILL)
-                )
-
-
-# -------------------------
-# Per-file Pipeline
-# -------------------------
-
-def process_one_file(path: str, lnd: pd.DataFrame | None) -> tuple[str, pd.DataFrame]:
-    df = read_input_excel(path)
-    df = run_validations(df, lnd)
-    return path, df
-
-
-def timestamp_str() -> str:
-    return datetime.now().strftime("%d-%m-%Y_%H%M%S")
-
-
-# -------------------------
-# GUI (Tkinter) App
-# -------------------------
-
-class ProgressWindow:
-    def __init__(self, root):
-        self.root = root
-        self.win = tk.Toplevel(root)
-        self.win.title("Processing")
-        self.win.geometry("420x140")
-        self.pbar = ttk.Progressbar(self.win, orient="horizontal", length=380, mode="determinate")
-        self.pbar.pack(pady=12)
-        self.msg_var = tk.StringVar(value="Starting...")
-        self.lbl = ttk.Label(self.win, textvariable=self.msg_var, anchor="w")
-        self.lbl.pack(padx=10, fill="x")
-        self.status_var = tk.StringVar(value="")
-        self.lbl2 = ttk.Label(self.win, textvariable=self.status_var, anchor="w", foreground="#555")
-        self.lbl2.pack(padx=10, fill="x")
-
-    def update(self, pct: int, msg: str, status: str = ""):
-        def _do():
-            self.pbar["value"] = max(0, min(100, pct))
-            self.msg_var.set(msg)
-            self.status_var.set(status)
-            self.win.update_idletasks()
-        self.root.after(0, _do)
-
-    def close(self):
-        self.root.after(0, self.win.destroy)
-
-
-class App:
-    def __init__(self, root):
-        self.root = root
-        root.title("Fast Excel Processor")
-        root.geometry("720x360")
-
-        self.input_files = []
-        self.admin_folder = ""
-        self.output_folder = ""
-
-        frm = ttk.Frame(root, padding=12)
-        frm.pack(fill="both", expand=True)
-
-        # Input files
-        ttk.Label(frm, text="Input Excel files:").grid(row=0, column=0, sticky="w")
-        self.in_lbl = ttk.Label(frm, text="No files selected")
-        self.in_lbl.grid(row=0, column=1, sticky="w")
-        ttk.Button(frm, text="Choose Files", command=self.choose_files).grid(row=0, column=2, padx=6)
-
-        # Admin folder
-        ttk.Label(frm, text="Admin folder (L&D/Cadency):").grid(row=1, column=0, sticky="w")
-        self.ad_lbl = ttk.Label(frm, text="Not set")
-        self.ad_lbl.grid(row=1, column=1, sticky="w")
-        ttk.Button(frm, text="Choose Folder", command=self.choose_admin_folder).grid(row=1, column=2, padx=6)
-
-        # Output folder
-        ttk.Label(frm, text="Output folder:").grid(row=2, column=0, sticky="w")
-        self.out_lbl = ttk.Label(frm, text="Not set")
-        self.out_lbl.grid(row=2, column=1, sticky="w")
-        ttk.Button(frm, text="Choose Folder", command=self.choose_output_folder).grid(row=2, column=2, padx=6)
-
-        # Action
-        ttk.Button(frm, text="Run", command=self.run).grid(row=3, column=2, pady=20, sticky="e")
-
-        for i in range(3):
-            frm.columnconfigure(i, weight=1)
-
-    def choose_files(self):
-        files = filedialog.askopenfilenames(
-            title="Select Excel files",
-            filetypes=[("Excel files", "*.xlsx *.xlsm *.xlsb *.xls")]
-        )
-        if files:
-            self.input_files = list(files)
-            self.in_lbl.config(text=f"{len(files)} file(s) selected")
-
-    def choose_admin_folder(self):
-        folder = filedialog.askdirectory(title="Select Admin folder")
-        if folder:
-            self.admin_folder = folder
-            self.ad_lbl.config(text=folder)
-
-    def choose_output_folder(self):
-        folder = filedialog.askdirectory(title="Select Output folder")
-        if folder:
-            self.output_folder = folder
-            self.out_lbl.config(text=folder)
-
-    def run(self):
-        if not self.input_files:
-            messagebox.showerror("Error", "Please choose input files.")
-            return
-        if not self.output_folder:
-            messagebox.showerror("Error", "Please choose an output folder.")
-            return
-
-        progress = ProgressWindow(self.root)
-        progress.update(1, "Loading master data (L&D / Cadency)...")
-
-        lnd_path, cad_path = find_master_files(self.admin_folder or os.path.dirname(self.input_files[0]))
-        lnd = load_lnd(lnd_path) if lnd_path else None
-        # cadency currently unused in the demo; leave for future enrichments
-        _ = load_cadency(cad_path) if cad_path else None
-
-        n = len(self.input_files)
-        results = []
-
-        def worker(path_):
-            return process_one_file(path_, lnd)
-
-        max_workers = min(4, (os.cpu_count() or 4))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(worker, p) for p in self.input_files]
-            for i, fut in enumerate(as_completed(futs), start=1):
-                try:
-                    res = fut.result()
-                    results.append(res)
-                except Exception as e:
-                    results.append((None, e))
-                progress.update(int(i / n * 100), f"Parsed {i}/{n} file(s)")
-
-        # Save outputs sequentially (I/O bound but simpler to track)
-        ts = timestamp_str()
-        for idx, (path_, df) in enumerate(results, start=1):
-            if path_ is None or isinstance(df, Exception):
-                continue
-            base = Path(path_).stem
-            dest = os.path.join(self.output_folder, f"{base}_processed_{ts}.xlsx")
-            progress.update(int((idx / n) * 100), f"Writing {idx}/{n}: {os.path.basename(dest)}")
-            try:
-                write_excel_fast(df, dest)
-            except Exception as e:
-                # On write failure, continue with others
-                print(f"Failed to write {dest}: {e}", file=sys.stderr)
-
-        progress.update(100, "Done", "All files processed")
-        self.root.after(800, progress.close)
-
-
-def main():
-    if not TK_AVAILABLE:
-        print("Tkinter is not available in this environment. To use the GUI, run this script on your machine with Tk installed.")
-        return
-    root = tk.Tk()
-    style = ttk.Style()
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    App(root)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
+
+# Load the data (adjust path if needed)
+df = pd.read_csv('data.csv')
+
+# Define unique account identifier columns
+unique_cols = ['GRCA_Account'] + [f'Custom_{i}' for i in range(1, 13)]
+
+# Create a unique account_key for grouping (to handle the composite unique row)
+df['account_key'] = df[unique_cols].astype(str).agg('_'.join, axis=1)
+
+# Verify Amount == FTPBalance (as per description)
+if not (df['Amount'] == df['FTPBalance']).all():
+    print("Warning: Amount and FTPBalance do not match in all rows.")
+
+# Group by account_key to compute total adjustment per account
+account_groups = df.groupby('account_key').agg({
+    'FTPBalance': 'first',  # Original is the same per account
+    'Final Balance': 'first',  # Final should be the same per account
+    'Adjustment': 'sum'  # Total adjustment across all purposes
+})
+
+# Verify Final Balance matches (FTPBalance + total Adjustment) / 1000
+calculated_final = (account_groups['FTPBalance'] + account_groups['Adjustment']) / 1000
+if not (account_groups['Final Balance'] == calculated_final).all():
+    print("Warning: Final Balance does not match the formula for all accounts.")
+
+# Define reclass purposes
+reclass_purposes = ["Country Reclass", "Industry Reclass", "XXXX4 reclass"]
+
+# Filter for reclass adjustments
+reclass_df = df[df['Adj Purpose Desc'].isin(reclass_purposes)]
+
+# 1. Total number of unique account ids
+total_unique_accounts = df['account_key'].nunique()
+print(f"1. Total unique accounts: {total_unique_accounts}")
+
+# 2. How many have some adjustment applied (total Adjustment != 0)
+accounts_with_adjust = (account_groups['Adjustment'] != 0).sum()
+print(f"2. Unique accounts with some adjustment applied: {accounts_with_adjust}")
+
+# 3. How many have reclass adjustment applied (at least one reclass purpose)
+accounts_with_reclass = reclass_df['account_key'].nunique()
+print(f"3. Unique accounts with reclass adjustment applied: {accounts_with_reclass}")
+
+# 4. Table with adjustments (by purpose) and unique GRCA account id count
+adjust_count_table = df.groupby('Adj Purpose Desc')['account_key'].nunique().reset_index(name='unique_account_count')
+print("4. Table of adjustment purposes and unique account counts:")
+print(adjust_count_table.to_string(index=False))
+
+# 5. Original and adjustment balance associated with each reclass adjustment
+# For each reclass type: sum of Adjustments, and sum of unique FTPBalance for affected accounts
+reclass_metrics = []
+for purpose in reclass_purposes:
+    purpose_df = reclass_df[reclass_df['Adj Purpose Desc'] == purpose]
+    adj_sum = purpose_df['Adjustment'].sum()
+    affected_accounts = purpose_df['account_key'].unique()
+    original_sum = df[df['account_key'].isin(affected_accounts)].groupby('account_key')['FTPBalance'].first().sum()
+    reclass_metrics.append({
+        'Reclass Type': purpose,
+        'Total Adjustment Balance': adj_sum,
+        'Total Original Balance': original_sum
+    })
+reclass_table = pd.DataFrame(reclass_metrics)
+print("5. Original and adjustment balances for each reclass type:")
+print(reclass_table.to_string(index=False))
+
+# 6. Number of accounts where original FTP amount != 0 and final amount == 0
+accounts_zero_final = ((account_groups['FTPBalance'] != 0) & (account_groups['Final Balance'] == 0)).sum()
+print(f"6. Unique accounts with non-zero original FTPBalance and zero Final Balance: {accounts_zero_final}")
+
+# 7. Total balance adjusted for accounts where original FTP != 0 and final == 0
+# (Interpreted as total sum of Adjustment for those accounts)
+zero_final_accounts = account_groups[((account_groups['FTPBalance'] != 0) & (account_groups['Final Balance'] == 0))].index
+total_adjusted_balance = df[df['account_key'].isin(zero_final_accounts)]['Adjustment'].sum()
+print(f"7. Total adjusted balance for accounts with non-zero original and zero final: {total_adjusted_balance}")
+
+# Additional metrics
+print("\nAdditional Metrics for Reclass Adjustments:")
+
+# Total adjustment amount for each reclass type
+print("- Total adjustment amount by reclass type:")
+print(reclass_table[['Reclass Type', 'Total Adjustment Balance']].to_string(index=False))
+
+# Average adjustment per account for each reclass type
+avg_adjust = reclass_df.groupby('Adj Purpose Desc').apply(lambda g: g['Adjustment'].sum() / g['account_key'].nunique())
+print("- Average adjustment amount per account by reclass type:")
+print(avg_adjust.to_string())
+
+# Percentage of total accounts affected by reclass
+reclass_pct = (accounts_with_reclass / total_unique_accounts) * 100 if total_unique_accounts > 0 else 0
+print(f"- Percentage of accounts affected by reclass: {reclass_pct:.2f}%")
+
+# Total original FTPBalance for all accounts with any reclass (no double-counting)
+all_reclass_accounts = reclass_df['account_key'].unique()
+total_reclass_original = df[df['account_key'].isin(all_reclass_accounts)].groupby('account_key')['FTPBalance'].first().sum()
+print(f"- Total original FTPBalance for accounts with reclass: {total_reclass_original}")
+
+# Number of accounts where reclass adjustments result in net zero final balance
+# (Filter only reclass adjustments and check if their sum == -FTPBalance)
+reclass_account_groups = reclass_df.groupby('account_key').agg({'Adjustment': 'sum', 'FTPBalance': 'first', 'Final Balance': 'first'})
+reclass_zero_final = ((reclass_account_groups['FTPBalance'] + reclass_account_groups['Adjustment'] == 0) & (reclass_account_groups['FTPBalance'] != 0)).sum()
+print(f"- Accounts where reclass adjustments fully offset to zero final balance: {reclass_zero_final}")
+
+# Distribution stats for reclass adjustment amounts
+reclass_dist = reclass_df['Adjustment'].describe()[['min', 'max', 'mean', '50%']].rename({'50%': 'median'})
+print("- Distribution of reclass adjustment amounts (min, max, mean, median):")
+print(reclass_dist.to_string())
+
+# Largest 5 reclass adjustments by absolute amount
+largest_reclass = reclass_df.loc[reclass_df['Adjustment'].abs().nlargest(5).index][['account_key', 'Adj Purpose Desc', 'Adjustment']]
+print("- Largest 5 reclass adjustments by absolute amount:")
+print(largest_reclass.to_string(index=False))

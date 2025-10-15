@@ -1,149 +1,124 @@
-# Step 1: Total balance overview
-print("=== STEP 1: TOTAL BALANCE OVERVIEW ===")
-total_original = df['FTPBalance'].sum()
-total_final = df['Final Balance'].sum()
-total_adjustment = df['Adjustment'].sum()
-net_change = total_final - total_original
-
-percentage_change = (net_change / total_original * 100) if total_original != 0 else 0
-
-print(f"Total Original Balance: ${total_original:,.2f}")
-print(f"Total Final Balance: ${total_final:,.2f}")
-print(f"Net Adjustment: ${total_adjustment:,.2f}")
-print(f"Percentage Change: {percentage_change:.2f}%")
-
-# Step 2: Account-level overview
-print("\n=== STEP 2: ACCOUNT-LEVEL OVERVIEW ===")
-total_accounts = df['GRCA_Account'].nunique()
-adjusted_accounts = df[df['Adjustment'] != 0]['GRCA_Account'].nunique()
-adjusted_percentage = (adjusted_accounts / total_accounts * 100)
-
-print(f"Total Unique Accounts: {total_accounts:,}")
-print(f"Accounts with Adjustments: {adjusted_accounts:,}")
-print(f"Percentage of Accounts Adjusted: {adjusted_percentage:.2f}%")
-
-# Step 3: Net adjustment impact
-print("\n=== STEP 3: NET ADJUSTMENT IMPACT ===")
-positive_adjustments = df[df['Adjustment'] > 0]['Adjustment'].sum()
-negative_adjustments = df[df['Adjustment'] < 0]['Adjustment'].sum()
-gross_adjustment = df['Adjustment'].abs().sum()
-
-print(f"Total Positive Adjustments: ${positive_adjustments:,.2f}")
-print(f"Total Negative Adjustments: ${negative_adjustments:,.2f}")
-print(f"Gross Adjustment Volume: ${gross_adjustment:,.2f}")
-print(f"Net Adjustment Impact: ${total_adjustment:,.2f}")
-
-if total_adjustment > 0:
-    print("Overall Impact: Balance INCREASED")
-else:
-    print("Overall Impact: Balance DECREASED")
-
-# Step 4: Adjustment type breakdown
-print("\n=== STEP 4: ADJUSTMENT TYPE BREAKDOWN ===")
+# Step 4: Detailed adjustment type analysis with positive/negative breakdown
+print("\n=== STEP 4: DETAILED ADJUSTMENT TYPE BREAKDOWN ===")
 
 # Get overall totals for percentage calculations
-total_adjustment_amount = df['Adjustment'].sum()
-total_adjusted_accounts_count = df[df['Adjustment'] != 0]['GRCA_Account'].nunique()
+total_net_adjustment = df['Adjustment'].sum()
+total_positive_adjustment = df[df['Adjustment'] > 0]['Adjustment'].sum()
+total_negative_adjustment = df[df['Adjustment'] < 0]['Adjustment'].sum()
+total_adjusted_accounts = df[df['Adjustment'] != 0]['GRCA_Account'].nunique()
 
-# Analyze each adjustment type
-adj_type_analysis = df.groupby('Adj Purpose Desc').agg({
-    'Adjustment': 'sum',
-    'GRCA_Account': 'nunique',
-    'FTPBalance': 'sum'
-}).reset_index()
+# Analyze each adjustment type in detail
+adj_type_detailed = []
 
-# Calculate percentages
-adj_type_analysis['pct_of_total_adj_amount'] = (adj_type_analysis['Adjustment'] / total_adjustment_amount * 100).round(2)
-adj_type_analysis['pct_of_adjusted_accounts'] = (adj_type_analysis['GRCA_Account'] / total_adjusted_accounts_count * 100).round(2)
+for adj_type in df['Adj Purpose Desc'].unique():
+    type_data = df[df['Adj Purpose Desc'] == adj_type]
+    
+    # Basic metrics
+    net_adjustment = type_data['Adjustment'].sum()
+    positive_adjustment = type_data[type_data['Adjustment'] > 0]['Adjustment'].sum()
+    negative_adjustment = type_data[type_data['Adjustment'] < 0]['Adjustment'].sum()
+    
+    # Account counts
+    total_accounts_affected = type_data['GRCA_Account'].nunique()
+    positive_accounts = type_data[type_data['Adjustment'] > 0]['GRCA_Account'].nunique()
+    negative_accounts = type_data[type_data['Adjustment'] < 0]['GRCA_Account'].nunique()
+    zero_adjustment_accounts = type_data[type_data['Adjustment'] == 0]['GRCA_Account'].nunique()
+    
+    # Percentages
+    pct_of_net_adj = (net_adjustment / total_net_adjustment * 100) if total_net_adjustment != 0 else 0
+    pct_of_total_accounts = (total_accounts_affected / total_adjusted_accounts * 100) if total_adjusted_accounts != 0 else 0
+    
+    # Impact metrics
+    avg_impact_per_account = net_adjustment / total_accounts_affected if total_accounts_affected > 0 else 0
+    balance_impact_ratio = (net_adjustment / type_data['FTPBalance'].sum() * 100) if type_data['FTPBalance'].sum() != 0 else 0
+    
+    adj_type_detailed.append({
+        'Adjustment_Type': adj_type,
+        'Net_Adjustment': net_adjustment,
+        'Positive_Adjustment': positive_adjustment,
+        'Negative_Adjustment': negative_adjustment,
+        'Pct_of_Net_Adjustment': pct_of_net_adj,
+        'Total_Accounts_Affected': total_accounts_affected,
+        'Positive_Accounts': positive_accounts,
+        'Negative_Accounts': negative_accounts,
+        'Zero_Adjustment_Accounts': zero_adjustment_accounts,
+        'Pct_of_Adjusted_Accounts': pct_of_total_accounts,
+        'Avg_Impact_Per_Account': avg_impact_per_account,
+        'Balance_Impact_Ratio': balance_impact_ratio,
+        'Gross_Adjustment_Volume': abs(positive_adjustment) + abs(negative_adjustment)
+    })
 
-# Sort by impact
-adj_type_analysis = adj_type_analysis.sort_values('Adjustment', key=abs, ascending=False)
+# Convert to DataFrame
+adj_analysis_df = pd.DataFrame(adj_type_detailed)
+adj_analysis_df = adj_analysis_df.sort_values('Net_Adjustment', key=abs, ascending=False)
 
-print(f"{'Adjustment Type':<30} {'Amount':<15} {'% of Total':<10} {'Accounts':<10} {'% of Accts':<10} {'Avg Impact':<12}")
-print("="*90)
+# Display the analysis
+print(f"\n{'Adjustment Type':<25} {'Net Adj':<12} {'+Adj':<12} {'-Adj':<12} {'% of Net':<10} {'Accts(+/-)':<12} {'Avg Impact':<12} {'Impact %':<10}")
+print("="*110)
 
-for _, row in adj_type_analysis.iterrows():
-    avg_impact = row['Adjustment'] / row['GRCA_Account'] if row['GRCA_Account'] > 0 else 0
-    print(f"{row['Adj Purpose Desc']:<30} ${row['Adjustment']:>12,.2f} {row['pct_of_total_adj_amount']:>9}% {row['GRCA_Account']:>9,} {row['pct_of_adjusted_accounts']:>9}% ${avg_impact:>10,.2f}")
+for _, row in adj_analysis_df.iterrows():
+    accounts_direction = f"{row['Positive_Accounts']:,}/{row['Negative_Accounts']:,}"
+    
+    print(f"{row['Adjustment_Type']:<25} "
+          f"${row['Net_Adjustment']:>10,.0f} "
+          f"${row['Positive_Adjustment']:>10,.0f} "
+          f"${row['Negative_Adjustment']:>10,.0f} "
+          f"{row['Pct_of_Net_Adjustment']:>8.1f}% "
+          f"{accounts_direction:<12} "
+          f"${row['Avg_Impact_Per_Account']:>10,.0f} "
+          f"{row['Balance_Impact_Ratio']:>8.1f}%")
 
-# Step 5: Reclass adjustment concentration
-print("\n=== STEP 5: RECLASS ADJUSTMENT CONCENTRATION ===")
+# Additional impact metrics
+print("\n--- ADDITIONAL IMPACT ANALYSIS ---")
 
-reclass_types = ["Country Reclass", "Industry Reclass", "XXXX4 reclass"]
-reclass_data = df[df['Adj Purpose Desc'].isin(reclass_types)]
-
-# Calculate reclass totals
-reclass_total_adj = reclass_data['Adjustment'].sum()
-reclass_total_accounts = reclass_data['GRCA_Account'].nunique()
-
-# Calculate percentages of overall
-reclass_pct_of_total_adj = (reclass_total_adj / total_adjustment_amount * 100).round(2)
-reclass_pct_of_adjusted_accounts = (reclass_total_accounts / total_adjusted_accounts_count * 100).round(2)
-
-print(f"Total Reclass Adjustments: ${reclass_total_adj:,.2f}")
-print(f"Reclass as % of Total Adjustments: {reclass_pct_of_total_adj}%")
-print(f"Accounts with Reclass Adjustments: {reclass_total_accounts:,}")
-print(f"Reclass Accounts as % of All Adjusted Accounts: {reclass_pct_of_adjusted_accounts}%")
-
-# Detailed reclass breakdown
-print("\n--- Detailed Reclass Breakdown ---")
-reclass_breakdown = reclass_data.groupby('Adj Purpose Desc').agg({
-    'Adjustment': ['sum', 'mean', 'count'],
-    'GRCA_Account': 'nunique'
-})
-
-for reclass_type in reclass_types:
-    if reclass_type in reclass_data['Adj Purpose Desc'].values:
-        type_data = reclass_data[reclass_data['Adj Purpose Desc'] == reclass_type]
-        type_adj = type_data['Adjustment'].sum()
-        type_accounts = type_data['GRCA_Account'].nunique()
-        type_pct_of_reclass = (type_adj / reclass_total_adj * 100).round(2)
+# 1. Direction dominance analysis
+print("\n1. ADJUSTMENT DIRECTION DOMINANCE:")
+for _, row in adj_analysis_df.iterrows():
+    if row['Gross_Adjustment_Volume'] > 0:
+        positive_ratio = (row['Positive_Adjustment'] / row['Gross_Adjustment_Volume'] * 100) 
+        negative_ratio = (abs(row['Negative_Adjustment']) / row['Gross_Adjustment_Volume'] * 100)
         
-        print(f"\n{reclass_type}:")
-        print(f"  Amount: ${type_adj:,.2f} ({type_pct_of_reclass}% of reclass total)")
-        print(f"  Accounts: {type_accounts:,}")
-        print(f"  Average per Account: ${type_adj/type_accounts:,.2f}" if type_accounts > 0 else "  No accounts")
+        if positive_ratio > 70:
+            direction = "STRONGLY POSITIVE"
+        elif negative_ratio > 70:
+            direction = "STRONGLY NEGATIVE"
+        elif abs(positive_ratio - negative_ratio) < 20:
+            direction = "BALANCED"
+        else:
+            direction = "MIXED"
+            
+        print(f"   {row['Adjustment_Type']:<25}: {direction} (+{positive_ratio:.1f}%/-{negative_ratio:.1f}%)")
 
-# Step 6: Zero-balance impact analysis
-print("\n=== STEP 6: ZERO-BALANCE IMPACT ANALYSIS ===")
+# 2. Severity analysis
+print("\n2. SEVERITY ANALYSIS (Top 5 by impact per account):")
+severity_analysis = adj_analysis_df.nlargest(5, 'Avg_Impact_Per_Account', key=abs)[['Adjustment_Type', 'Avg_Impact_Per_Account', 'Total_Accounts_Affected']]
+for _, row in severity_analysis.iterrows():
+    impact = row['Avg_Impact_Per_Account']
+    if abs(impact) > 10000:
+        severity = "VERY HIGH"
+    elif abs(impact) > 5000:
+        severity = "HIGH"
+    elif abs(impact) > 1000:
+        severity = "MEDIUM"
+    else:
+        severity = "LOW"
+        
+    print(f"   {row['Adjustment_Type']:<25}: ${impact:>10,.0f} per account ({severity}) - {row['Total_Accounts_Affected']:,} accounts")
 
-# Find accounts that were zeroed out
-zeroed_accounts = df[(df['FTPBalance'] != 0) & (df['Final Balance'] == 0)]
-zeroed_count = zeroed_accounts['GRCA_Account'].nunique()
-original_balance_wiped = zeroed_accounts['FTPBalance'].sum()
+# 3. Concentration analysis
+print("\n3. CONCENTRATION ANALYSIS:")
+top_3_net = adj_analysis_df.nlargest(3, 'Net_Adjustment', key=abs)
+total_impact_abs = adj_analysis_df['Net_Adjustment'].abs().sum()
 
-print(f"Accounts Zeroed Out: {zeroed_count:,}")
-print(f"Original Balance Wiped Out: ${original_balance_wiped:,.2f}")
+for _, row in top_3_net.iterrows():
+    concentration = (abs(row['Net_Adjustment']) / total_impact_abs * 100)
+    print(f"   {row['Adjustment_Type']:<25}: {concentration:.1f}% of total absolute impact")
 
-# Check how many of these were due to reclass adjustments
-reclass_zeroed = zeroed_accounts[zeroed_accounts['Adj Purpose Desc'].isin(reclass_types)]
-reclass_zeroed_count = reclass_zeroed['GRCA_Account'].nunique()
-reclass_balance_wiped = reclass_zeroed['FTPBalance'].sum()
+# 4. Account penetration analysis
+print("\n4. ACCOUNT PENETRATION ANALYSIS:")
+for _, row in adj_analysis_df.head(5).iterrows():
+    if row['Total_Accounts_Affected'] > 0:
+        positive_penetration = (row['Positive_Accounts'] / row['Total_Accounts_Affected'] * 100)
+        negative_penetration = (row['Negative_Accounts'] / row['Total_Accounts_Affected'] * 100)
+        print(f"   {row['Adjustment_Type']:<25}: {positive_penetration:.1f}% accounts increased, {negative_penetration:.1f}% accounts decreased")
 
-print(f"Accounts Zeroed Out by Reclass: {reclass_zeroed_count:,}")
-print(f"Balance Wiped Out by Reclass: ${reclass_balance_wiped:,.2f}")
-
-if zeroed_count > 0:
-    print(f"Percentage of Zeroed Accounts due to Reclass: {(reclass_zeroed_count/zeroed_count*100):.2f}%")
-
-# Final Summary
-print("\n" + "="*70)
-print("FINAL SUMMARY")
-print("="*70)
-
-print(f"📊 Balance Impact: {percentage_change:+.2f}% change (${net_change:,.2f})")
-print(f"👥 Account Coverage: {adjusted_percentage:.1f}% of accounts adjusted")
-print(f"🎯 Reclass Dominance: {reclass_pct_of_total_adj}% of all adjustment value")
-print(f"🚨 Severe Impact: {zeroed_count:,} accounts zeroed out (${original_balance_wiped:,.2f} wiped)")
-
-# Identify the biggest driver
-biggest_adj_type = adj_type_analysis.iloc[0]
-print(f"📈 Biggest Driver: {biggest_adj_type['Adj Purpose Desc']} (${biggest_adj_type['Adjustment']:,.2f})")
-
-if reclass_pct_of_total_adj > 50:
-    print("💡 INSIGHT: Reclass adjustments dominate the adjustment landscape")
-else:
-    print("💡 INSIGHT: Adjustments are distributed across multiple types")
-
-if reclass_zeroed_count > 0:
-    print(f"⚠️  WARNING: Reclass adjustments zeroed out {reclass_zeroed_count:,} accounts")

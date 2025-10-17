@@ -1,125 +1,1569 @@
-# Step 4: Detailed adjustment type analysis with positive/negative breakdown
-print("\n=== STEP 4: DETAILED ADJUSTMENT TYPE BREAKDOWN ===")
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk, Toplevel, Label
+import os
+import pandas as pd
+import getpass
+from datetime import datetime
+from openpyxl import Workbook
+from typing import Iterable, Optional, List, Tuple, Dict, Any
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
+import copy
+import numpy as np
+from version import VERSION
+import warnings
+import threading
+import time
+import glob
+import logging
+from logging.handlers import RotatingFileHandler
+import hashlib
+import re
 
-# Get overall totals for percentage calculations
-total_net_adjustment = df['Adjustment'].sum()
-total_positive_adjustment = df[df['Adjustment'] > 0]['Adjustment'].sum()
-total_negative_adjustment = df[df['Adjustment'] < 0]['Adjustment'].sum()
-total_adjusted_accounts = df[df['Adjustment'] != 0]['GRCA_Account'].nunique()
+# Optional: suppress engine warnings
+warnings.simplefilter(action='ignore',category=UserWarning)
 
-# Analyze each adjustment type in detail
-adj_type_detailed = []
+# Get current user ID
+keyword = getpass.getuser()
 
-for adj_type in df['Adj Purpose Desc'].unique():
-    type_data = df[df['Adj Purpose Desc'] == adj_type]
-    
-    # Basic metrics - handle None values
-    net_adjustment = type_data['Adjustment'].sum() or 0
-    positive_data = type_data[type_data['Adjustment'] > 0]
-    negative_data = type_data[type_data['Adjustment'] < 0]
-    
-    positive_adjustment = positive_data['Adjustment'].sum() if not positive_data.empty else 0
-    negative_adjustment = negative_data['Adjustment'].sum() if not negative_data.empty else 0
-    
-    # Account counts
-    total_accounts_affected = type_data['GRCA_Account'].nunique()
-    positive_accounts = positive_data['GRCA_Account'].nunique() if not positive_data.empty else 0
-    negative_accounts = negative_data['GRCA_Account'].nunique() if not negative_data.empty else 0
-    
-    # Percentages - handle division by zero
-    pct_of_net_adj = (net_adjustment / total_net_adjustment * 100) if total_net_adjustment != 0 else 0
-    pct_of_total_accounts = (total_accounts_affected / total_adjusted_accounts * 100) if total_adjusted_accounts != 0 else 0
-    
-    # Impact metrics - handle division by zero
-    avg_impact_per_account = net_adjustment / total_accounts_affected if total_accounts_affected > 0 else 0
-    original_balance = type_data['FTPBalance'].sum() or 0
-    balance_impact_ratio = (net_adjustment / original_balance * 100) if original_balance != 0 else 0
-    
-    adj_type_detailed.append({
-        'Adjustment_Type': adj_type,
-        'Net_Adjustment': net_adjustment,
-        'Positive_Adjustment': positive_adjustment,
-        'Negative_Adjustment': negative_adjustment,
-        'Pct_of_Net_Adjustment': pct_of_net_adj,
-        'Total_Accounts_Affected': total_accounts_affected,
-        'Positive_Accounts': positive_accounts,
-        'Negative_Accounts': negative_accounts,
-        'Pct_of_Adjusted_Accounts': pct_of_total_accounts,
-        'Avg_Impact_Per_Account': avg_impact_per_account,
-        'Balance_Impact_Ratio': balance_impact_ratio,
-        'Gross_Adjustment_Volume': abs(positive_adjustment) + abs(negative_adjustment)
-    })
+# List of admin user IDs
+admin_users = ["45231502","45091615"]
 
-# Convert to DataFrame
-adj_analysis_df = pd.DataFrame(adj_type_detailed)
-adj_analysis_df = adj_analysis_df.sort_values('Net_Adjustment', key=abs, ascending=False)
+LOG_DIR = os.path.join(os.path.expanduser("~"), "BSRS_Logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, "bsrs_tool.log")
 
-# Display the analysis using your format_currency function
-print(f"\n{'Adjustment Type':<25} {'Net Adj':<15} {'+Adj':<15} {'-Adj':<15} {'% of Net':<10} {'Accts(+/-)':<12} {'Avg Impact':<15} {'Impact %':<10}")
-print("="*125)
+logger = logging.getLogger("bsrs_tool")
+if not logger.handlers:
+    handler = RotatingFileHandler(LOG_PATH, maxBytes=1_048_576, backupCount=3, encoding="utf-8")
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
-for _, row in adj_analysis_df.iterrows():
-    accounts_direction = f"{row['Positive_Accounts']:,}/{row['Negative_Accounts']:,}"
-    
-    print(f"{row['Adjustment_Type']:<25} "
-          f"{format_currency(row['Net_Adjustment']):<15} "
-          f"{format_currency(row['Positive_Adjustment']):<15} "
-          f"{format_currency(row['Negative_Adjustment']):<15} "
-          f"{row['Pct_of_Net_Adjustment']:>8.1f}% "
-          f"{accounts_direction:<12} "
-          f"{format_currency(row['Avg_Impact_Per_Account']):<15} "
-          f"{row['Balance_Impact_Ratio']:>8.1f}%")
 
-# Additional impact metrics
-print("\n--- ADDITIONAL IMPACT ANALYSIS ---")
+MAX_FILENAME_LENGTH = 120
 
-# 1. Direction dominance analysis
-print("\n1. ADJUSTMENT DIRECTION DOMINANCE:")
-for _, row in adj_analysis_df.iterrows():
-    if row['Gross_Adjustment_Volume'] > 0:
-        positive_ratio = (row['Positive_Adjustment'] / row['Gross_Adjustment_Volume'] * 100) 
-        negative_ratio = (abs(row['Negative_Adjustment']) / row['Gross_Adjustment_Volume'] * 100)
+
+def _sanitize_component(component: str) -> str:
+    cleaned = re.sub(r"[^\w.-]+", "_", component.strip())
+    return cleaned or "file"
+
+
+def build_output_filename(base_name: str, suffix_parts: Iterable[str], ext: str, max_length: int = MAX_FILENAME_LENGTH) -> str:
+    safe_base = _sanitize_component(base_name)
+    suffix_tokens = [_sanitize_component(part) for part in suffix_parts if part]
+    core = "_".join([safe_base] + suffix_tokens) if suffix_tokens else safe_base
+
+    if len(core) + len(ext) <= max_length:
+        return core + ext
+
+    hash_token = hashlib.sha1(core.encode("utf-8")).hexdigest()[:8]
+    allowance = max_length - len(ext) - len(hash_token) - 1
+    allowance = max(allowance, 8)
+    truncated = core[:allowance].rstrip("_")
+    if not truncated:
+        truncated = safe_base[:allowance] or "file"
+    return f"{truncated}_{hash_token}{ext}"
+
+
+def handle_exception(context: str, exc: Exception) -> None:
+    """Log the exception and present a friendly message to the user."""
+    logger.exception("%s: %s", context, exc)
+    friendly_message = (
+        f"{context}\n\nDetails: {exc}\n\n"
+        f"A detailed error log has been saved here:\n{LOG_PATH}\n"
+        "Share this log with the support team if you need more help."
+    )
+    try:
+        messagebox.showerror("Unexpected Error", friendly_message)
+    except Exception:
+        # Last resort: print if Tk messagebox cannot be shown (e.g. thread shutdown)
+        print(f"[ERROR] {friendly_message}")
+
+
+def show_fatal_errors(errors: List[Dict[str, Any]]) -> None:
+    """Display a compact summary for files we could not process at all."""
+    if not errors:
+        return
+    lines = ["We could not process the following file(s):", ""]
+    for err in errors:
+        lines.append(f"- {os.path.basename(err['file'])}: {err['message']}")
+        if err.get("resolution"):
+            lines.append(f"  How to fix: {err['resolution']}")
+    lines.append("")
+    lines.append(f"More detail is available in the log file: {LOG_PATH}")
+    try:
+        messagebox.showerror("Files Skipped", "\n".join(lines))
+    except Exception:
+        print("[ERROR]", "\n".join(lines))
+
+
+def autofit_columns(ws: Worksheet, sample_size: int = 200, max_width: int = 25) -> None:
+    if ws.max_column == 0:
+        return
+    max_row = min(ws.max_row, sample_size)
+    for col_cells in ws.iter_cols(min_col=1, max_col=ws.max_column, min_row=1, max_row=max_row):
+        max_length = 0
+        for cell in col_cells:
+            value = cell.value
+            if value is not None:
+                max_length = max(max_length, len(str(value)))
+        if max_length:
+            adjusted_width = min(max_width, max_length + 2)
+            ws.column_dimensions[get_column_letter(col_cells[0].column)].width = adjusted_width
+
+
+class ProgressWindow:
+    def __init__(self, parent, title="Processing"):
+        self.top = Toplevel(parent)
+        self.top.title(title)
+        self.top.geometry("300x120")
+        self.top.resizable(False, False)
         
-        if positive_ratio > 70:
-            direction = "STRONGLY POSITIVE"
-        elif negative_ratio > 70:
-            direction = "STRONGLY NEGATIVE"
-        elif abs(positive_ratio - negative_ratio) < 20:
-            direction = "BALANCED"
+        self.label = Label(self.top, text="Initializing...")
+        self.label.pack(pady=(10,.5))
+        
+        self.progress = ttk.Progressbar(self.top, orient="horizontal", length=300, mode="determinate")
+        self.progress.pack(pady=5)
+        
+        self.status_label = Label(self.top, text="")
+        self.status_label.pack(pady=5)
+        
+        self.top.grab_set()
+        self.top.protocol("WM_DELETE_WINDOW", self.disable_close)
+        
+    def disable_close(self):
+        pass
+        
+    def update(self, value, message=None, status=None):
+        self.progress['value'] = value
+        if message:
+            self.label.config(text=message)
+        if status:
+            self.status_label.config(text=status)
+        self.top.update_idletasks()
+        
+    def close(self):
+        self.top.grab_release()
+        self.top.destroy()
+
+
+# Global variables to store processed DataFrames
+processed_dfs = None
+user_info_df = None
+
+# Highlight fill for validation errors
+ERROR_FILL = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+NAME_MISMATCH_FILL = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+
+def read_excel_auto(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+
+    try:
+        excel_file = pd.ExcelFile(filepath, engine="openpyxl" if ext in ['.xlsx', '.xlsm'] else None)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to open {os.path.basename(filepath)}. "
+            "Make sure the file is not password protected, already open elsewhere, "
+            "and that it matches the BSRS template."
+        ) from exc
+
+    other_sheets = [sheet for sheet in excel_file.sheet_names if sheet.strip().lower() != 'l&d']
+
+    if not other_sheets:
+        raise RuntimeError(
+            f"{os.path.basename(filepath)} does not contain any sheet other than 'L&D'. "
+            "Please verify you selected the correct template."
+        )
+
+    target_sheet = other_sheets[0]
+
+    try:
+        if ext in ['.xlsx', '.xlsm']:
+            return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine="openpyxl")
+        elif ext == ".xlsb":
+            try:
+                import pyxlsb
+            except ImportError:
+                raise RuntimeError(
+                    "Support for .xlsb files requires the 'pyxlsb' package.\n"
+                    "Install it by running: pip install pyxlsb"
+                ) from None
+
+            return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine="pyxlsb")
+        elif ext == ".xls":
+            try:
+                import xlrd
+            except ImportError:
+                raise RuntimeError(
+                    "Support for .xls files requires the 'xlrd' package (version 1.2.0).\n"
+                    "Install it by running: pip install xlrd==1.2.0"
+                ) from None
+            return pd.read_excel(filepath, sheet_name=target_sheet, header=[0, 1, 2], engine="xlrd")
         else:
-            direction = "MIXED"
-            
-        print(f"   {row['Adjustment_Type']:<25}: {direction} (+{positive_ratio:.1f}%/-{negative_ratio:.1f}%)")
+            raise ValueError(f"Unsupported file format: {ext}")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to read data from {os.path.basename(filepath)}.\nDetails: {exc}"
+        ) from exc
 
-# 2. Severity analysis
-print("\n2. SEVERITY ANALYSIS (Top 5 by impact per account):")
-severity_analysis = adj_analysis_df.nlargest(5, 'Avg_Impact_Per_Account', key=abs)[['Adjustment_Type', 'Avg_Impact_Per_Account', 'Total_Accounts_Affected']]
-for _, row in severity_analysis.iterrows():
-    impact = row['Avg_Impact_Per_Account']
-    if abs(impact) > 10000:
-        severity = "VERY HIGH"
-    elif abs(impact) > 5000:
-        severity = "HIGH"
-    elif abs(impact) > 1000:
-        severity = "MEDIUM"
-    else:
-        severity = "LOW"
+def clean_value(val):
+    try:
+        num = float(val)
+        if num.is_integer():
+            return str(int(num))
+        else:
+            return str(num)
+    except (ValueError, TypeError):
+        return str(val) if isinstance(val, str) else "NULL"
         
-    print(f"   {row['Adjustment_Type']:<25}: {format_currency(impact)} per account ({severity}) - {row['Total_Accounts_Affected']:,} accounts")
+def format_multiindex_header(ws: Worksheet, header_rows: Iterable[int] = (1,2,3), start_col: int =1, end_col: Optional[int] = None,) -> Worksheet:
+    if end_col is None:
+        end_col = ws.max_column
+        
+    thin = Side(border_style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    font_bold=Font(bold=True)
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    
+    for r in header_rows:
+        for c in range(start_col, end_col+1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = font_bold
+            cell.alignment = align_center
+            cell.border = border
+            
+    merged_ranges = []
+    for r in header_rows:
+        c = start_col
+        while c <= end_col:
+            start_c = c
+            start_val = ws.cell(row=r, column=c).value
+            
+            if start_val is None or str(start_val).strip() == "":
+                c += 1
+                continue
+                
+            c += 1
+            while c <= end_col and ws.cell(row=r, column=c).value == start_val:
+                c += 1
+                
+            end_run = c - 1
+            if end_run > start_c:
+                ws.merge_cells(start_row = r, start_column = start_c, end_row = r, end_column = end_run)
+                merged_ranges.append((r,start_c, r, end_run))
+                
+    for (r1,c1,r2,c2) in merged_ranges:
+        top_left = ws.cell(row=r1,column=c1)
+        top_left.font = font_bold
+        top_left.alignment = align_center
+        top_left.border = border
+        
+    return ws
+        
+    
 
-# 3. Concentration analysis
-print("\n3. CONCENTRATION ANALYSIS:")
-top_3_net = adj_analysis_df.nlargest(3, 'Net_Adjustment', key=abs)
-total_impact_abs = adj_analysis_df['Net_Adjustment'].abs().sum()
+def add_detailed_conflict_log(
+    df,
+    special_columns,
+    submitted_by_col='Submitted by',
+    submitted_time_col='Submitted time'
+    ):
+    """
+    Create detailed conflict log with:
+    - Only checks columns containing 'PS ID' or 'Name' for matching
+    - Shows all special columns in conflict log with submission info
+    - Maintains pipe-separated values for duplicates
+    """
+    # Get all columns not in special_columns
+    group_columns = [col for col in df.columns if col not in special_columns]
 
-for _, row in top_3_net.iterrows():
-    concentration = (abs(row['Net_Adjustment']) / total_impact_abs * 100) if total_impact_abs != 0 else 0
-    print(f"   {row['Adjustment_Type']:<25}: {concentration:.1f}% of total absolute impact")
+    # Identify columns to check for matching ('PS ID' or 'Name' in name)
+    match_columns = [col for col in special_columns 
+                    if ('PS ID' in col) or ('Name' in col)]
 
-# 4. Account penetration analysis
-print("\n4. ACCOUNT PENETRATION ANALYSIS:")
-for _, row in adj_analysis_df.head(5).iterrows():
-    if row['Total_Accounts_Affected'] > 0:
-        positive_penetration = (row['Positive_Accounts'] / row['Total_Accounts_Affected'] * 100)
-        negative_penetration = (row['Negative_Accounts'] / row['Total_Accounts_Affected'] * 100)
-        print(f"   {row['Adjustment_Type']:<25}: {positive_penetration:.1f}% accounts increased, {negative_penetration:.1f}% accounts decreased")
+    #Initialize conflict log column
+    df['Conflict Log'] = ''
+
+    # Group by all non-special columns
+    grouped = df.groupby(group_columns, dropna=False)
+
+    for name, group in grouped:
+        if len(group) > 1:
+            conflict_lines = [' ']
+            # FIRST: Check matching columns ('PS ID' or 'Name')
+            matching_conflicts = False
+            for col in match_columns:
+                unique_values = group[col].dropna().unique()
+                if len(unique_values) > 1:
+                    matching_conflicts = True
+                    value_groups = group.groupby(col)[[submitted_by_col, submitted_time_col]].agg(
+                    lambda x: '|'.join(map(str, x.unique()))
+                    )
+                    for value, (submitters, times) in value_groups.iterrows():
+                        conflict_lines.append(
+                            f"- {col} has value '{value}' "
+                            f" (Submitted by: {submitters}, "
+                            f"Submitted time: {times})"
+                        )
+            
+            #Join all conflict lines
+            df.loc[group.index, 'Conflict Log'] = '\n'.join(conflict_lines) if len(conflict_lines) > 1 else ''
+    return df
+
+def select_files():
+    files = filedialog.askopenfilenames(
+        title="Select Excel Files",
+        filetypes=[("Excel files", "*.xlsx *.xlsm *.xlsb *.xls"), ("All files", "*.*")]
+    )
+    file_list.clear()
+    file_list.extend(list(files))
+    update_stats()
+
+def select_folder():
+    folder = filedialog.askdirectory(title="Select Destination Folder")
+    if folder:
+        folder_path.set(folder)
+    update_stats()
+
+def merge_and_format_rows(df, row_nums, dest_path, validation_errors=None):
+    workbook = Workbook()
+    worksheet = workbook.active
+
+    # Write headers
+    role_col_map: Dict[str, Dict[str, int]] = {}
+    for col_idx, col in enumerate(df.columns, 1):
+        worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+        worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+        worksheet.cell(row=3, column=col_idx).value = col[2]
+        if len(col) >= 3:
+            role = col[1]
+            field = col[2]
+            role_col_map.setdefault(role, {})[field] = col_idx
+
+    # Write data (starting from row 4)
+    for row_data in dataframe_to_rows(df, index=False, header=False):
+        worksheet.append(row_data)
+    
+    # Highlight validation errors
+    if validation_errors:
+        for error in validation_errors:
+            role_col = error['role']
+            role_fields = role_col_map.get(role_col, {})
+            ps_idx = role_fields.get("PS ID")
+            name_idx = role_fields.get("Name")
+            if ps_idx:
+                worksheet.cell(row=error['row'], column=ps_idx).fill = ERROR_FILL
+            if name_idx:
+                if error.get('is_name_mismatch'):
+                    worksheet.cell(row=error['row'], column=name_idx).fill = NAME_MISMATCH_FILL
+                else:
+                    worksheet.cell(row=error['row'], column=name_idx).fill = ERROR_FILL
+
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    max_col = worksheet.max_column
+    for row_num in row_nums:
+        start_col = None
+        prev_value = None
+
+        for col in range(1, max_col + 2): # +2 to ensure we catch the last group
+            curr_cell = worksheet.cell(row=row_num, column=col)
+            curr_value = curr_cell.value if col <= max_col else None
+
+            if prev_value is None and isinstance(curr_value, str):
+                # Start of new sequence
+                prev_value = curr_value
+                start_col = col
+                
+            elif prev_value is not None and curr_value != prev_value:
+                if start_col is not None and col - start_col > 1:
+                    # Merge range
+                    start_letter = get_column_letter(start_col)
+                    end_letter = get_column_letter(col - 1)
+                    worksheet.merge_cells(f"{start_letter}{row_num}:{end_letter}{row_num}")
+                # Format the (merged) cell
+                target_cell = worksheet.cell(row=row_num, column=start_col)
+                target_cell.font = Font(bold=True)
+                target_cell.alignment = Alignment(horizontal='center', vertical='center')
+                for c in range(start_col, col):
+                    worksheet.cell(row=row_num, column=c).border = thin_border
+                # Reset
+                prev_value = curr_value
+                start_col = col if isinstance(curr_value, str) else None
+
+    # Autofit column widths (sample-based to keep performance predictable)
+    autofit_columns(worksheet)
+
+    workbook.save(dest_path)
+    
+def show_basic_validation_popup(errors, proceed_callback):
+    popup = tk.Toplevel()
+    popup.title("Basic Validation Errors")
+    popup.geometry("500x275")
+    popup.grab_set()
+    
+    sample_count = min(10, len(errors))
+    msg_lines = [f"Found {len(errors)} basic validation error(s):", ""]
+    for error in errors[:sample_count]:
+        msg_lines.append(
+            f"- {os.path.basename(error['file'])} | Row {error['row']} | {error['role']}: {error['description']}"
+        )
+        if error.get("resolution"):
+            msg_lines.append(f"  Fix: {error['resolution']}")
+    if len(errors) > sample_count:
+        msg_lines.append(f"...and {len(errors) - sample_count} more.")
+    msg_lines.append("")
+    msg_lines.append(f"Detailed logs: {LOG_PATH}")
+    msg = "\n".join(msg_lines)
+    
+    tk.Label(popup, text=msg, justify=tk.LEFT, wraplength=450).pack(padx=20, pady=10)
+    
+    button_frame = tk.Frame(popup)
+    button_frame.pack(pady=10)
+    
+    tk.Button(button_frame, text="Save Anyway", command=lambda: [proceed_callback(), popup.destroy()]).pack(side=tk.LEFT, padx=10)
+    tk.Button(button_frame, text="Cancel", command=popup.destroy).pack(side=tk.RIGHT, padx=10)
+
+def save_files():
+    if not file_list:
+        update_status("Error: No files selected", "red")
+        return
+    if not folder_path.get():
+        update_status("Error: No folder selected", "red")
+        return
+
+    # Disable the submit button during processing
+    submit_button = [w for w in user_frame.winfo_children() 
+                    if isinstance(w, ttk.Button) and w.cget("text") == "Submit"][0]
+    submit_button.config(state="disabled")
+
+    # Create progress window
+    progress = ProgressWindow(root, "Submitting Files")
+    progress.update(0, "Preparing to process files...", f"0/{len(file_list)} files processed")
+
+    def process_files():
+        try:
+            start_time_for_user = time.time()
+            timestamp_for_filename = datetime.now().strftime("%d%m%Y_%H%M%S")
+            timestamp_for_excel = datetime.now().strftime("%d-%m-%Y|%H%M%S")
+
+            total_files = len(file_list)
+            all_validation_errors: List[Dict[str, Any]] = []
+            pending_outputs: List[Dict[str, Any]] = []
+            fatal_errors: List[Dict[str, Any]] = []
+
+            logger.info("User submission started by %s - %d file(s) selected", keyword, total_files)
+
+            destination_folder = folder_path.get()
+            cpu_count = os.cpu_count() or 2
+            max_workers = min(total_files, max(1, min(cpu_count, 4)))
+
+            def worker(job_index: int, file_path: str) -> Dict[str, Any]:
+                base_name = os.path.basename(file_path)
+                start_file_reading = time.time()
+                try:
+                    df = read_excel_auto(file_path)
+                except Exception as exc:
+                    return {
+                        "status": "fatal",
+                        "file": file_path,
+                        "index": job_index,
+                        "message": str(exc),
+                        "resolution": "Verify the template structure and ensure the file is not password protected or open in another application."
+                    }
+
+                read_duration = time.time() - start_file_reading
+                logger.info("Read %s (job %d) in %.2f sec", base_name, job_index, read_duration)
+                print(f"time taken in reading {base_name}: {read_duration:.4f} sec")
+
+                drop_columns = [col for col in df.columns if len(col) >= 3 and "Comments." in str(col[2])]
+                if drop_columns:
+                    df = df.drop(columns=drop_columns)
+
+                multi_column = [col for col in df.columns if len(col) >= 1 and "Unnamed" in str(col[0])]
+                df = df.replace("'nan", np.nan)
+                df.columns = pd.MultiIndex.from_tuples(
+                    [
+                        tuple(str(part).replace('\n', '') for part in col)
+                        for col in df.columns
+                    ]
+                )
+
+                col_to_check = [col for col in df.columns if col not in multi_column]
+
+                role_holders = ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]
+                ps_cols = [("Proposed changes", role, "PS ID") for role in role_holders]
+                name_cols = [("Proposed changes", role, "Name") for role in role_holders]
+
+                file_errors: List[Dict[str, Any]] = []
+                index_position = {idx: pos for pos, idx in enumerate(df.index)}
+
+                for role_col, ps_col, name_col in zip(role_holders, ps_cols, name_cols):
+                    ps_series = df[ps_col] if ps_col in df.columns else pd.Series(np.nan, index=df.index)
+                    name_series = df[name_col] if name_col in df.columns else pd.Series(np.nan, index=df.index)
+
+                    numeric_conversion = pd.to_numeric(ps_series, errors='coerce')
+                    invalid_rows = ps_series.notna() & numeric_conversion.isna()
+                    if invalid_rows.any():
+                        for row_idx in invalid_rows[invalid_rows].index:
+                            row_pos = index_position.get(row_idx, 0)
+                            file_errors.append({
+                                'file': file_path,
+                                'row': row_pos + 4,
+                                'role': role_col,
+                                'ps_id': ps_series.loc[row_idx],
+                                'name': name_series.loc[row_idx],
+                                'description': "PS ID must be numeric",
+                                'resolution': "Update the PS ID so it contains numbers only (no spaces, letters, or special characters)."
+                            })
+
+                    missing_rows = name_series.notna() & ps_series.isna()
+                    if missing_rows.any():
+                        for row_idx in missing_rows[missing_rows].index:
+                            row_pos = index_position.get(row_idx, 0)
+                            file_errors.append({
+                                'file': file_path,
+                                'row': row_pos + 4,
+                                'role': role_col,
+                                'ps_id': ps_series.loc[row_idx],
+                                'name': name_series.loc[row_idx],
+                                'description': "Name provided but PS ID is missing",
+                                'resolution': "Add the PS ID for this role or remove the name if the role does not apply."
+                            })
+
+                print("user validation done")
+
+                df[("", "", "Submitted by")] = np.nan
+                df[("", "", "Submitted time")] = np.nan
+
+                if col_to_check:
+                    condition = df[col_to_check].notna().any(axis=1)
+                else:
+                    condition = pd.Series(False, index=df.index)
+                timestamp_value = timestamp_for_excel
+
+                df.loc[condition, ("", "", "Submitted by")] = keyword
+                df.loc[condition, ("", "", "Submitted time")] = timestamp_value
+
+                name, ext = os.path.splitext(base_name)
+                ext = ext or ".xlsx"
+                dest_name = build_output_filename(
+                    name,
+                    [keyword, timestamp_for_filename, f"{job_index:03d}"],
+                    ext
+                )
+                dest_path = os.path.join(destination_folder, dest_name)
+
+                logger.info(
+                    "Validated %s (job %d) with %d validation issue(s)",
+                    base_name,
+                    job_index,
+                    len(file_errors)
+                )
+
+                return {
+                    "status": "ok",
+                    "file": file_path,
+                    "df": df,
+                    "errors": file_errors,
+                    "dest_path": dest_path,
+                    "index": job_index
+                }
+
+            progress.update(
+                0,
+                "Queuing files for processing...",
+                f"0/{total_files} files completed"
+            )
+
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+            futures = {
+                executor.submit(worker, idx, file): file
+                for idx, file in enumerate(file_list, start=1)
+            }
+            completed = 0
+
+            for future in as_completed(futures):
+                file_path = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    logger.exception("Unexpected error while processing %s: %s", os.path.basename(file_path), exc)
+                    fatal_errors.append({
+                        "file": file_path,
+                        "message": str(exc),
+                        "resolution": "Re-run the file. If the error persists, share the log with support."
+                    })
+                    update_status(f"Skipped {os.path.basename(file_path)} due to an unexpected error.", "red")
+                    completed += 1
+                    progress.update(
+                        completed / total_files * 100,
+                        f"Processing files ({completed}/{total_files})",
+                        f"{completed}/{total_files} files completed"
+                    )
+                    continue
+
+                completed += 1
+                progress.update(
+                    completed / total_files * 100,
+                    f"Processing files ({completed}/{total_files})",
+                    f"{completed}/{total_files} files completed"
+                )
+
+                if result["status"] == "fatal":
+                    fatal_errors.append({
+                        "file": result["file"],
+                        "message": result["message"],
+                        "resolution": result.get("resolution")
+                    })
+                    update_status(f"Skipped {os.path.basename(result['file'])}. Check the error details.", "red")
+                else:
+                    pending_outputs.append(result)
+                    all_validation_errors.extend(result["errors"])
+
+            executor.shutdown(wait=True)
+            pending_outputs.sort(key=lambda item: item["index"])
+
+            end_time_for_user = time.time()
+
+            print(f"time taken by user panel: {end_time_for_user - start_time_for_user:.4f} sec")
+            if fatal_errors:
+                logger.warning("Skipped %d file(s) due to read errors", len(fatal_errors))
+
+            def save_all_outputs():
+                saved = 0
+                for item in pending_outputs:
+                    df_to_save = item["df"].copy()
+                    errors = item["errors"]
+
+                    if errors:
+                        column_key = ("", "", "User Data Quality Checks")
+                        if column_key not in df_to_save.columns:
+                            df_to_save[column_key] = ""
+
+                        row_errors: Dict[int, List[Tuple[str, Optional[str]]]] = defaultdict(list)
+                        for err in errors:
+                            row_errors[err["row"]].append((err["description"], err.get("resolution")))
+
+                        for row_num, issues in row_errors.items():
+                            idx = row_num - 4
+                            if idx not in df_to_save.index:
+                                continue
+                            comment_lines: List[str] = ["BASIC VALIDATION ISSUES:"]
+                            seen: set = set()
+                            for description, resolution in issues:
+                                key = (description, resolution)
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                comment_lines.append(f"- {description}")
+                                if resolution:
+                                    comment_lines.append(f"  Fix: {resolution}")
+                            df_to_save.at[idx, column_key] = "\n".join(comment_lines)
+
+                    logger.info("Saving %s", os.path.basename(item["dest_path"]))
+                    save_start = time.time()
+                    merge_and_format_rows(df_to_save, [1, 2], item["dest_path"], errors)
+                    logger.info(
+                        "Saved processed file to %s in %.2f sec",
+                        item["dest_path"],
+                        time.time() - save_start
+                    )
+                    saved += 1
+
+                if saved:
+                    destination_display = os.path.normpath(destination_folder)
+                    update_status(
+                        f"Saved {saved} file{'s' if saved != 1 else ''} to {destination_display}",
+                        "green",
+                    )
+                else:
+                    update_status(
+                        "No files were saved. Please resolve the reported issues and try again.",
+                        "red",
+                    )
+
+            if all_validation_errors:
+                progress.close()
+                if fatal_errors:
+                    show_fatal_errors(fatal_errors)
+                show_basic_validation_popup(all_validation_errors, save_all_outputs)
+            else:
+                progress.close()
+                if fatal_errors:
+                    show_fatal_errors(fatal_errors)
+                save_all_outputs()
+
+        except Exception as e:
+            progress.close()
+            handle_exception("Something went wrong while preparing your files.", e)
+            update_status("Error: Processing stopped. See the error message for details.", "red")
+        finally:
+            submit_button.config(state="normal")
+            
+    # Start the processing thread
+    threading.Thread(target=process_files, daemon=True).start()
+
+def update_stats():
+    stats_text = f"Files Selected: {len(file_list)}\nDestination Folder: {folder_path.get() or 'Not selected'}"
+    stats_label.config(text=stats_text)
+
+def update_status(message, color):
+    status_label.config(text=message, fg=color)
+
+def select_admin_folder():
+    folder = filedialog.askdirectory(title="Select Input Folder")
+    if folder:
+        admin_folder_path.set(folder)
+        admin_status_label.config(text=f"Input folder selected: {folder}", fg="#333333")
+    else:
+        admin_status_label.config(text="No input folder selected", fg="red")
+        
+def select_admin_output_folder():
+    folder = filedialog.askdirectory(title="Select Output Folder")
+    if folder:
+        admin_output_folder_path.set(folder)
+        admin_status_label.config(text=f"Output folder selected: {folder}", fg="#333333")
+        if processed_dfs is not None:
+            save_button.config(state="normal")
+    else:
+        admin_status_label.config(text="No output folder selected", fg="red")
+        
+def add_l_and_d_data(df, user_info_df):
+    if user_info_df is None or df.empty or "User ID" not in user_info_df.columns:
+        return df
+
+    df = df.copy()
+    enrichment_columns = [
+        "Group Grade",
+        "Manually added column",
+        "Contact Email Address",
+        "BF Level 1",
+        "BF Level 2",
+        "BF Level 3",
+        "BF Level 4",
+        "BF Level 5",
+    ]
+
+    user_info_by_userid = user_info_df.drop_duplicates(subset="User ID")
+    user_info_by_person = (
+        user_info_df.drop_duplicates(subset="PERSON_ID_EXTERNAL")
+        if "PERSON_ID_EXTERNAL" in user_info_df.columns
+        else None
+    )
+
+    for role_col in ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]:
+        psid_col = f"Proposed changes|{role_col}|PS ID"
+        name_col = f"Proposed changes|{role_col}|Name"
+
+        if psid_col not in df.columns:
+            continue
+
+        base_cols = [psid_col]
+        if name_col in df.columns:
+            base_cols.append(name_col)
+
+        enriched = pd.merge(
+            df[base_cols],
+            user_info_by_userid,
+            how="left",
+            left_on=psid_col,
+            right_on="User ID",
+            suffixes=("", "_match"),
+        )
+
+        if "Manually added column" in enriched.columns and enriched["Manually added column"].isna().any():
+            if user_info_by_person is not None:
+                missing_idx = enriched["Manually added column"].isna()
+                fallback = pd.merge(
+                    df.loc[missing_idx, [psid_col]],
+                    user_info_by_person,
+                    how="left",
+                    left_on=psid_col,
+                    right_on="PERSON_ID_EXTERNAL",
+                    suffixes=("", "_fallback"),
+                )
+                for col_name in enrichment_columns:
+                    if col_name in fallback.columns:
+                        enriched.loc[missing_idx, col_name] = enriched.loc[missing_idx, col_name].fillna(
+                            fallback[col_name]
+                        )
+
+        for col_name in enrichment_columns:
+            new_col = f"Proposed changes|{role_col}|{col_name}"
+            if col_name in enriched.columns:
+                df[new_col] = enriched[col_name].values
+            elif new_col not in df.columns:
+                df[new_col] = np.nan
+
+        col_priority = [
+            f"Proposed changes|{role_col}|PS ID",
+            f"Proposed changes|{role_col}|Name",
+            f"Proposed changes|{role_col}|Group Grade",
+            f"Proposed changes|{role_col}|Manually added column",
+            f"Proposed changes|{role_col}|Contact Email Address",
+            f"Proposed changes|{role_col}|BF Level 1",
+            f"Proposed changes|{role_col}|BF Level 2",
+            f"Proposed changes|{role_col}|BF Level 3",
+            f"Proposed changes|{role_col}|BF Level 4",
+            f"Proposed changes|{role_col}|BF Level 5",
+        ]
+
+        existing = [c for c in col_priority if c in df.columns]
+        if not existing:
+            continue
+
+        cols = list(df.columns)
+        first_idx = min(cols.index(c) for c in existing)
+        ordered = cols[:first_idx] + existing
+        ordered += [c for c in cols[first_idx:] if c not in existing]
+        df = df[ordered]
+
+    return df
+
+
+def add_cadency_data(df, cadency_df):
+    if cadency_df is None or df.empty or "User ID" not in cadency_df.columns:
+        return df
+
+    df = df.copy()
+    cadency_unique = cadency_df.drop_duplicates(subset="User ID")
+
+    def _normalize_psid(value):
+        if pd.isna(value):
+            return np.nan
+        try:
+            normalized = str(int(float(value)))
+        except (ValueError, TypeError, OverflowError):
+            normalized = str(value).strip()
+        return normalized.zfill(8) if normalized.isdigit() and len(normalized) <= 8 else normalized
+
+    for role_col in ["Role Holder1 Preparer", "Role Holder2 Reviewer", "Role Holder3Account Owner"]:
+        psid_col = f"Proposed changes|{role_col}|PS ID"
+        if psid_col not in df.columns:
+            continue
+
+        normalized_psid = df[psid_col].apply(_normalize_psid)
+        normalized_psid = normalized_psid.replace({"": np.nan, "00000000": np.nan})
+        df[psid_col] = normalized_psid
+
+        enriched_cad = pd.merge(
+            normalized_psid.to_frame(psid_col),
+            cadency_unique,
+            how="left",
+            left_on=psid_col,
+            right_on="User ID",
+            suffixes=("", "_cadency"),
+        )
+
+        new_col = f"Proposed changes|{role_col}|Active"
+        df[new_col] = enriched_cad.get("Active")
+
+        col_priority = [
+            f"Proposed changes|{role_col}|PS ID",
+            f"Proposed changes|{role_col}|Name",
+            f"Proposed changes|{role_col}|Group Grade",
+            f"Proposed changes|{role_col}|Manually added column",
+            f"Proposed changes|{role_col}|Contact Email Address",
+            f"Proposed changes|{role_col}|BF Level 1",
+            f"Proposed changes|{role_col}|BF Level 2",
+            f"Proposed changes|{role_col}|BF Level 3",
+            f"Proposed changes|{role_col}|BF Level 4",
+            f"Proposed changes|{role_col}|BF Level 5",
+            f"Proposed changes|{role_col}|Active",
+        ]
+
+        existing = [c for c in col_priority if c in df.columns]
+        if not existing:
+            continue
+
+        cols = list(df.columns)
+        first_idx = min(cols.index(c) for c in existing)
+        ordered = cols[:first_idx] + existing
+        ordered += [c for c in cols[first_idx:] if c not in existing]
+        df = df[ordered]
+
+    return df
+
+
+def move_multiindex_cols_to_end(df: pd.DataFrame, cols_to_move: List[Tuple[Any, ...]]) -> pd.DataFrame:
+    def _val_eq(a,b):
+        if (a is None or (isinstance(a,str) and np.isnan(a))) and (b is None or (isinstance(b,str) and np.isnan(b))):
+            return True
+        return a == b
+
+    def _label_eq(t1, t2) -> bool:
+        if not (isinstance(t1, tuple) and isinstance(t2, tuple)):
+            return False
+
+        if len(t1) != len(t2):
+            return False
+
+        return all(_val_eq(a,b) for a,b in zip(t1,t2))
+
+    cols = list(df.columns)
+
+    tail_pos: List[int] = []
+    for target in cols_to_move:
+        matches = [i for i, col in enumerate(cols) if _label_eq(col, target)]
+        tail_pos.extend(matches)
+
+    if not tail_pos:
+        return df.copy()
+
+    all_pos = list(range(len(cols)))
+    tail_pos_set = set(tail_pos)
+    keep_pos = [i for i in all_pos if i not in tail_pos_set]
+
+    return df.iloc[:, keep_pos + tail_pos]
+
+
+# ---------- Validation 1 (DQ) ----------
+def _run_validation1(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    roles = {
+        'RH1': 'Proposed changes|Role Holder1 Preparer',
+        'RH2': 'Proposed changes|Role Holder2 Reviewer',
+        'RH3': 'Proposed changes|Role Holder3Account Owner',   # as provided
+    }
+    expected_suffixes = ['|PS ID', '|Name', '|Group Grade', '|Manually added column']
+
+    for prefix in roles.values():
+        for suf in expected_suffixes:
+            col = f'{prefix}{suf}'
+            if col not in df.columns:
+                df[col] = np.nan
+
+    for rh, prefix in roles.items():
+        ps     = f'{prefix}|PS ID'
+        name   = f'{prefix}|Name'
+        grade  = f'{prefix}|Group Grade'
+        manual = f'{prefix}|Manually added column'
+        vcol   = f'Validation1 (Data Quality Checks)|_|{rh}'
+
+        m_null     = df[ps].isna() & df[name].isna()
+        m_inv_ps   = (~m_null) & df[grade].isna()
+        m_inv_name = (~m_null) & (~m_inv_ps) & (df[name] != df[manual])
+
+        df[vcol] = np.select(
+            [m_null, m_inv_ps, m_inv_name],
+            ['NULL', 'INVALID PS ID', 'INVALID NAME'],
+            default='CORRECT'
+        )
+
+        # Overwrite Name with Manual where invalid name
+        df.loc[m_inv_name, name] = df.loc[m_inv_name, manual]
+
+    all_correct = (df['Validation1 (Data Quality Checks)|_|RH1'] == 'CORRECT') & \
+                  (df['Validation1 (Data Quality Checks)|_|RH2'] == 'CORRECT') & \
+                  (df['Validation1 (Data Quality Checks)|_|RH3'] == 'CORRECT')
+
+    df['Validation1 (Data Quality Checks)|Yes/No|DQ Validation'] = np.where(all_correct, 'Yes', 'No')
+
+    tmp_cols = []
+    for rh in ['RH1', 'RH2', 'RH3']:
+        vcol = f'Validation1 (Data Quality Checks)|_|{rh}'
+        tcol = f'__v1_{rh}'
+        df[tcol] = np.where(df[vcol] != 'CORRECT', rh + ' - ' + df[vcol], '')
+        tmp_cols.append(tcol)
+
+    def _join_v1(row):
+        parts = [row[c] for c in tmp_cols if row[c]]
+        return ' and '.join(parts)
+
+    comment_col = 'Validation1 (Data Quality Checks)|Comments|DQ Validation Comments for "No"'
+    df[comment_col] = ''
+    mask_no = df['Validation1 (Data Quality Checks)|Yes/No|DQ Validation'] == 'No'
+    df.loc[mask_no, comment_col] = df.loc[mask_no, tmp_cols].apply(_join_v1, axis=1)
+    df.drop(columns=tmp_cols, inplace=True)
+
+    return df
+
+
+# ---------- Validation 2 (Grade) ----------
+def _run_validation2(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    src = {
+        'R1': 'Proposed changes|Role Holder1 Preparer|Group Grade',
+        'R2': 'Proposed changes|Role Holder2 Reviewer|Group Grade',
+        'R3': 'Proposed changes|Role Holder3Account Owner|Group Grade',
+    }
+    out = {
+        'R1': 'Validation 2 (GCB Grade Check)|6 or contractor|RH1',
+        'R2': 'Validation 2 (GCB Grade Check)|5|RH2',
+        'R3': 'Validation 2 (GCB Grade Check)|4|RH3',
+    }
+
+    yesno_col = 'Validation 2 (GCB Grade Check)|Yes/No|DQ Validation'
+    comments_col = 'Validation  (GCB Grade Check)|Comments|GCB Validation Comments for "No"'
+
+    for c in src.values():
+        if c not in df.columns:
+            df[c] = np.nan
+
+    for rk, c in src.items():
+        df[out[rk]] = df[c]
+
+    # Role-specific allowed sets (normalized to upper-case strings)
+    allowed = {
+        'R1': {'01','02','03','04','05','06','1','2','3','4','5','6','MD','CONTRACTOR'},
+        'R2': {'01','02','03','04','05','1','2','3','4','5','MD'},
+        'R3': {'01','02','03','04','1','2','3','4','MD'},
+    }
+
+    norm = {rk: df[c].astype(str).str.strip().str.upper() for rk, c in src.items()}
+
+    display = {}
+    for rk, c in src.items():
+        disp = df[c].astype(str)
+        disp = disp.mask(df[c].isna(), 'NULL').replace('nan', 'NULL')
+        display[rk] = disp
+
+    valid = {rk: norm[rk].isin(allowed[rk]) & (display[rk] != 'NULL') for rk in src}
+
+    all_valid = valid['R1'] & valid['R2'] & valid['R3']
+    df[yesno_col] = np.where(all_valid, 'Yes', 'No')
+
+    tmp_cols = []
+    for rk in ['R1', 'R2', 'R3']:
+        tcol = f'__v2_{rk}'
+        df[tcol] = np.where(~valid[rk], rk + ' is GCB' + display[rk], '')
+        tmp_cols.append(tcol)
+
+    def _join_v2(row):
+        parts = [row[c] for c in tmp_cols if row[c]]
+        return ' and '.join(parts)
+
+    df[comments_col] = ''
+    mask_no = df[yesno_col] == 'No'
+    df.loc[mask_no, comments_col] = df.loc[mask_no, tmp_cols].apply(_join_v2, axis=1)
+    df.drop(columns=tmp_cols, inplace=True)
+
+    return df
+
+
+# ---------- Validation 3 (Cadency) ----------
+def _run_validation3(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cadency User Validation:
+      - Add:
+          'Validation 3|Yes/No|Cadency User Validation'
+          'Validation 3|Comments|Cadency User Validation Comments for "No"'
+      - Check Active == "Yes" for each role.
+      - If any is not "Yes" (including NaN), overall = "No" and add comments:
+          "R1 is inactive", "R2 is inactive", "R3 is inactive" joined with " and ".
+    """
+    df = df.copy()
+
+    # If your dataset uses different columns for RH2/RH3, edit here:
+    src = {
+        'R1': 'Proposed changes|Role Holder1 Preparer|Active',
+        'R2': 'Proposed changes|Role Holder2 Reviewer|Active',         # assumed Active (not Group Grade)
+        'R3': 'Proposed changes|Role Holder3Account Owner|Active',     # assumed Active (not Group Grade)
+    }
+
+    # Ensure columns exist
+    for c in src.values():
+        if c not in df.columns:
+            df[c] = np.nan
+
+    # Normalize to check equals "YES"
+    norm = {rk: df[c].astype(str).str.strip().str.upper() for rk, c in src.items()}
+    is_yes = {rk: (norm[rk] == 'YES') for rk in src}
+
+    all_active = is_yes['R1'] & is_yes['R2'] & is_yes['R3']
+    yesno_col = 'Validation 3 (User active or not)|Yes/No|Cadency User Validation'
+    df[yesno_col] = np.where(all_active, 'Yes', 'No')
+
+    # Comments for any inactive (No/NaN/anything not "Yes")
+    tmp_cols = []
+    for rk in ['R1', 'R2', 'R3']:
+        tcol = f'__v3_{rk}'
+        df[tcol] = np.where(~is_yes[rk], rk + ' is inactive', '')
+        tmp_cols.append(tcol)
+
+    def _join_v3(row):
+        return ' and '.join([row[c] for c in tmp_cols if row[c]])
+
+    comments_col = 'Validation 3 (User active or not)|Comments|Cadency User Validation Comments for "No"'
+    df[comments_col] = ''
+    mask_no = df[yesno_col] == 'No'
+    df.loc[mask_no, comments_col] = df.loc[mask_no, tmp_cols].apply(_join_v3, axis=1)
+    df.drop(columns=tmp_cols, inplace=True)
+
+    return df
+
+
+# ---------- Public Pipeline ----------
+def run_all_validations(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Runs:
+      1) Validation 1 (DQ)
+      2) Validation 2 (Grade)
+      3) Validation 3 (Cadency)
+    Returns a new DataFrame with all validation columns added.
+    """
+    out = _run_validation1(df)
+    out = _run_validation2(out)
+    out = _run_validation3(out)
+    return out
+
+
+
+def process_admin_files():
+    global processed_dfs, user_info_df
+    if not admin_folder_path.get():
+        admin_status_label.config(text="Error: No input folder selected", fg="red")
+        return
+
+    consolidate_button = [w for w in admin_frame.winfo_children() if isinstance(w, ttk.Button) and w.cget("text") == "Consolidate"][0]
+    consolidate_button.config(state="disabled")
+
+    # Create progress window
+    progress = ProgressWindow(root, "Consolidating Files")
+    progress.update(0, "Scanning for Excel files...", "0% complete")
+
+    def process_files():
+        try:
+            start_time_for_admin = time.time()
+            local_user_info_df = None
+            cadency_df = None
+            fatal_admin_errors: List[Dict[str, Any]] = []
+            logger.info("Admin consolidation started by %s", keyword)
+            progress.update(5, "Scanning for Excel files...", "5% complete")
+            search_pattern = os.path.join(admin_folder_path.get(), "**", "*.xls*")
+            allowed_ext = {".xlsx", ".xlsm", ".xlsb", ".xls"}
+            xlsx_files = [
+                path for path in glob.glob(search_pattern, recursive=True)
+                if os.path.splitext(path)[1].lower() in allowed_ext
+            ]
+            
+            total_files = len(xlsx_files)
+            if total_files == 0:
+                progress.close()
+                admin_status_label.config(text="Error: No Excel files found", fg="red")
+                return
+            
+            start_ld = time.time()
+            l_and_d_pattern = os.path.join(admin_folder_path.get(), "**", "*L&D*.xls*")
+            l_and_d_files = glob.glob(l_and_d_pattern, recursive=True)
+            if l_and_d_files:
+                file_path = l_and_d_files[0]
+                try:
+                    local_user_info_df = pd.read_excel(file_path, sheet_name='Data', header=1)
+                except ValueError:
+                    local_user_info_df = pd.read_excel(file_path, header=1)
+                user_info_df = local_user_info_df
+
+            end_ld = time.time()
+            print(f"time taken in reading L&D file: {end_ld - start_ld:.4f} sec")
+
+            start_cadency = time.time()
+            cadency_pattern = os.path.join(admin_folder_path.get(), "**", "*Cadency*.xls*")
+            cadency_files = glob.glob(cadency_pattern, recursive=True)
+            if cadency_files:
+                cadency_file_path = cadency_files[0]
+                cadency_df = pd.read_excel(cadency_file_path, header=3)
+                cadency_df = cadency_df.loc[:, cadency_df.columns.isin(['User ID', 'Active'])].copy()
+
+            end_cadency = time.time()
+            print(f"time taken in reading Cadency file: {end_cadency - start_cadency:.4f} sec")
+            user_info_df = local_user_info_df
+            
+            # Read all files and check column structure
+            processed_count = 0
+            dfs = []
+            column_mapping = {}
+            first_columns = None
+            
+            for i, file in enumerate(xlsx_files, 1):
+                progress.update(20 + (i/total_files)*60, f"Processing file {i} of {total_files}", f"{20 + int((i/total_files)*60)}% complete")
+                try:
+                    df = read_excel_auto(file)
+                except Exception as exc:
+                    context = f"Skipped {os.path.basename(file)} (unable to open)"
+                    logger.exception("%s: %s", context, exc)
+                    fatal_admin_errors.append({
+                        "file": file,
+                        "message": str(exc),
+                        "resolution": "Review the template structure and ensure all required columns are present."
+                    })
+                    admin_status_label.config(text=f"{context}. See the log for details.", fg="red")
+                    continue
+                
+                if first_columns is None:
+                    first_columns = df.columns
+                    for col in df.columns:
+                        flattened_name = "|".join([str(c) for c in col if c]).strip('_')
+                        column_mapping[flattened_name] = col
+                elif not df.columns.equals(first_columns):
+                    message = f"Inconsistent column structure detected in {os.path.basename(file)}. Please ensure all templates use the latest format."
+                    logger.error(message)
+                    progress.close()
+                    admin_status_label.config(text=message, fg="red")
+                    if fatal_admin_errors:
+                        show_fatal_errors(fatal_admin_errors)
+                    consolidate_button.config(state="normal")
+                    return
+                    
+                df.columns = ['|'.join([str(c) for c in col if c]).strip('_') for col in df.columns]
+                dfs.append(df)
+                processed_count += 1
+
+            if not dfs:
+                progress.close()
+                admin_status_label.config(text="Error: No valid Excel files could be processed. Review the skipped files and try again.", fg="red")
+                logger.error("Admin consolidation aborted: no valid files to consolidate.")
+                if fatal_admin_errors:
+                    show_fatal_errors(fatal_admin_errors)
+                return
+
+            master_df = pd.concat(dfs, ignore_index=True)
+            master_df = master_df.drop_duplicates().reset_index(drop=True)
+
+            end_a_file_reading = time.time()
+            print(f"time taken in reading all admin files: {end_a_file_reading - start_time_for_admin:.4f} sec")
+
+            rename_dict = {
+                "Proposed changes|Role Holder3Account Owner|Comments": "Comments",
+                "Proposed changes|Role Holder3Account Owner|Submitted by": "Submitted by",
+                "Proposed changes|Role Holder3Account Owner|Submitted time": "Submitted time",
+                "Proposed changes|Role Holder3Account Owner|User Data Quality Checks": "User Data Quality Checks"}
+
+            for key, value in rename_dict.items():
+                master_df = master_df.rename(columns = {key:value})
+
+            column_mapping = {rename_dict.get(k,k):v for k,v in column_mapping.items()}
+            progress.update(85, "Consolidating data...","85% complete")
+            
+            # Verify USERID column exists
+            userid_col = "Submitted by"
+            if userid_col not in master_df.columns:
+                admin_status_label.config(text="Error: USERID column not found", fg="red")
+                return
+
+            # Store original flattened column order
+            original_flat_cols = master_df.columns.tolist()
+            
+            # Remove columns with all null values
+            non_null_cols = master_df.columns[~master_df.isna().all()]
+            null_cols = [l for l in original_flat_cols if l not in non_null_cols]
+            master_df_non_null = master_df[non_null_cols]
+            # master_df_non_null = master_df_non_null.fillna('NULL')
+            
+            metadata_columns = {
+                "Comments",
+                "Submitted by",
+                "Submitted time",
+                "User Data Quality Checks",
+            }
+            data_columns = [col for col in master_df_non_null.columns if col not in metadata_columns]
+            if not data_columns:
+                data_columns = master_df_non_null.columns.tolist()
+
+            reviewer_keywords = ("Role Holder",)
+            reviewers_columns = [
+                col for col in data_columns if any(keyword in col for keyword in reviewer_keywords)
+            ]
+            if not reviewers_columns:
+                reviewers_columns = data_columns
+
+            condition_non_blank = master_df_non_null[reviewers_columns].notna().any(axis=1)
+            master_df_non_null_filled = master_df_non_null[condition_non_blank].copy()
+            master_df_non_null_outstanding = master_df_non_null[~condition_non_blank].copy()
+
+            master_df_non_null_filled = master_df_non_null_filled.fillna('NULL')
+            master_df_non_null_outstanding = master_df_non_null_outstanding.drop_duplicates().reset_index(drop=True)
+
+            #Group by specified columns
+            if 'Submitted time' in master_df_non_null_filled.columns:
+                master_df_non_null_filled['Submitted time'] = pd.to_datetime(
+                    master_df_non_null_filled['Submitted time'],
+                    format='%d-%m-%Y|%H:%M:%S',
+                    errors='coerce'
+                )
+
+            grouped_iter = (
+                master_df_non_null_filled.groupby(data_columns, dropna=False)
+                if data_columns
+                else [(None, master_df_non_null_filled)]
+            )
+
+            no_conflict = pd.DataFrame(columns=master_df_non_null.columns)
+            
+            conflict_report_columns = list(master_df_non_null.columns) + ["Conflict Log"]
+            
+            conflict_report = pd.DataFrame(columns=conflict_report_columns)
+
+            for name, group in grouped_iter:
+                if group.empty:
+                    continue
+
+                if len(group) == 1:
+                    no_conflict = pd.concat([no_conflict,group], ignore_index=True)
+                else:
+                    available_reviewers = [col for col in reviewers_columns if col in group.columns]
+                    reviewers_cols = group[available_reviewers] if available_reviewers else group
+                    all_reviewers_same = (reviewers_cols.drop_duplicates().shape[0] == 1)
+                    
+                    if all_reviewers_same:
+                        if 'Submitted time' in group.columns:
+                            submitted_times = pd.to_datetime(group['Submitted time'], errors='coerce')
+                            if submitted_times.notna().any():
+                                latest_idx = submitted_times.idxmax()
+                                latest_row = group.loc[latest_idx]
+                            else:
+                                latest_row = group.iloc[-1]
+                        else:
+                            latest_row = group.iloc[-1]
+                        no_conflict = pd.concat([no_conflict,latest_row.to_frame().T],ignore_index=True)
+                    else:
+                        conf_cols = [col for col in group.columns if col not in data_columns]
+                        group = add_detailed_conflict_log(group,conf_cols)
+                        conflict_report = pd.concat([conflict_report,group],ignore_index=True)
+
+
+            processed_dfs = {
+                'no_conflict': no_conflict,
+                'outstanding': master_df_non_null_outstanding,
+                'conflict_report': conflict_report,
+                'column_mapping': column_mapping
+            }
+
+            conflict_time = time.time()
+            print(f"time taken in processing conflicts: {conflict_time - end_a_file_reading:.4f} sec")
+
+
+            def unflatten_columns(flat_columns, column_mapping):
+                new_columns = []
+                for col in flat_columns:
+                    if col in column_mapping:
+                        new_columns.append(column_mapping[col])
+                    else:
+                        new_columns.append((col, '', ''))
+                return pd.MultiIndex.from_tuples(new_columns)
+
+            def adding_null_col(df):
+                for col in null_cols:
+                    if col not in df.columns:
+                        df[col] = np.nan
+                        
+                dict_columns = list(column_mapping.keys())
+                if 'Conflict Log' in df.columns:
+                    final_columns = dict_columns + ['Conflict Log']
+                else:
+                    final_columns = dict_columns
+                df = df[final_columns]
+                return df
+
+            def process_final_df(df):
+                if 'Submitted time' in df.columns:
+                    df['Submitted time'] = pd.to_datetime(df['Submitted time'], format="%d-%m-%Y|%H:%M:%S", errors='coerce')
+                    df['Submitted time'] = df['Submitted time'].dt.strftime('%d-%m-%Y|%H:%M:%S')
+                df = adding_null_col(df)
+                df = df.replace("NULL", np.nan)
+                df.columns = unflatten_columns(df.columns, column_mapping)
+                df = df.drop_duplicates().reset_index(drop=True)
+                return df
+
+            no_conflict = process_final_df(no_conflict)
+            conflict_report = process_final_df(conflict_report)
+            outstanding = process_final_df(master_df_non_null_outstanding)
+            
+            outstanding = outstanding.drop(columns=['Submitted by','Submitted time','User Data Quality Checks'], errors='ignore')
+            outstanding_col_tuples = [tuple(col.split('|')) for col in outstanding.columns]
+            outstanding.columns = pd.MultiIndex.from_tuples(outstanding_col_tuples)
+
+            no_conflict_1 = add_l_and_d_data(no_conflict, local_user_info_df) if local_user_info_df is not None else no_conflict
+            conflict_report_1 = add_l_and_d_data(conflict_report, local_user_info_df) if local_user_info_df is not None else conflict_report
+
+            no_conflict_2 = add_cadency_data(no_conflict_1, cadency_df) if cadency_df is not None else no_conflict_1
+            conflict_report_2 = add_cadency_data(conflict_report_1, cadency_df) if cadency_df is not None else conflict_report_1
+
+            no_conflict_pre_format = run_all_validations(no_conflict_2)
+            conflict_report_pre_format = run_all_validations(conflict_report_2)
+
+            validation_time = time.time()
+            print(f"time taken in validations: {validation_time - conflict_time:.4f} sec")
+            if fatal_admin_errors:
+                logger.warning("Admin consolidation skipped %d file(s) due to errors.", len(fatal_admin_errors))
+
+            rearranged_cols = [('Comments',np.nan,np.nan),
+                               ('Submitted by',np.nan,np.nan),
+                               ('Submitted time',np.nan,np.nan),
+                               ('User Data Quality Checks',np.nan,np.nan),
+                               ('Conflict Log',np.nan,np.nan)]
+
+            no_conflict_final = move_multiindex_cols_to_end(no_conflict_pre_format, rearranged_cols)
+            conflict_report_final = move_multiindex_cols_to_end(conflict_report_pre_format, rearranged_cols)
+
+
+            # Save output Excel with three sheets
+            progress.update(95, "Saving output file...","95% complete")
+            
+            timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+            output_filename = build_output_filename(
+                "Consolidated_output",
+                [keyword, timestamp],
+                ".xlsx"
+            )
+            output_file = os.path.join(admin_output_folder_path.get(), output_filename)
+
+            workbook = Workbook()
+            workbook.remove(workbook.active)
+
+            # Write sheets
+            sheets = [
+                ("Consolidated Output", no_conflict_final),
+                ("Outstanding Records", outstanding),
+                ("Conflict Report", conflict_report_final)
+            ]
+
+            for sheet_name, df in sheets:
+                worksheet = workbook.create_sheet(sheet_name)
+                # Write headers
+                for col_idx, col in enumerate(df.columns, 1):
+                    worksheet.cell(row=1, column=col_idx).value = col[0] if "Unnamed" not in col[0] else ""
+                    worksheet.cell(row=2, column=col_idx).value = col[1] if "Unnamed" not in col[0] else ""
+                    worksheet.cell(row=3, column=col_idx).value = col[2]
+                    
+                # Write data (starting from row 4)
+                for row in dataframe_to_rows(df, index=False, header=False):
+                    worksheet.append(row)
+
+                format_multiindex_header(worksheet, header_rows=(1,2,3), start_col=1, end_col=worksheet.max_column)
+                autofit_columns(worksheet)
+
+            workbook.save(output_file)
+            
+            progress.update(100, "Process completed!", "100% complete")
+            time.sleep(0.5)
+            progress.close()
+            logger.info("Admin consolidation output created at %s", output_file)
+            if fatal_admin_errors:
+                admin_status_label.config(
+                    text=f"Completed with warnings: saved {output_file}. Some files were skipped.",
+                    fg="#b36b00"
+                )
+                show_fatal_errors(fatal_admin_errors)
+            else:
+                admin_status_label.config(text=f"Success: Consolidation saved as {output_file}", fg="green")
+                
+        except Exception as e:
+            progress.close()
+            handle_exception("Admin consolidation failed.", e)
+            admin_status_label.config(text="Error: Consolidation stopped. Check the error message for details.", fg="red")
+            
+        finally:
+            consolidate_button.config(state="normal")
+            
+    # Start the processing thread
+    threading.Thread(target=process_files, daemon=True).start()
+
+
+# Tkinter UI Setup
+root = tk.Tk()
+root.title("File Rename & Save")
+root.geometry("500x395")
+root.configure(bg="#f5f5f5")
+root.resizable(False, False)
+
+# Version
+version_label = tk.Label(
+    root,
+    text=f"Version: {VERSION}",
+    font=("Helvetica",8,"bold")
+
+
+)
+
+# Variables
+file_list = []
+folder_path = tk.StringVar()
+admin_folder_path = tk.StringVar()
+admin_output_folder_path = tk.StringVar()
+
+# Fonts and Styles
+label_font = ("Helvetica", 10)
+button_font = ("Helvetica", 10, "bold")
+stats_font = ("Helvetica", 10, "bold")
+
+# ttk Style for rounded buttons
+style = ttk.Style()
+style.theme_use("clam")
+style.configure("TButton",
+                padding=6,
+                relief="raised",
+                background="#4a90e2",
+                foreground="white",
+                borderwidth=2,
+                borderradius=10)
+style.map("TButton",
+          background=[("active", "#357ABD")])
+
+# Notebook for tabs
+notebook = ttk.Notebook(root)
+notebook.pack(padx=20, pady=20, fill="both", expand=True)
+
+# User Tab
+user_frame = tk.Frame(notebook, bg="#f5f5f5")
+notebook.add(user_frame, text="User Panel")
+
+# Admin Tab
+if getpass.getuser() in admin_users:
+    admin_frame = tk.Frame(notebook, bg="#f5f5f5")
+    notebook.add(admin_frame, text="Admin Panel")
+else:
+    notebook.tab(0, state="normal")
+    
+
+# User Tab Content
+tk.Label(user_frame, text="BSRS Role Holder Collection Tool", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+ttk.Button(user_frame, text="Select BSRS Template", command=select_files, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Select Destination Folder", command=select_folder, style="TButton").pack(pady=5)
+ttk.Button(user_frame, text="Submit", command=save_files, style="TButton").pack(pady=15)
+status_label = tk.Label(user_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333")
+status_label.pack(pady=5)
+stats_label = tk.Label(user_frame, text="Template Selected: 0\nDestination Folder: Not Selected",
+                      font=stats_font, bg="#f5f5f5", fg="#333333", justify="left", anchor="nw",
+                      wraplength=450)
+stats_label.pack(pady=10, fill="x")
+
+# Admin Tab Content
+if getpass.getuser() in admin_users:
+    tk.Label(admin_frame, text="BSRS Role Holder Collection Tool", font=("Helvetica", 14, "bold"), bg="#f5f5f5").pack(pady=10)
+    
+    folder_button_frame = tk.Frame(admin_frame, bg="#f5f5f5")
+    folder_button_frame.pack(pady=5, fill="x")
+    
+    ttk.Button(folder_button_frame, text="Select Input Folder", command=select_admin_folder, style="TButton").pack(pady=5)
+    
+    output_folder_button = ttk.Button(folder_button_frame, text="Select Output Folder", command=select_admin_output_folder, style="TButton")
+    output_folder_button.pack(pady=5)
+    
+    save_button = ttk.Button(admin_frame, text="Consolidate", command=process_admin_files, style="TButton")
+    save_button.pack(pady=5)
+    
+    global admin_status_label
+    admin_status_label = tk.Label(admin_frame, text="Ready", font=label_font, bg="#f5f5f5", fg="#333333", justify="left",anchor="nw"
+    ,wraplength=450)
+    admin_status_label.pack(pady=10)
+    
+version_label.place(relx=1.0, x=-24, y=23, anchor='ne')
+
+version_label.lift()
+
+root.mainloop()

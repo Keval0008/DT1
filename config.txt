@@ -1,152 +1,35 @@
-import pandas as pd
-from typing import Dict, Union, Iterable
+# After building `rows`, enforce CC=0 (except opening) and recompute Total
+# Build quick lookup by entity
+by_entity = {}
+for r in rows:
+    by_entity.setdefault(r["entity"], {}).update({r["business_line"].strip(): r})
 
-def compute_cet1_with_total(
-    te_perc: Dict[str, float],
-    rwa_perc: Dict[str, float],
-    rwa_opening: Dict[str, float],
-    input_data: Union[pd.DataFrame, str],
-    cgu_split_cols: Iterable[str] = ("IWPB", "CIB", "CC"),
-    cgu_output_cols: Iterable[str] = ("IWPB", "CIB", "CC", "Total"),
-    category_col: str = "category",
-    amount_col: str = "Amount",
-    entity_col: str = "entity",
-) -> pd.DataFrame:
-    """
-    Compute CET1 per entity & business_line (IWPB, CIB, CC, Total).
+for entity, m in by_entity.items():
+    total_row = m.get("Total")
+    cib_row   = m.get("CIB")
+    iwpb_row  = m.get("IWPB")
+    cc_row    = m.get("CC")
 
-    Rules:
-      1) Split each row's Amount across IWPB/CIB/CC by:
-         a) If any of IWPB/CIB/CC columns are non-null on the row -> use those explicit weights (normalize per row).
-         b) Else if category contains 'adjustment' -> use rwa_perc.
-         c) Else if category contains 'tangible'  -> use te_perc.
-         d) Else -> use te_perc (fallback).
-      2) Aggregate split amounts per (entity, CGU).
-      3) Add a 'Total' CGU by summing IWPB+CIB+CC per entity.
-      4) Output CET1 as: (aggregated split amount for that CGU)/(rwa_opening[CGU]).
-      5) 'CET1 Adjustment' is always 0.
+    if not total_row:
+        continue
 
-    Parameters
-    ----------
-    te_perc, rwa_perc : dict
-        Mapping like {"IWPB": 0.45, "CIB": 0.35, "CC": 0.20}. They will be normalized.
-    rwa_opening : dict
-        RWA opening amounts per CGU, must include keys for all cgu_output_cols
-        (IWPB, CIB, CC, and Total). If 'Total' is omitted, it will be inferred as
-        the sum of IWPB+CIB+CC openings.
-    input_data : DataFrame or CSV path
+    # find all Actual|* keys
+    actual_keys = [k for k in total_row.keys() if k.startswith("Actual|")]
 
-    Returns
-    -------
-    DataFrame with columns: entity, business_line, CET1, CET1 Adjustment
-    """
+    for k in actual_keys:
+        if k == "Actual|Opening":
+            # keep opening CC from circulation
+            continue
+        # zero CC for later years
+        if cc_row:
+            cc_row[k] = 0.0
 
-    # Load data if path provided
-    if isinstance(input_data, str):
-        df = pd.read_csv(input_data)
-    else:
-        df = input_data.copy()
-
-    # Basic checks
-    for col in (entity_col, category_col, amount_col):
-        if col not in df.columns:
-            raise ValueError(f"Missing required column '{col}' in input_data.")
-
-    # Helper: normalize dictionary to weights over the CGU split columns
-    def normalize_map(m: Dict[str, float], keys: Iterable[str]) -> Dict[str, float]:
-        vals = {k: float(m.get(k, 0.0)) for k in keys}
-        s = sum(v for v in vals.values() if pd.notna(v))
-        if s == 0:
-            # Equal split if no info
-            n = len(list(keys))
-            return {k: 1.0 / n for k in keys}
-        return {k: (vals[k] / s) for k in keys}
-
-    te_w  = normalize_map(te_perc,  cgu_split_cols)
-    rwa_w = normalize_map(rwa_perc, cgu_split_cols)
-
-    # Prepare accumulator
-    rows = []
-
-    # Per-row split across the three CGUs (not including 'Total' yet)
-    for _, row in df.iterrows():
-        amount = row.get(amount_col, 0.0)
-        amount = 0.0 if pd.isna(amount) else float(amount)
-
-        # Use explicit weights if any CGU split columns have values on the row
-        explicit_present = False
-        explicit_vals = {}
-        for c in cgu_split_cols:
-            if c in df.columns and pd.notna(row.get(c)):
-                explicit_present = True
-                explicit_vals[c] = float(row.get(c))
-
-        if explicit_present:
-            w = normalize_map(explicit_vals, cgu_split_cols)
-        else:
-            cat = str(row.get(category_col, "")).lower()
-            if "adjustment" in cat:
-                w = rwa_w
-            elif "tangible" in cat:
-                w = te_w
-            else:
-                w = te_w  # fallback
-
-        for cgu in cgu_split_cols:
-            rows.append({
-                "entity": row.get(entity_col),
-                "business_line": cgu,
-                "split_amount": amount * w.get(cgu, 0.0)
-            })
-
-    # Aggregate split amounts per entity x CGU
-    agg = (
-        pd.DataFrame(rows)
-        .groupby(["entity", "business_line"], as_index=False)
-        .agg(split_amount=("split_amount", "sum"))
-    )
-
-    # Add 'Total' per entity = sum across base CGUs
-    totals = (
-        agg.groupby("entity", as_index=False)
-           .agg(split_amount=("split_amount", "sum"))
-           .assign(business_line="Total")
-    )
-    agg_total = pd.concat([agg, totals], ignore_index=True)
-
-    # Make sure RWA opening has 'Total'; if not, infer
-    rwa_opening = {k: float(v) for k, v in rwa_opening.items()}
-    if "Total" not in rwa_opening:
-        # infer as sum of the three if available
-        needed = [k for k in cgu_split_cols if k in rwa_opening]
-        if len(needed) != len(list(cgu_split_cols)):
-            raise ValueError("rwa_opening must include either 'Total' or all of IWPB, CIB, and CC.")
-        rwa_opening["Total"] = sum(rwa_opening[k] for k in cgu_split_cols)
-
-    # Compute CET1 = split_amount / RWA_opening[CGU] (safe divide)
-    def safe_div(num, den):
-        if den is None or pd.isna(den) or den == 0:
-            return float("nan")
-        return num / den
-
-    agg_total["CET1"] = agg_total.apply(
-        lambda r: safe_div(
-            r["split_amount"],
-            rwa_opening.get(str(r["business_line"]))
-        ),
-        axis=1
-    )
-
-    out = (
-        agg_total
-        .loc[agg_total["business_line"].isin(cgu_output_cols), ["entity", "business_line", "CET1"]]
-        .copy()
-    )
-    out["CET1 Adjustment"] = 0.0
-
-    # Order rows nicely
-    order_map = {name: i for i, name in enumerate(cgu_output_cols)}
-    out["__ord"] = out["business_line"].map(order_map).fillna(9999)
-    out = out.sort_values(["entity", "__ord"]).drop(columns="__ord").reset_index(drop=True)
-
-    return out
+        # recompute Total = CIB + IWPB + CC
+        total_val = 0.0
+        if cib_row:
+            total_val += float(cib_row.get(k, 0.0) or 0.0)
+        if iwpb_row:
+            total_val += float(iwpb_row.get(k, 0.0) or 0.0)
+        if cc_row:
+            total_val += float(cc_row.get(k, 0.0) or 0.0)
+        total_row[k] = total_val

@@ -1,35 +1,100 @@
-# After building `rows`, enforce CC=0 (except opening) and recompute Total
-# Build quick lookup by entity
-by_entity = {}
-for r in rows:
-    by_entity.setdefault(r["entity"], {}).update({r["business_line"].strip(): r})
+import pandas as pd
+from typing import Dict
 
-for entity, m in by_entity.items():
-    total_row = m.get("Total")
-    cib_row   = m.get("CIB")
-    iwpb_row  = m.get("IWPB")
-    cc_row    = m.get("CC")
+# Load data
+df = pd.read_csv("/mnt/data/saracen.csv")
 
-    if not total_row:
-        continue
+# --- Corrected normalization ---
+def normalize_ratios_total_fixed_to_one(ratio_dict: Dict[str, float]) -> Dict[str, float]:
+    """
+    Keep 'Total' fixed at 1.0.
+    Normalize all other GBs so that their *sum* equals 1.0 (proportional to their original weights).
+    """
+    # Cast to float safely
+    clean = {k: float(v) for k, v in ratio_dict.items() if v is not None}
+    total_key = "Total"
+    others = {k: v for k, v in clean.items() if k != total_key}
+    sum_others = sum(others.values())
+    
+    normalized = {total_key: 1.0}
+    if sum_others == 0:
+        for k in others:
+            normalized[k] = 0.0
+    else:
+        for k, v in others.items():
+            normalized[k] = v / sum_others  # sum of others becomes 1.0
+    return normalized
 
-    # find all Actual|* keys
-    actual_keys = [k for k in total_row.keys() if k.startswith("Actual|")]
+def build_dict_for_entity_corrected(
+    df: pd.DataFrame,
+    entity_value: str,
+    gb: str,
+    te_base_ratio_dict: Dict[str, float],
+    re_base_ratio_dict: Dict[str, float],
+):
+    # Use corrected normalization
+    te_base_norm = normalize_ratios_total_fixed_to_one(te_base_ratio_dict)
+    re_base_norm = normalize_ratios_total_fixed_to_one(re_base_ratio_dict)
 
-    for k in actual_keys:
-        if k == "Actual|Opening":
-            # keep opening CC from circulation
+    ent_col, cat_col, item_col, amt_col = "entity", "category", "line_item", "Amount"
+    sub = df[df[ent_col] == entity_value].copy()
+
+    gb_present = gb in df.columns
+    after_amount = gb_present and df.columns.get_loc(gb) > df.columns.get_loc(amt_col)
+
+    tangible_equity, additional_tangible, adjustment = {}, {}, {}
+
+    te_fallback = te_base_norm.get(gb, 0.0)
+    re_fallback = re_base_norm.get(gb, 0.0)
+
+    for _, r in sub.iterrows():
+        category = str(r[cat_col]).strip().lower()
+        item = r[item_col]
+        amount = float(r[amt_col]) if pd.notna(r[amt_col]) else 0.0
+
+        # Prefer row value from gb column if available *and* column after Amount
+        row_ratio = None
+        if gb_present and after_amount and pd.notna(r.get(gb)):
+            try:
+                row_ratio = float(r[gb])
+            except Exception:
+                row_ratio = None
+
+        if category in ("tangible", "additional tangible"):
+            ratio = row_ratio if row_ratio is not None else te_fallback
+        elif category == "adjustment":
+            ratio = row_ratio if row_ratio is not None else re_fallback
+        else:
             continue
-        # zero CC for later years
-        if cc_row:
-            cc_row[k] = 0.0
 
-        # recompute Total = CIB + IWPB + CC
-        total_val = 0.0
-        if cib_row:
-            total_val += float(cib_row.get(k, 0.0) or 0.0)
-        if iwpb_row:
-            total_val += float(iwpb_row.get(k, 0.0) or 0.0)
-        if cc_row:
-            total_val += float(cc_row.get(k, 0.0) or 0.0)
-        total_row[k] = total_val
+        value = amount * ratio
+        if category == "tangible":
+            tangible_equity[item] = value
+        elif category == "additional tangible":
+            additional_tangible[item] = value
+        else:  # adjustment
+            adjustment[item] = value
+
+    return {
+        "tangible_equity": tangible_equity,
+        "additional_tangible": additional_tangible,
+        "adjustment": adjustment,
+        "meta": {
+            "entity": entity_value,
+            "gb": gb,
+            "te_base_ratio_used_when_gb_missing": te_fallback,
+            "re_base_ratio_used_when_gb_missing": re_fallback,
+            "normalized_te_ratio": te_base_norm,
+            "normalized_re_ratio": re_base_norm,
+        },
+    }
+
+# Provided base ratios
+te_base_ratio = {"Total":220,"IWPB":100,"CC":80,"CIB":40}
+re_base_ratio = {"Total":220,"IWPB":120,"CC":60,"CIB":40}
+
+# Run for entity and gb="CIB"
+entity_value = df['entity'].dropna().unique().tolist()[0]
+gb_choice = "CIB"
+result_cib_corrected = build_dict_for_entity_corrected(df, entity_value, gb_choice, te_base_ratio, re_base_ratio)
+result_cib_corrected

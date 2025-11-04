@@ -1,100 +1,96 @@
 import pandas as pd
-from typing import Dict
+import numpy as np
 
-# Load data
-df = pd.read_csv("/mnt/data/saracen.csv")
+# --- 0) Optional: make column names consistent (only if your df has different casing) ---
+# df = df.rename(columns={'GRCA Account':'grca_account'})  # uncomment if needed
 
-# --- Corrected normalization ---
-def normalize_ratios_total_fixed_to_one(ratio_dict: Dict[str, float]) -> Dict[str, float]:
-    """
-    Keep 'Total' fixed at 1.0.
-    Normalize all other GBs so that their *sum* equals 1.0 (proportional to their original weights).
-    """
-    # Cast to float safely
-    clean = {k: float(v) for k, v in ratio_dict.items() if v is not None}
-    total_key = "Total"
-    others = {k: v for k, v in clean.items() if k != total_key}
-    sum_others = sum(others.values())
-    
-    normalized = {total_key: 1.0}
-    if sum_others == 0:
-        for k in others:
-            normalized[k] = 0.0
-    else:
-        for k, v in others.items():
-            normalized[k] = v / sum_others  # sum of others becomes 1.0
-    return normalized
+# --- 1) Filter for Country Reclass & non-zero adjustments ---
+df_country = (
+    df.loc[df['Adj Purpose Desc'].str.lower().eq('country reclass')]
+      .copy()
+)
+df_country = df_country.loc[df_country['Adjustment Amount'].ne(0)].copy()
 
-def build_dict_for_entity_corrected(
-    df: pd.DataFrame,
-    entity_value: str,
-    gb: str,
-    te_base_ratio_dict: Dict[str, float],
-    re_base_ratio_dict: Dict[str, float],
-):
-    # Use corrected normalization
-    te_base_norm = normalize_ratios_total_fixed_to_one(te_base_ratio_dict)
-    re_base_norm = normalize_ratios_total_fixed_to_one(re_base_ratio_dict)
+# Safety: if Adjustment Amount is floaty, define a stable match key with rounding
+# Adjust decimals if you need tighter/looser tolerance
+DECIMALS = 2
+df_country['match_amt'] = df_country['Adjustment Amount'].round(DECIMALS).abs()
 
-    ent_col, cat_col, item_col, amt_col = "entity", "category", "line_item", "Amount"
-    sub = df[df[ent_col] == entity_value].copy()
+# --- 2) Pair + and - rows inside each (grca_account, match_amt) bucket ---
+pair_blocks = []  # collect pair DataFrames
 
-    gb_present = gb in df.columns
-    after_amount = gb_present and df.columns.get_loc(gb) > df.columns.get_loc(amt_col)
+group_cols = ['grca_account', 'match_amt']
+for (acct, mamt), g in df_country.groupby(group_cols, sort=False):
+    # Split into + and - sets, stable order by original index to mimic Excel picking
+    pos = g.loc[g['Adjustment Amount'] > 0].sort_index()
+    neg = g.loc[g['Adjustment Amount'] < 0].sort_index()
 
-    tangible_equity, additional_tangible, adjustment = {}, {}, {}
+    if pos.empty or neg.empty:
+        continue
 
-    te_fallback = te_base_norm.get(gb, 0.0)
-    re_fallback = re_base_norm.get(gb, 0.0)
+    n_pairs = min(len(pos), len(neg))
+    # Take the first n pairs from each side (1-to-1 pairing)
+    pos_use = pos.head(n_pairs).copy()
+    neg_use = neg.head(n_pairs).copy()
 
-    for _, r in sub.iterrows():
-        category = str(r[cat_col]).strip().lower()
-        item = r[item_col]
-        amount = float(r[amt_col]) if pd.notna(r[amt_col]) else 0.0
+    # Build a pairs frame: FROM = negative code, TO = positive code
+    tmp = pd.DataFrame({
+        'grca_account': acct,
+        'amount': pos_use['Adjustment Amount'].to_numpy(),   # positive amount
+        'from_custom_9': neg_use['custom_9'].to_numpy(),
+        'to_custom_9': pos_use['custom_9'].to_numpy(),
+        'from_row_index': neg_use.index.to_numpy(),          # useful for traceability
+        'to_row_index': pos_use.index.to_numpy(),
+    })
 
-        # Prefer row value from gb column if available *and* column after Amount
-        row_ratio = None
-        if gb_present and after_amount and pd.notna(r.get(gb)):
-            try:
-                row_ratio = float(r[gb])
-            except Exception:
-                row_ratio = None
+    pair_blocks.append(tmp)
 
-        if category in ("tangible", "additional tangible"):
-            ratio = row_ratio if row_ratio is not None else te_fallback
-        elif category == "adjustment":
-            ratio = row_ratio if row_ratio is not None else re_fallback
-        else:
-            continue
+# --- 3) Combine all pairs ---
+if pair_blocks:
+    pairs = pd.concat(pair_blocks, ignore_index=True)
+else:
+    pairs = pd.DataFrame(columns=[
+        'grca_account','amount','from_custom_9','to_custom_9','from_row_index','to_row_index'
+    ])
 
-        value = amount * ratio
-        if category == "tangible":
-            tangible_equity[item] = value
-        elif category == "additional tangible":
-            additional_tangible[item] = value
-        else:  # adjustment
-            adjustment[item] = value
+# --- 4) Optional sanity: any unmatched rows left (no opposite sign with same abs amount)?
+# Useful to review data quality.
+matched_from = set(pairs['from_row_index'].tolist())
+matched_to   = set(pairs['to_row_index'].tolist())
+matched_idx  = matched_from.union(matched_to)
+unmatched = df_country.loc[~df_country.index.isin(matched_idx)].copy()
 
-    return {
-        "tangible_equity": tangible_equity,
-        "additional_tangible": additional_tangible,
-        "adjustment": adjustment,
-        "meta": {
-            "entity": entity_value,
-            "gb": gb,
-            "te_base_ratio_used_when_gb_missing": te_fallback,
-            "re_base_ratio_used_when_gb_missing": re_fallback,
-            "normalized_te_ratio": te_base_norm,
-            "normalized_re_ratio": re_base_norm,
-        },
-    }
+# --- 5) Final outputs ---
 
-# Provided base ratios
-te_base_ratio = {"Total":220,"IWPB":100,"CC":80,"CIB":40}
-re_base_ratio = {"Total":220,"IWPB":120,"CC":60,"CIB":40}
+# A) Detailed pairs exactly like your Excel output idea
+# col1 = from_code (invalid), col2 = to_code (correct), col3 = amount
+detailed_pairs = pairs[['from_custom_9', 'to_custom_9', 'amount', 'grca_account']].copy()
+detailed_pairs = detailed_pairs.rename(columns={
+    'from_custom_9': 'from_code',
+    'to_custom_9': 'to_code'
+})
 
-# Run for entity and gb="CIB"
-entity_value = df['entity'].dropna().unique().tolist()[0]
-gb_choice = "CIB"
-result_cib_corrected = build_dict_for_entity_corrected(df, entity_value, gb_choice, te_base_ratio, re_base_ratio)
-result_cib_corrected
+# B) Summary: how many times and how much moved between each (from_code -> to_code)
+summary_pairs = (
+    detailed_pairs
+    .groupby(['from_code','to_code'], as_index=False)
+    .agg(
+        pair_count=('amount','count'),
+        total_moved=('amount','sum')
+    )
+    .sort_values(['total_moved','pair_count'], ascending=[False, False])
+)
+
+# C) Problematic sources to fix at origin: which from_code sends the most
+problem_sources = (
+    summary_pairs.groupby('from_code', as_index=False)['total_moved']
+    .sum()
+    .sort_values('total_moved', ascending=False)
+)
+
+# --- 6) Quick peeks (uncomment to view) ---
+# print(detailed_pairs.head(20))
+# print(summary_pairs.head(20))
+# print(problem_sources.head(20))
+# print("Unmatched rows (if any):", len(unmatched))
+# unmatched.head(10)

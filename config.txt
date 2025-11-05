@@ -1,107 +1,76 @@
 import pandas as pd
-from xlsxwriter.utility import xl_col_to_name
 
-# ---- your dataframe ----
-# df = ...
+def expand_dict_metrics(
+    df: pd.DataFrame,
+    keys_to_expand: list,
+    rename_map: dict | None = None,
+    include_scalar_metrics: bool = False,  # set True if you ALSO want original non-dict metrics kept
+) -> pd.DataFrame:
+    """
+    df: DataFrame with columns ['metric', <date1>, <date2>, ...]
+    keys_to_expand: list of dict keys to keep (others are dropped)
+    rename_map: optional dict to rename keys => new metric names
+    include_scalar_metrics: if False, only output rows from keys_to_expand; if True, also keep non-dict metrics
+    """
+    rename_map = rename_map or {}
 
-out_path = "output.xlsx"
-with pd.ExcelWriter(out_path, engine="xlsxwriter") as writer:
-    df.to_excel(writer, sheet_name="Sheet1", index=False)
+    # Identify date columns dynamically
+    date_cols = [c for c in df.columns if c != "metric"]
 
-    wb  = writer.book
-    ws  = writer.sheets["Sheet1"]
+    rows = []
 
-    # ---- formats ----
-    fmt_thousands_0 = wb.add_format({"num_format": "#,##0"})
-    fmt_percent_2   = wb.add_format({"num_format": "0.00%"})
-    # 'yyyy' ONLY works if the cell is a true Excel date serial (see note below)
-    fmt_year        = wb.add_format({"num_format": "yyyy"})
+    for _, row in df.iterrows():
+        # Check if this row has any dict-valued date entries
+        has_any_dict = any(isinstance(row[c], dict) for c in date_cols)
 
-    # ---- locate columns by name ----
-    cols = {name: i for i, name in enumerate(df.columns)}
+        if has_any_dict:
+            # Expand ONLY the requested keys
+            for k in keys_to_expand:
+                new_row = {"metric": rename_map.get(k, k)}
+                for c in date_cols:
+                    v = row[c]
+                    new_row[c] = (v.get(k) if isinstance(v, dict) else None)
+                rows.append(new_row)
+        else:
+            # Keep scalar metrics only if requested
+            if include_scalar_metrics:
+                rows.append(row.to_dict())
 
-    # 1) Fixed column formats for totals
-    for colname in ["value_in_use", "carrying_value", "headroom"]:
-        if colname in cols:
-            cidx = cols[colname]
-            ws.set_column(cidx, cidx, 14, fmt_thousands_0)
+    out = pd.DataFrame(rows)
 
-    # 2) No formatting needed for entity, CGU, period, field (skip)
+    # If renaming causes collisions (two original keys map to same name),
+    # aggregate by metric (sum). You can change to 'first' if needed.
+    if not out.empty:
+        out = (
+            out.groupby("metric", as_index=False)[date_cols]
+              .sum(min_count=1)  # keeps NaN if all are NaN
+        )
 
-    # 3) Row-wise conditional formatting based on `field`
-    #    We’ll format:
-    #      - the single `value` column
-    #      - the timeseries block from Opening … 2031
-    field_col = cols["field"]
-    value_col = cols["value"]
+        # Ensure numeric (anything non-numeric becomes NaN)
+        out[date_cols] = out[date_cols].apply(pd.to_numeric, errors="coerce")
 
-    # find start/end of the series block: from "Opening" to "2031"
-    series_start_name = "Opening"
-    series_end_name   = "2031"
-    series_start = cols[series_start_name]
-    series_end   = cols[series_end_name]
+    # Optional: sort for readability
+    out = out.sort_values("metric").reset_index(drop=True)
+    return out
 
-    # Excel addresses (1-based rows in Excel; header is row 1)
-    nrows = len(df)
-    data_first_row = 2                # row with first data (after header)
-    data_last_row  = nrows + 1
 
-    def col_range(c1, c2):
-        a = xl_col_to_name(c1)
-        b = xl_col_to_name(c2)
-        return f"{a}{data_first_row}:{b}{data_last_row}"
+# ---------- Example ----------
+# Sample input
+df = pd.DataFrame({
+    "metric": ["revenue", "sales_breakdown", "profit", "users"],
+    "2025-04-30": [100, {"A": 10, "B": 20, "C": 30}, 50, {"A": 5, "B": 8}],
+    "2025-08-31": [120, {"A": 15, "B": 25, "C": 35}, 70, {"A": 6, "B": 10}],
+})
 
-    def col_band(c):
-        a = xl_col_to_name(c)
-        return f"{a}{data_first_row}:{a}{data_last_row}"
+# You only want these keys, and you want them renamed:
+keys_to_expand = ["A", "B"]
+rename_map = {"A": "Tier_A", "B": "Tier_B"}
 
-    # helpful absolute reference to the `field` column for the current row
-    # If 'field' is column D (zero-based 3), formula will use $D2, etc.
-    field_abs_col_letter = xl_col_to_name(field_col)
-    fld = f"${field_abs_col_letter}"
+final_df = expand_dict_metrics(
+    df,
+    keys_to_expand=keys_to_expand,
+    rename_map=rename_map,
+    include_scalar_metrics=False,  # change to True if you also want 'revenue' and 'profit' kept
+)
 
-    # ---- apply conditional formats ----
-    # 3A) If field == "current_year"  -> year format
-    #     Apply to the VALUE column only (usually the series cells are blank for this)
-    ws.conditional_format(
-        col_band(value_col),
-        {
-            "type": "formula",
-            "criteria": f'=LOWER({fld}2)="current_year"',
-            "format": fmt_year,
-        },
-    )
-
-    # 3B) If field contains "rate" -> percentage format
-    #     Apply to VALUE and the Opening…2031 block
-    rate_formula = f'=ISNUMBER(SEARCH("rate",LOWER({fld}2)))'
-    ws.conditional_format(
-        col_band(value_col),
-        {"type": "formula", "criteria": rate_formula, "format": fmt_percent_2},
-    )
-    ws.conditional_format(
-        col_range(series_start, series_end),
-        {"type": "formula", "criteria": rate_formula, "format": fmt_percent_2},
-    )
-
-    # 3C) If field contains "rwa" OR "pbt" -> thousands, 0 decimals
-    rwa_pbt_formula = (
-        f'=OR(ISNUMBER(SEARCH("rwa",LOWER({fld}2))),ISNUMBER(SEARCH("pbt",LOWER({fld}2))))'
-    )
-    ws.conditional_format(
-        col_band(value_col),
-        {"type": "formula", "criteria": rwa_pbt_formula, "format": fmt_thousands_0},
-    )
-    ws.conditional_format(
-        col_range(series_start, series_end),
-        {"type": "formula", "criteria": rwa_pbt_formula, "format": fmt_thousands_0},
-    )
-
-    # (Optional) set some sensible column widths
-    ws.set_column(cols["entity"], cols["entity"], 18)
-    ws.set_column(cols["CGU"], cols["CGU"], 16)
-    ws.set_column(cols["period"], cols["period"], 12)
-    ws.set_column(cols["field"], cols["field"], 18)
-    ws.set_column(value_col, value_col, 12)
-    ws.set_column(series_start, series_end, 12)
-
+print(final_df)

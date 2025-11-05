@@ -6,36 +6,37 @@ def flatten_metric_dicts(df, keys_to_expand, rename_map=None):
     rows = []
 
     for _, row in df.iterrows():
-        metric = row['metric']
         has_dict = any(isinstance(row[c], dict) for c in date_cols)
 
         if has_dict:
-            # Expand only the keys you want
             for k in keys_to_expand:
                 new_row = {'metric': rename_map.get(k, k)}
+                vals = []
                 for c in date_cols:
                     v = row[c]
-                    new_row[c] = v.get(k) if isinstance(v, dict) else None
-                rows.append(new_row)
+                    val = v.get(k) if isinstance(v, dict) else None
+                    new_row[c] = val
+                    vals.append(val)
+                # ✅ only keep if at least one date has a value
+                if any(x is not None for x in vals):
+                    rows.append(new_row)
         else:
-            # Keep as-is for non-dict metrics
             rows.append(row.to_dict())
 
     out = pd.DataFrame(rows)
-    # Ensure all date columns are numeric
-    out[date_cols] = out[date_cols].apply(pd.to_numeric, errors='coerce')
+    if not out.empty:
+        out[date_cols] = out[date_cols].apply(pd.to_numeric, errors='coerce')
     return out.reset_index(drop=True)
 
-
-# ---------------- Example ----------------
 df = pd.DataFrame({
     'metric': ['revenue', 'sales_breakdown', 'profit', 'users'],
-    '2025-04-30': [100, {'A': 10, 'B': 20, 'C': 30}, 50, {'A': 5, 'B': 8}],
-    '2025-08-31': [120, {'A': 15, 'B': 25, 'C': 35}, 70, {'A': 6, 'B': 10}]
+    '2025-04-30': [100, {'A': 10, 'B': 20, 'C': 30}, 50, {'C': 5, 'D': 8}], 
+    '2025-08-31': [120, {'A': 15, 'B': 25, 'C': 35}, 70, {'C': 6, 'D': 10}] 
 })
 
-keys_to_expand = ['A', 'B']  # only these keys will be used
-rename_map = {'A': 'Tier_1', 'B': 'Tier_2'}  # optional renaming
+keys_to_expand = ['A', 'B']
+rename_map = {'A':'Tier_1','B':'Tier_2'}
 
 final_df = flatten_metric_dicts(df, keys_to_expand, rename_map)
 print(final_df)
+

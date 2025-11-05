@@ -1,76 +1,41 @@
 import pandas as pd
 
-def expand_dict_metrics(
-    df: pd.DataFrame,
-    keys_to_expand: list,
-    rename_map: dict | None = None,
-    include_scalar_metrics: bool = False,  # set True if you ALSO want original non-dict metrics kept
-) -> pd.DataFrame:
-    """
-    df: DataFrame with columns ['metric', <date1>, <date2>, ...]
-    keys_to_expand: list of dict keys to keep (others are dropped)
-    rename_map: optional dict to rename keys => new metric names
-    include_scalar_metrics: if False, only output rows from keys_to_expand; if True, also keep non-dict metrics
-    """
+def flatten_metric_dicts(df, keys_to_expand, rename_map=None):
     rename_map = rename_map or {}
-
-    # Identify date columns dynamically
-    date_cols = [c for c in df.columns if c != "metric"]
-
+    date_cols = [col for col in df.columns if col != 'metric']
     rows = []
 
     for _, row in df.iterrows():
-        # Check if this row has any dict-valued date entries
-        has_any_dict = any(isinstance(row[c], dict) for c in date_cols)
+        metric = row['metric']
+        has_dict = any(isinstance(row[c], dict) for c in date_cols)
 
-        if has_any_dict:
-            # Expand ONLY the requested keys
+        if has_dict:
+            # Expand only the keys you want
             for k in keys_to_expand:
-                new_row = {"metric": rename_map.get(k, k)}
+                new_row = {'metric': rename_map.get(k, k)}
                 for c in date_cols:
                     v = row[c]
-                    new_row[c] = (v.get(k) if isinstance(v, dict) else None)
+                    new_row[c] = v.get(k) if isinstance(v, dict) else None
                 rows.append(new_row)
         else:
-            # Keep scalar metrics only if requested
-            if include_scalar_metrics:
-                rows.append(row.to_dict())
+            # Keep as-is for non-dict metrics
+            rows.append(row.to_dict())
 
     out = pd.DataFrame(rows)
-
-    # If renaming causes collisions (two original keys map to same name),
-    # aggregate by metric (sum). You can change to 'first' if needed.
-    if not out.empty:
-        out = (
-            out.groupby("metric", as_index=False)[date_cols]
-              .sum(min_count=1)  # keeps NaN if all are NaN
-        )
-
-        # Ensure numeric (anything non-numeric becomes NaN)
-        out[date_cols] = out[date_cols].apply(pd.to_numeric, errors="coerce")
-
-    # Optional: sort for readability
-    out = out.sort_values("metric").reset_index(drop=True)
-    return out
+    # Ensure all date columns are numeric
+    out[date_cols] = out[date_cols].apply(pd.to_numeric, errors='coerce')
+    return out.reset_index(drop=True)
 
 
-# ---------- Example ----------
-# Sample input
+# ---------------- Example ----------------
 df = pd.DataFrame({
-    "metric": ["revenue", "sales_breakdown", "profit", "users"],
-    "2025-04-30": [100, {"A": 10, "B": 20, "C": 30}, 50, {"A": 5, "B": 8}],
-    "2025-08-31": [120, {"A": 15, "B": 25, "C": 35}, 70, {"A": 6, "B": 10}],
+    'metric': ['revenue', 'sales_breakdown', 'profit', 'users'],
+    '2025-04-30': [100, {'A': 10, 'B': 20, 'C': 30}, 50, {'A': 5, 'B': 8}],
+    '2025-08-31': [120, {'A': 15, 'B': 25, 'C': 35}, 70, {'A': 6, 'B': 10}]
 })
 
-# You only want these keys, and you want them renamed:
-keys_to_expand = ["A", "B"]
-rename_map = {"A": "Tier_A", "B": "Tier_B"}
+keys_to_expand = ['A', 'B']  # only these keys will be used
+rename_map = {'A': 'Tier_1', 'B': 'Tier_2'}  # optional renaming
 
-final_df = expand_dict_metrics(
-    df,
-    keys_to_expand=keys_to_expand,
-    rename_map=rename_map,
-    include_scalar_metrics=False,  # change to True if you also want 'revenue' and 'profit' kept
-)
-
+final_df = flatten_metric_dicts(df, keys_to_expand, rename_map)
 print(final_df)

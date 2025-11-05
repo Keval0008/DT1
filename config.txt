@@ -1,42 +1,47 @@
-import pandas as pd
-
-def flatten_metric_dicts(df, keys_to_expand, rename_map=None):
-    rename_map = rename_map or {}
+def expand_dict_metrics_optimized(df, key_mapping=None, keys_to_include=None):
+    """
+    Optimized version using pandas operations.
+    """
+    # Separate numeric and dictionary rows
     date_cols = [col for col in df.columns if col != 'metric']
-    rows = []
-
-    for _, row in df.iterrows():
-        has_dict = any(isinstance(row[c], dict) for c in date_cols)
-
-        if has_dict:
-            for k in keys_to_expand:
-                new_row = {'metric': rename_map.get(k, k)}
-                vals = []
-                for c in date_cols:
-                    v = row[c]
-                    val = v.get(k) if isinstance(v, dict) else None
-                    new_row[c] = val
-                    vals.append(val)
-                # ✅ only keep if at least one date has a value
-                if any(x is not None for x in vals):
-                    rows.append(new_row)
-        else:
-            rows.append(row.to_dict())
-
-    out = pd.DataFrame(rows)
-    if not out.empty:
-        out[date_cols] = out[date_cols].apply(pd.to_numeric, errors='coerce')
-    return out.reset_index(drop=True)
-
-df = pd.DataFrame({
-    'metric': ['revenue', 'sales_breakdown', 'profit', 'users'],
-    '2025-04-30': [100, {'A': 10, 'B': 20, 'C': 30}, 50, {'C': 5, 'D': 8}], 
-    '2025-08-31': [120, {'A': 15, 'B': 25, 'C': 35}, 70, {'C': 6, 'D': 10}] 
-})
-
-keys_to_expand = ['A', 'B']
-rename_map = {'A':'Tier_1','B':'Tier_2'}
-
-final_df = flatten_metric_dicts(df, keys_to_expand, rename_map)
-print(final_df)
-
+    
+    # Identify rows with dictionaries
+    has_dict_mask = df[date_cols].applymap(lambda x: isinstance(x, dict)).any(axis=1)
+    
+    numeric_df = df[~has_dict_mask].copy()
+    dict_df = df[has_dict_mask].copy()
+    
+    # Process dictionary rows
+    expanded_data = []
+    
+    for _, row in dict_df.iterrows():
+        # Collect all unique keys from all date columns
+        all_keys = set()
+        for col in date_cols:
+            if isinstance(row[col], dict):
+                all_keys.update(row[col].keys())
+        
+        # Create rows for each key
+        for key in all_keys:
+            if keys_to_include and key not in keys_to_include:
+                continue
+                
+            new_key = key_mapping.get(key, key) if key_mapping else key
+            
+            new_row = {'metric': new_key}
+            for col in date_cols:
+                if isinstance(row[col], dict):
+                    new_row[col] = row[col].get(key, np.nan)
+                else:
+                    new_row[col] = np.nan
+            
+            expanded_data.append(new_row)
+    
+    # Combine all data
+    expanded_df = pd.DataFrame(expanded_data)
+    final_df = pd.concat([numeric_df, expanded_df], ignore_index=True)
+    
+    # Remove duplicates
+    final_df = final_df.drop_duplicates(subset=['metric'], keep='first')
+    
+    return final_df.reset_index(drop=True)

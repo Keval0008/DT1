@@ -1,47 +1,96 @@
-def expand_dict_metrics_optimized(df, key_mapping=None, keys_to_include=None):
-    """
-    Optimized version using pandas operations.
-    """
-    # Separate numeric and dictionary rows
-    date_cols = [col for col in df.columns if col != 'metric']
-    
-    # Identify rows with dictionaries
-    has_dict_mask = df[date_cols].applymap(lambda x: isinstance(x, dict)).any(axis=1)
-    
-    numeric_df = df[~has_dict_mask].copy()
-    dict_df = df[has_dict_mask].copy()
-    
-    # Process dictionary rows
-    expanded_data = []
-    
-    for _, row in dict_df.iterrows():
-        # Collect all unique keys from all date columns
-        all_keys = set()
-        for col in date_cols:
-            if isinstance(row[col], dict):
-                all_keys.update(row[col].keys())
-        
-        # Create rows for each key
-        for key in all_keys:
-            if keys_to_include and key not in keys_to_include:
-                continue
-                
-            new_key = key_mapping.get(key, key) if key_mapping else key
-            
-            new_row = {'metric': new_key}
-            for col in date_cols:
-                if isinstance(row[col], dict):
-                    new_row[col] = row[col].get(key, np.nan)
-                else:
-                    new_row[col] = np.nan
-            
-            expanded_data.append(new_row)
-    
-    # Combine all data
-    expanded_df = pd.DataFrame(expanded_data)
-    final_df = pd.concat([numeric_df, expanded_df], ignore_index=True)
-    
-    # Remove duplicates
-    final_df = final_df.drop_duplicates(subset=['metric'], keep='first')
-    
-    return final_df.reset_index(drop=True)
+import pandas as pd
+import numpy as np
+
+# --- 0) Optional: make column names consistent (only if your df has different casing) ---
+# df = df.rename(columns={'GRCA Account':'grca_account'})  # uncomment if needed
+
+# --- 1) Filter for Country Reclass & non-zero adjustments ---
+df_country = (
+    df.loc[df['Adj Purpose Desc'].str.lower().eq('country reclass')]
+      .copy()
+)
+df_country = df_country.loc[df_country['Adjustment Amount'].ne(0)].copy()
+
+# Safety: if Adjustment Amount is floaty, define a stable match key with rounding
+# Adjust decimals if you need tighter/looser tolerance
+DECIMALS = 2
+df_country['match_amt'] = df_country['Adjustment Amount'].round(DECIMALS).abs()
+
+# --- 2) Pair + and - rows inside each (grca_account, match_amt) bucket ---
+pair_blocks = []  # collect pair DataFrames
+
+group_cols = ['grca_account', 'match_amt']
+for (acct, mamt), g in df_country.groupby(group_cols, sort=False):
+    # Split into + and - sets, stable order by original index to mimic Excel picking
+    pos = g.loc[g['Adjustment Amount'] > 0].sort_index()
+    neg = g.loc[g['Adjustment Amount'] < 0].sort_index()
+
+    if pos.empty or neg.empty:
+        continue
+
+    n_pairs = min(len(pos), len(neg))
+    # Take the first n pairs from each side (1-to-1 pairing)
+    pos_use = pos.head(n_pairs).copy()
+    neg_use = neg.head(n_pairs).copy()
+
+    # Build a pairs frame: FROM = negative code, TO = positive code
+    tmp = pd.DataFrame({
+        'grca_account': acct,
+        'amount': pos_use['Adjustment Amount'].to_numpy(),   # positive amount
+        'from_custom_9': neg_use['custom_9'].to_numpy(),
+        'to_custom_9': pos_use['custom_9'].to_numpy(),
+        'from_row_index': neg_use.index.to_numpy(),          # useful for traceability
+        'to_row_index': pos_use.index.to_numpy(),
+    })
+
+    pair_blocks.append(tmp)
+
+# --- 3) Combine all pairs ---
+if pair_blocks:
+    pairs = pd.concat(pair_blocks, ignore_index=True)
+else:
+    pairs = pd.DataFrame(columns=[
+        'grca_account','amount','from_custom_9','to_custom_9','from_row_index','to_row_index'
+    ])
+
+# --- 4) Optional sanity: any unmatched rows left (no opposite sign with same abs amount)?
+# Useful to review data quality.
+matched_from = set(pairs['from_row_index'].tolist())
+matched_to   = set(pairs['to_row_index'].tolist())
+matched_idx  = matched_from.union(matched_to)
+unmatched = df_country.loc[~df_country.index.isin(matched_idx)].copy()
+
+# --- 5) Final outputs ---
+
+# A) Detailed pairs exactly like your Excel output idea
+# col1 = from_code (invalid), col2 = to_code (correct), col3 = amount
+detailed_pairs = pairs[['from_custom_9', 'to_custom_9', 'amount', 'grca_account']].copy()
+detailed_pairs = detailed_pairs.rename(columns={
+    'from_custom_9': 'from_code',
+    'to_custom_9': 'to_code'
+})
+
+# B) Summary: how many times and how much moved between each (from_code -> to_code)
+summary_pairs = (
+    detailed_pairs
+    .groupby(['from_code','to_code'], as_index=False)
+    .agg(
+        pair_count=('amount','count'),
+        total_moved=('amount','sum')
+    )
+    .sort_values(['total_moved','pair_count'], ascending=[False, False])
+)
+
+# C) Problematic sources to fix at origin: which from_code sends the most
+problem_sources = (
+    summary_pairs.groupby('from_code', as_index=False)['total_moved']
+    .sum()
+    .sort_values('total_moved', ascending=False)
+)
+
+# --- 6) Quick peeks (uncomment to view) ---
+# print(detailed_pairs.head(20))
+# print(summary_pairs.head(20))
+# print(problem_sources.head(20))
+# print("Unmatched rows (if any):", len(unmatched))
+# unmatched.head(10)

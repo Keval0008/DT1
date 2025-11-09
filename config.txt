@@ -1,96 +1,71 @@
-import pandas as pd
-import numpy as np
+Here’s your complete, refined version with all large paragraphs rewritten into a consistent format of **Contribution, Impact, and Current Status**, while keeping your original summaries unchanged:
 
-# --- 0) Optional: make column names consistent (only if your df has different casing) ---
-# df = df.rename(columns={'GRCA Account':'grca_account'})  # uncomment if needed
+---
 
-# --- 1) Filter for Country Reclass & non-zero adjustments ---
-df_country = (
-    df.loc[df['Adj Purpose Desc'].str.lower().eq('country reclass')]
-      .copy()
-)
-df_country = df_country.loc[df_country['Adjustment Amount'].ne(0)].copy()
+### **Lineage Tool (ETL + SQL Versions)**
 
-# Safety: if Adjustment Amount is floaty, define a stable match key with rounding
-# Adjust decimals if you need tighter/looser tolerance
-DECIMALS = 2
-df_country['match_amt'] = df_country['Adjustment Amount'].round(DECIMALS).abs()
+**Contribution:** I led the end-to-end design and development of the Lineage Tool, which automates column-level data lineage extraction from both ETL scripts and complex SQL files. My work involved building parsing logic to handle inconsistent syntax, aliases, and multi-file dependencies, and enhancing the tool with features like visual lineage trees, direction toggles (source-to-output and reverse), color-coded layers, and Excel export options. I also collaborated closely with the Data Science and Rules Management teams to validate outputs and integrate Base and Derived BDE details.
+**Impact:** The tool has significantly reduced manual effort in lineage mapping and improved traceability for critical RWA and liquidity data. It has streamlined validation processes and laid a foundation for broader data assurance integration.
+**Current Status:** The tool is stable and in active use for validation exercises, with future enhancements planned for data assurance integration and user-driven customization.
 
-# --- 2) Pair + and - rows inside each (grca_account, match_amt) bucket ---
-pair_blocks = []  # collect pair DataFrames
+**Summary:**
+Developed and enhanced the Lineage Tool to automate column-level lineage extraction from ETL and SQL scripts, improving data traceability and reducing manual mapping effort. Collaborated with multiple teams to integrate BDE details and validate outputs. The tool is now stable, actively used for RWA and liquidity validations, and serves as a foundation for future data assurance enhancements.
 
-group_cols = ['grca_account', 'match_amt']
-for (acct, mamt), g in df_country.groupby(group_cols, sort=False):
-    # Split into + and - sets, stable order by original index to mimic Excel picking
-    pos = g.loc[g['Adjustment Amount'] > 0].sort_index()
-    neg = g.loc[g['Adjustment Amount'] < 0].sort_index()
+---
 
-    if pos.empty or neg.empty:
-        continue
+### **VIU – Development**
 
-    n_pairs = min(len(pos), len(neg))
-    # Take the first n pairs from each side (1-to-1 pairing)
-    pos_use = pos.head(n_pairs).copy()
-    neg_use = neg.head(n_pairs).copy()
+**Contribution:** I enhanced the Value in Use (VIU) application by improving key modules such as historical comparison, input tab, and calculation and comparison download functionalities. I also added a feature that allows users to incorporate past scenarios into the sensitivity tool, expanding its analytical scope and flexibility.
+**Impact:** These updates enhanced usability, improved analytical depth, and helped stakeholders perform more comprehensive evaluations within the VIU framework.
+**Current Status:** The enhanced features are live and have been adopted by stakeholders, improving efficiency and reliability in their analysis processes.
 
-    # Build a pairs frame: FROM = negative code, TO = positive code
-    tmp = pd.DataFrame({
-        'grca_account': acct,
-        'amount': pos_use['Adjustment Amount'].to_numpy(),   # positive amount
-        'from_custom_9': neg_use['custom_9'].to_numpy(),
-        'to_custom_9': pos_use['custom_9'].to_numpy(),
-        'from_row_index': neg_use.index.to_numpy(),          # useful for traceability
-        'to_row_index': pos_use.index.to_numpy(),
-    })
+**Summary:**
+Enhanced historical comparison, input tab, and download features in VIU, and added a new option to include past scenarios in the sensitivity tool for better analysis and usability.
 
-    pair_blocks.append(tmp)
+---
 
-# --- 3) Combine all pairs ---
-if pair_blocks:
-    pairs = pd.concat(pair_blocks, ignore_index=True)
-else:
-    pairs = pd.DataFrame(columns=[
-        'grca_account','amount','from_custom_9','to_custom_9','from_row_index','to_row_index'
-    ])
+### **VIU – Stakeholder Management for HBUK, HBLO, and HBME**
 
-# --- 4) Optional sanity: any unmatched rows left (no opposite sign with same abs amount)?
-# Useful to review data quality.
-matched_from = set(pairs['from_row_index'].tolist())
-matched_to   = set(pairs['to_row_index'].tolist())
-matched_idx  = matched_from.union(matched_to)
-unmatched = df_country.loc[~df_country.index.isin(matched_idx)].copy()
+**Contribution:** I collaborated with stakeholders across HBUK, HBLO, and HBME to reconcile Value in Use (VIU) data for Q1, Q2, and Q3 of 2025. This included resolving data inconsistencies, accommodating site-specific requirements, and developing additional features and download formats based on their feedback.
+**Impact:** The improvements led to smoother reconciliations, greater data reliability, and enhanced usability for all three sites.
+**Current Status:** The effort resulted in a successful parallel run in HBUK, a full go-live in HBME, and an upcoming parallel run scheduled for HBLO in Q4 2025.
 
-# --- 5) Final outputs ---
+**Summary:**
+Reconciled VIU data for Q1–Q3 2025 across HBUK, HBLO, and HBME, added requested features and formats, achieving a successful parallel run in HBUK, go-live in HBME, and scheduled HBLO parallel run for Q4 2025.
 
-# A) Detailed pairs exactly like your Excel output idea
-# col1 = from_code (invalid), col2 = to_code (correct), col3 = amount
-detailed_pairs = pairs[['from_custom_9', 'to_custom_9', 'amount', 'grca_account']].copy()
-detailed_pairs = detailed_pairs.rename(columns={
-    'from_custom_9': 'from_code',
-    'to_custom_9': 'to_code'
-})
+---
 
-# B) Summary: how many times and how much moved between each (from_code -> to_code)
-summary_pairs = (
-    detailed_pairs
-    .groupby(['from_code','to_code'], as_index=False)
-    .agg(
-        pair_count=('amount','count'),
-        total_moved=('amount','sum')
-    )
-    .sort_values(['total_moved','pair_count'], ascending=[False, False])
-)
+### **BSRS Tool – End-to-End Development and Stakeholder Management**
 
-# C) Problematic sources to fix at origin: which from_code sends the most
-problem_sources = (
-    summary_pairs.groupby('from_code', as_index=False)['total_moved']
-    .sum()
-    .sort_values('total_moved', ascending=False)
-)
+**Contribution:** I built a Python-based BSRS Tool that enables both users and admins to manage data entry and collation in a streamlined, efficient way. It includes data validation, automation, and role-based controls to ensure consistency and accuracy. I also implemented rules for validating Role Holder information and developed an interface that allows admins to consolidate all user files into a single master dataset effortlessly.
+**Impact:** The tool has saved significant manual hours, improved data governance, and reduced errors associated with ad-hoc Excel-based workflows.
+**Current Status:** The solution has been shared with the BSRS team and is currently in the testing phase before full rollout.
 
-# --- 6) Quick peeks (uncomment to view) ---
-# print(detailed_pairs.head(20))
-# print(summary_pairs.head(20))
-# print(problem_sources.head(20))
-# print("Unmatched rows (if any):", len(unmatched))
-# unmatched.head(10)
+**Summary:**
+Built a Python-based BSRS Tool to automate data entry, validation, and collation for Role Holder information. The tool simplifies admin review, ensures consistency, and saves significant manual effort. Currently in testing with the BSRS team.
+
+---
+
+### **Data Nexus – Challenge 1 & 2 (Winning Project)**
+
+**Contribution:** As part of the Data Nexus Challenge, I led an eight-member team to develop a Jaccard similarity-based matching framework for identifying relationships between table names, column names, and derivations with inconsistent or non-standard naming. The system tokenized variable names and calculated pairwise similarity scores to find fuzzy matches missed by standard string matching techniques.
+**Impact:** This approach improved the accuracy of automated lineage mapping, reduced manual validation work, and enhanced the robustness and scalability of data lineage processes.
+**Current Status:** The project was recognized for its innovation and practicality, winning Challenge 2 and serving as a model for similar data matching frameworks.
+
+**Summary:**
+Led an eight-member team in the Data Nexus Challenge to build a Jaccard similarity-based matching framework that automated fuzzy mapping between variables and tables. The solution won the challenge for improving lineage accuracy and reducing manual validation effort.
+
+---
+
+### **Untangle – Development**
+
+**Contribution:** I initiated the development of Untangle, a project designed to identify and track source-level data inconsistencies that lead to recurring adjustment postings. My focus was on detecting these issues early by tracing adjustments back to their originating data points and setting up month-on-month monitoring to track consistency trends.
+**Impact:** This proactive approach helps reduce downstream adjustment volumes, improves data accuracy, and minimizes manual correction efforts.
+**Current Status:** Initial analysis has been completed for one high-volume site, and the tracking framework is being expanded to cover additional sources and datasets.
+
+**Summary:**
+Started developing Untangle to identify and track source-level data inconsistencies causing adjustment postings. Analyzed high-volume cases, traced source data, and set up month-on-month monitoring to reduce adjustment volumes and improve data accuracy.
+
+---
+
+Would you like me to combine all of these into a single polished section for your annual self-review (with clean formatting and consistent tone across all projects)? It’ll read naturally as one cohesive submission.

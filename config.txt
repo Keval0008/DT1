@@ -6,7 +6,7 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-# ----------------- METADATA LOGIC ----------------- #
+# ------------ METADATA HELPERS ------------ #
 
 def clean_iso_datetime(dt_str):
     """
@@ -32,6 +32,7 @@ def format_os_datetime(ts):
     return dt.strftime("%d-%b-%Y %H:%M:%S")
 
 def get_excel_metadata(file_path, root_input_folder):
+    # relative folder path (inside input folder)
     rel_path = os.path.relpath(file_path, root_input_folder)
     folder_name = os.path.dirname(rel_path)
     if folder_name == "":
@@ -55,6 +56,7 @@ def get_excel_metadata(file_path, root_input_folder):
     metadata["os_created_at"] = format_os_datetime(stats.st_ctime)
     metadata["os_modified_at"] = format_os_datetime(stats.st_mtime)
 
+    # Excel internal metadata
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
             if "docProps/core.xml" in z.namelist():
@@ -82,21 +84,17 @@ def get_excel_metadata(file_path, root_input_folder):
 
     return metadata
 
-def run_extraction(input_folder, output_folder):
+def run_extraction(input_folder):
     if not input_folder or not os.path.isdir(input_folder):
         messagebox.showerror("Error", "Please select a valid input folder.")
         return
 
-    if not output_folder or not os.path.isdir(output_folder):
-        messagebox.showerror("Error", "Please select a valid output folder.")
-        return
-
     all_data = []
 
-    for root, dirs, files in os.walk(input_folder):
+    for root_dir, dirs, files in os.walk(input_folder):
         for file in files:
             if file.lower().endswith(".xlsx"):
-                file_path = os.path.join(root, file)
+                file_path = os.path.join(root_dir, file)
                 meta = get_excel_metadata(file_path, input_folder)
                 all_data.append(meta)
 
@@ -106,47 +104,50 @@ def run_extraction(input_folder, output_folder):
 
     df = pd.DataFrame(all_data)
 
-    output_file = os.path.join(output_folder, "excel_metadata_output.xlsx")
+    # Ask user where to save the output file (location + filename)
+    save_path = filedialog.asksaveasfilename(
+        defaultextension=".xlsx",
+        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+        initialfile="excel_metadata_output.xlsx",
+        title="Save metadata Excel as"
+    )
+
+    if not save_path:
+        # User cancelled the save dialog
+        messagebox.showinfo("Cancelled", "Save cancelled. No file was created.")
+        return
+
     try:
-        df.to_excel(output_file, index=False)
-        messagebox.showinfo("Success", f"Metadata Excel saved:\n{output_file}")
+        df.to_excel(save_path, index=False)
+        messagebox.showinfo("Success", f"Metadata Excel saved:\n{save_path}")
     except Exception as e:
         messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
 
-# ----------------- TKINTER UI ----------------- #
+# ------------ TKINTER UI ------------ #
 
 def browse_input_folder():
     folder = filedialog.askdirectory()
     if folder:
         input_var.set(folder)
 
-def browse_output_folder():
-    folder = filedialog.askdirectory()
-    if folder:
-        output_var.set(folder)
-
 def on_run_click():
     input_folder = input_var.get().strip()
-    output_folder = output_var.get().strip()
-    run_extraction(input_folder, output_folder)
+    run_extraction(input_folder)
 
 # Main window
 root = tk.Tk()
-root.title("Excel Metadata Extractor")
+root.title("Excel Metadata Tool")
+root.resizable(False, False)
 
-# Input folder
-tk.Label(root, text="Input Folder:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+# Minimal layout: one row for input folder, one button row
+frame = tk.Frame(root, padx=10, pady=10)
+frame.grid(row=0, column=0)
+
+tk.Label(frame, text="Input Folder:").grid(row=0, column=0, sticky="w")
 input_var = tk.StringVar()
-tk.Entry(root, textvariable=input_var, width=50).grid(row=0, column=1, padx=5, pady=5)
-tk.Button(root, text="Browse...", command=browse_input_folder).grid(row=0, column=2, padx=5, pady=5)
+tk.Entry(frame, textvariable=input_var, width=45).grid(row=1, column=0, pady=5, sticky="w")
+tk.Button(frame, text="Browse", command=browse_input_folder).grid(row=1, column=1, padx=5, pady=5)
 
-# Output folder
-tk.Label(root, text="Output Folder:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-output_var = tk.StringVar()
-tk.Entry(root, textvariable=output_var, width=50).grid(row=1, column=1, padx=5, pady=5)
-tk.Button(root, text="Browse...", command=browse_output_folder).grid(row=1, column=2, padx=5, pady=5)
-
-# Run button
-tk.Button(root, text="Run Extraction", command=on_run_click).grid(row=2, column=0, columnspan=3, pady=15)
+tk.Button(frame, text="Run Extraction", command=on_run_click).grid(row=2, column=0, columnspan=2, pady=10)
 
 root.mainloop()

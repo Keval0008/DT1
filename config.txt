@@ -3,26 +3,57 @@ import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
-# Set your folder path
-folder_path = r"/path/to/your/folder"
+# ----------------- METADATA LOGIC ----------------- #
 
-def get_excel_metadata(file_path):
+def clean_iso_datetime(dt_str):
+    """
+    Convert ISO string like '2025-08-11T04:54:38Z' to '11-Aug-2025 04:54:38'.
+    If parsing fails, return original string.
+    """
+    if not dt_str:
+        return None
+    try:
+        dt_str = dt_str.replace("Z", "")
+        dt = datetime.fromisoformat(dt_str)
+        return dt.strftime("%d-%b-%Y %H:%M:%S")
+    except Exception:
+        return dt_str
+
+def format_os_datetime(ts):
+    """
+    Convert a timestamp (from os.stat) to '11-Aug-2025 04:54:38'.
+    """
+    if ts is None:
+        return None
+    dt = datetime.fromtimestamp(ts)
+    return dt.strftime("%d-%b-%Y %H:%M:%S")
+
+def get_excel_metadata(file_path, root_input_folder):
+    rel_path = os.path.relpath(file_path, root_input_folder)
+    folder_name = os.path.dirname(rel_path)
+    if folder_name == "":
+        # File directly in root folder
+        folder_name = os.path.basename(root_input_folder)
+
     metadata = {
-        "folder_name": os.path.basename(os.path.dirname(file_path)),
+        "folder_name": folder_name,
         "filename": os.path.basename(file_path),
         "creator": None,
         "created_at": None,
         "last_modified_by": None,
         "last_modified_at": None,
         "os_created_at": None,
-        "os_modified_at": None
+        "os_modified_at": None,
+        "full_path": file_path,
     }
 
-    # OS timestamp
+    # OS timestamps
     stats = os.stat(file_path)
-    metadata["os_created_at"] = datetime.fromtimestamp(stats.st_ctime)
-    metadata["os_modified_at"] = datetime.fromtimestamp(stats.st_mtime)
+    metadata["os_created_at"] = format_os_datetime(stats.st_ctime)
+    metadata["os_modified_at"] = format_os_datetime(stats.st_mtime)
 
     try:
         with zipfile.ZipFile(file_path, 'r') as z:
@@ -42,30 +73,80 @@ def get_excel_metadata(file_path):
                 modified = tree.find("dcterms:modified", ns)
 
                 metadata["creator"] = creator.text if creator is not None else None
-                metadata["created_at"] = created.text if created is not None else None
+                metadata["created_at"] = clean_iso_datetime(created.text) if created is not None else None
                 metadata["last_modified_by"] = modified_by.text if modified_by is not None else None
-                metadata["last_modified_at"] = modified.text if modified is not None else None
+                metadata["last_modified_at"] = clean_iso_datetime(modified.text) if modified is not None else None
 
     except Exception as e:
         print(f"Error reading metadata for {file_path}: {e}")
 
     return metadata
 
+def run_extraction(input_folder, output_folder):
+    if not input_folder or not os.path.isdir(input_folder):
+        messagebox.showerror("Error", "Please select a valid input folder.")
+        return
 
-# Walk all folders and collect results
-all_data = []
+    if not output_folder or not os.path.isdir(output_folder):
+        messagebox.showerror("Error", "Please select a valid output folder.")
+        return
 
-for root, dirs, files in os.walk(folder_path):
-    for file in files:
-        if file.endswith(".xlsx"):
-            file_path = os.path.join(root, file)
-            all_data.append(get_excel_metadata(file_path))
+    all_data = []
 
-# Convert to DataFrame
-df = pd.DataFrame(all_data)
+    for root, dirs, files in os.walk(input_folder):
+        for file in files:
+            if file.lower().endswith(".xlsx"):
+                file_path = os.path.join(root, file)
+                meta = get_excel_metadata(file_path, input_folder)
+                all_data.append(meta)
 
-# Save to Excel
-output_file = "excel_metadata_output.xlsx"
-df.to_excel(output_file, index=False)
+    if not all_data:
+        messagebox.showinfo("Info", "No .xlsx files found in the selected input folder.")
+        return
 
-print(f"File saved successfully as {output_file}")
+    df = pd.DataFrame(all_data)
+
+    output_file = os.path.join(output_folder, "excel_metadata_output.xlsx")
+    try:
+        df.to_excel(output_file, index=False)
+        messagebox.showinfo("Success", f"Metadata Excel saved:\n{output_file}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
+
+# ----------------- TKINTER UI ----------------- #
+
+def browse_input_folder():
+    folder = filedialog.askdirectory()
+    if folder:
+        input_var.set(folder)
+
+def browse_output_folder():
+    folder = filedialog.askdirectory()
+    if folder:
+        output_var.set(folder)
+
+def on_run_click():
+    input_folder = input_var.get().strip()
+    output_folder = output_var.get().strip()
+    run_extraction(input_folder, output_folder)
+
+# Main window
+root = tk.Tk()
+root.title("Excel Metadata Extractor")
+
+# Input folder
+tk.Label(root, text="Input Folder:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+input_var = tk.StringVar()
+tk.Entry(root, textvariable=input_var, width=50).grid(row=0, column=1, padx=5, pady=5)
+tk.Button(root, text="Browse...", command=browse_input_folder).grid(row=0, column=2, padx=5, pady=5)
+
+# Output folder
+tk.Label(root, text="Output Folder:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+output_var = tk.StringVar()
+tk.Entry(root, textvariable=output_var, width=50).grid(row=1, column=1, padx=5, pady=5)
+tk.Button(root, text="Browse...", command=browse_output_folder).grid(row=1, column=2, padx=5, pady=5)
+
+# Run button
+tk.Button(root, text="Run Extraction", command=on_run_click).grid(row=2, column=0, columnspan=3, pady=15)
+
+root.mainloop()

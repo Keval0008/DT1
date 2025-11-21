@@ -1,73 +1,71 @@
+import os
+import zipfile
+import xml.etree.ElementTree as ET
+from datetime import datetime
 import pandas as pd
 
-def build_target_to_sources_map(df):
-    """
-    Build a mapping: target_system -> list of source_data
-    """
-    return df.groupby('target_system')['source_data'].apply(list).to_dict()
+# Set your folder path
+folder_path = r"/path/to/your/folder"
+
+def get_excel_metadata(file_path):
+    metadata = {
+        "folder_name": os.path.basename(os.path.dirname(file_path)),
+        "filename": os.path.basename(file_path),
+        "creator": None,
+        "created_at": None,
+        "last_modified_by": None,
+        "last_modified_at": None,
+        "os_created_at": None,
+        "os_modified_at": None
+    }
+
+    # OS timestamp
+    stats = os.stat(file_path)
+    metadata["os_created_at"] = datetime.fromtimestamp(stats.st_ctime)
+    metadata["os_modified_at"] = datetime.fromtimestamp(stats.st_mtime)
+
+    try:
+        with zipfile.ZipFile(file_path, 'r') as z:
+            if "docProps/core.xml" in z.namelist():
+                xml_content = z.read("docProps/core.xml")
+                tree = ET.fromstring(xml_content)
+
+                ns = {
+                    "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
+                    "dc": "http://purl.org/dc/elements/1.1/",
+                    "dcterms": "http://purl.org/dc/terms/",
+                }
+
+                creator = tree.find("dc:creator", ns)
+                created = tree.find("dcterms:created", ns)
+                modified_by = tree.find("cp:lastModifiedBy", ns)
+                modified = tree.find("dcterms:modified", ns)
+
+                metadata["creator"] = creator.text if creator is not None else None
+                metadata["created_at"] = created.text if created is not None else None
+                metadata["last_modified_by"] = modified_by.text if modified_by is not None else None
+                metadata["last_modified_at"] = modified.text if modified is not None else None
+
+    except Exception as e:
+        print(f"Error reading metadata for {file_path}: {e}")
+
+    return metadata
 
 
-def dfs_collect_leaves(mapping, current, visited=None):
-    """
-    Depth-first search to collect all final source_data values reachable from `current`.
+# Walk all folders and collect results
+all_data = []
 
-    Rule:
-    - From current source, find all rows where target_system == current
-    - Move to their source_data values
-    - If no further rows, current is a leaf (final value)
-    """
-    if visited is None:
-        visited = set()
+for root, dirs, files in os.walk(folder_path):
+    for file in files:
+        if file.endswith(".xlsx"):
+            file_path = os.path.join(root, file)
+            all_data.append(get_excel_metadata(file_path))
 
-    # Detect cycles
-    if current in visited:
-        # We hit a loop; treat current as a leaf to avoid infinite recursion
-        return {current}
+# Convert to DataFrame
+df = pd.DataFrame(all_data)
 
-    visited.add(current)
+# Save to Excel
+output_file = "excel_metadata_output.xlsx"
+df.to_excel(output_file, index=False)
 
-    # All next nodes where target_system == current
-    children = mapping.get(current, [])
-
-    if not children:
-        # No further links → current is a final value
-        return {current}
-
-    leaves = set()
-    for child in children:
-        # Use a copy of visited for each branch
-        leaves |= dfs_collect_leaves(mapping, child, visited.copy())
-
-    return leaves
-
-
-def get_country_reclass_chains(df):
-    """
-    For each row where title contains 'Country Reclass':
-    - Start from its source_data
-    - Follow all chains using target_system -> source_data mapping
-    - Return all final leaf values reachable from that starting source_data
-    """
-    results = []
-
-    # Build mapping once
-    target_to_sources = build_target_to_sources_map(df)
-
-    # Filter rows where title contains 'Country Reclass' (case-insensitive)
-    cr_rows = df[df['title'].str.contains("Country Reclass", case=False, na=False)]
-
-    for idx, row in cr_rows.iterrows():
-        start_source = row['source_data']
-        start_target = row['target_system']
-
-        final_leaves = dfs_collect_leaves(target_to_sources, start_source)
-
-        results.append({
-            "row_index": idx,
-            "start_source_data": start_source,
-            "start_target_system": start_target,
-            # store as list; you can also join as comma-separated string if you like
-            "final_chain_values": list(final_leaves)
-        })
-
-    return pd.DataFrame(results)
+print(f"File saved successfully as {output_file}")

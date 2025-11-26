@@ -1,119 +1,23 @@
-import os
-import zipfile
-import xml.etree.ElementTree as ET
-from datetime import datetime
-import pandas as pd
+matching = []
+not_matching = []
 
+# Convert listB to a set for fast lookups (optional but good for large lists)
+setB = set(listB)
 
-def clean_iso_datetime(dt_str):
-    """
-    Convert ISO string like '2025-08-11T04:54:38Z' to '11-Aug-2025 04:54:38'.
-    If parsing fails, return original string.
-    """
-    if not dt_str:
-        return None
-    try:
-        dt_str = dt_str.replace("Z", "")
-        dt = datetime.fromisoformat(dt_str)
-        return dt.strftime("%d-%b-%Y %H:%M:%S")
-    except Exception:
-        return dt_str
+for item in listA:
+    # Find the first underscore
+    idx = item.find("_")
+    
+    # If no underscore, it's automatically not matching
+    if idx == -1:
+        not_matching.append(item)
+        continue
 
+    # Extract the filename portion in listA
+    filename = item[:idx]
 
-def get_excel_metadata(file_path):
-    """
-    Extract metadata from a single .xlsx file.
-    Returns a dict with filename, creator, created_at, last_modified_by, last_modified_at.
-    """
-    metadata = {
-        "filename": os.path.basename(file_path),
-        "creator": None,
-        "created_at": None,
-        "last_modified_by": None,
-        "last_modified_at": None,
-    }
-
-    try:
-        with zipfile.ZipFile(file_path, 'r') as z:
-            if "docProps/core.xml" in z.namelist():
-                xml_content = z.read("docProps/core.xml")
-                tree = ET.fromstring(xml_content)
-
-                ns = {
-                    "cp": "http://schemas.openxmlformats.org/package/2006/metadata/core-properties",
-                    "dc": "http://purl.org/dc/elements/1.1/",
-                    "dcterms": "http://purl.org/dc/terms/",
-                }
-
-                creator = tree.find("dc:creator", ns)
-                created = tree.find("dcterms:created", ns)
-                modified_by = tree.find("cp:lastModifiedBy", ns)
-                modified = tree.find("dcterms:modified", ns)
-
-                metadata["creator"] = creator.text if creator is not None else None
-                metadata["created_at"] = clean_iso_datetime(created.text) if created is not None else None
-                metadata["last_modified_by"] = modified_by.text if modified_by is not None else None
-                metadata["last_modified_at"] = clean_iso_datetime(modified.text) if modified is not None else None
-
-    except Exception as e:
-        # You can swap this for logging if needed
-        print(f"Error reading metadata for {file_path}: {e}")
-
-    return metadata
-
-
-def extract_rulebook_metadata(df, recursive=True):
-    """
-    df: pandas DataFrame with columns ['Entity', 'Portfolio', 'Rulebook_path']
-    recursive: if True, walk subfolders under each Rulebook_path
-
-    Returns: pandas DataFrame with:
-    Entity, Portfolio, Rulebook_path, filename, creator, created_at, last_modified_by, last_modified_at
-    """
-    records = []
-
-    for idx, row in df.iterrows():
-        entity = row.get("Entity")
-        portfolio = row.get("Portfolio")
-        folder_path = row.get("Rulebook_path")
-
-        if not isinstance(folder_path, str) or not os.path.isdir(folder_path):
-            print(f"Skipping row {idx}: invalid folder path -> {folder_path}")
-            continue
-
-        # Choose iterator depending on recursive flag
-        if recursive:
-            walker = os.walk(folder_path)
-        else:
-            # Only current folder, no subfolders
-            walker = [(folder_path, [], os.listdir(folder_path))]
-
-        for root, dirs, files in walker:
-            for file in files:
-                if file.lower().endswith(".xlsx"):
-                    file_path = os.path.join(root, file)
-                    meta = get_excel_metadata(file_path)
-
-                    record = {
-                        "Entity": entity,
-                        "Portfolio": portfolio,
-                        "Rulebook_path": folder_path,
-                    }
-                    record.update(meta)
-                    records.append(record)
-
-    if not records:
-        return pd.DataFrame(columns=[
-            "Entity", "Portfolio", "Rulebook_path",
-            "filename", "creator", "created_at",
-            "last_modified_by", "last_modified_at"
-        ])
-
-    result_df = pd.DataFrame(records)
-    # Ensure column order
-    result_df = result_df[
-        ["Entity", "Portfolio", "Rulebook_path",
-         "filename", "creator", "created_at",
-         "last_modified_by", "last_modified_at"]
-    ]
-    return result_df
+    # Check if it exists in listB
+    if filename in setB:
+        matching.append(item)
+    else:
+        not_matching.append(item)

@@ -1,23 +1,97 @@
-matching = []
-not_matching = []
+import os
+import zipfile
+from collections import defaultdict
 
-# Convert listB to a set for fast lookups (optional but good for large lists)
-setB = set(listB)
+# 🔧 CHANGE THIS to your shared folder root
+ROOT_DIR = r"\\path\to\shared\folder"
 
-for item in listA:
-    # Find the first underscore
-    idx = item.find("_")
-    
-    # If no underscore, it's automatically not matching
-    if idx == -1:
-        not_matching.append(item)
+# Data structure:
+# {
+#   (country, portfolio): {
+#       "inputs": set([...]),
+#       "rulebooks": set([...]),
+#       "outputs": set([...])
+#   },
+#   ...
+# }
+portfolio_files = defaultdict(lambda: {
+    "inputs": set(),
+    "rulebooks": set(),
+    "outputs": set()
+})
+
+def is_run_result_zip(filename: str) -> bool:
+    """Return True if this looks like the run_result zip."""
+    fname = filename.lower()
+    return fname.endswith(".zip") and "run_result" in fname
+
+for country in os.listdir(ROOT_DIR):
+    country_path = os.path.join(ROOT_DIR, country)
+    if not os.path.isdir(country_path):
         continue
 
-    # Extract the filename portion in listA
-    filename = item[:idx]
+    for portfolio in os.listdir(country_path):
+        portfolio_path = os.path.join(country_path, portfolio)
+        if not os.path.isdir(portfolio_path):
+            continue
 
-    # Check if it exists in listB
-    if filename in setB:
-        matching.append(item)
-    else:
-        not_matching.append(item)
+        # Key for storing results for this portfolio
+        portfolio_key = (country, portfolio)
+
+        for run_date in os.listdir(portfolio_path):
+            run_date_path = os.path.join(portfolio_path, run_date)
+            if not os.path.isdir(run_date_path):
+                continue
+
+            # Look for run_result zip(s) in this run_date folder
+            for fname in os.listdir(run_date_path):
+                if not is_run_result_zip(fname):
+                    continue
+
+                zip_path = os.path.join(run_date_path, fname)
+
+                try:
+                    with zipfile.ZipFile(zip_path, 'r') as zf:
+                        for member in zf.namelist():
+                            # Skip folder entries
+                            if member.endswith('/') or member.endswith('\\'):
+                                continue
+
+                            # Normalize path to forward slashes
+                            norm = member.replace("\\", "/")
+                            parts = norm.split("/")
+
+                            if len(parts) < 2:
+                                # e.g. files at root of zip - ignore
+                                continue
+
+                            top_level = parts[0].lower()   # inputs / rulebooks / outputs
+                            file_name = parts[-1]          # actual file name
+
+                            if top_level == "inputs":
+                                portfolio_files[portfolio_key]["inputs"].add(file_name)
+                            elif top_level == "rulebooks":
+                                portfolio_files[portfolio_key]["rulebooks"].add(file_name)
+                            elif top_level == "outputs":
+                                portfolio_files[portfolio_key]["outputs"].add(file_name)
+
+                except zipfile.BadZipFile:
+                    print(f"⚠️ Skipping bad zip file: {zip_path}")
+                except Exception as e:
+                    print(f"⚠️ Error reading {zip_path}: {e}")
+
+# 🔄 Display results
+for (country, portfolio), files_dict in portfolio_files.items():
+    print(f"\n=== Country: {country} | Portfolio: {portfolio} ===")
+
+    print("\nInputs files:")
+    for f in sorted(files_dict["inputs"]):
+        print(f"  - {f}")
+
+    print("\nRulebooks files:")
+    for f in sorted(files_dict["rulebooks"]):
+        print(f"  - {f}")
+
+    print("\nOutputs files:")
+    for f in sorted(files_dict["outputs"]):
+        print(f"  - {f}")

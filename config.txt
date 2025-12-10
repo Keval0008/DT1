@@ -1,97 +1,85 @@
-import os
-import zipfile
-from collections import defaultdict
+**Stakeholder Point:**
+Instead of putting in all the input values in the predefined Excel template, can we upload all the inputs onto the tool itself to avoid manual effort? This functionality was discussed earlier—please advise the progress.
 
-# 🔧 CHANGE THIS to your shared folder root
-ROOT_DIR = r"\\path\to\shared\folder"
+**Response:**
+The solution is feasible if a fixed input format for RWA, PBT, and Tax can be provided. Currently, these formats change frequently across sites, making automation unreliable.
+If a fixed format cannot be provided, we recommend keeping both solutions separate, since the Impairment Tool is a global solution and we would need to introduce an additional validation layer between the tools to ensure accuracy.
 
-# Data structure:
-# {
-#   (country, portfolio): {
-#       "inputs": set([...]),
-#       "rulebooks": set([...]),
-#       "outputs": set([...])
-#   },
-#   ...
-# }
-portfolio_files = defaultdict(lambda: {
-    "inputs": set(),
-    "rulebooks": set(),
-    "outputs": set()
-})
+---
 
-def is_run_result_zip(filename: str) -> bool:
-    """Return True if this looks like the run_result zip."""
-    fname = filename.lower()
-    return fname.endswith(".zip") and "run_result" in fname
+**Stakeholder Point:**
+We would like the tool to calculate some of the inputs on its own rather than doing it in Excel—for example, CET1 capital, Tangible Equity, RWA, etc.
 
-for country in os.listdir(ROOT_DIR):
-    country_path = os.path.join(ROOT_DIR, country)
-    if not os.path.isdir(country_path):
-        continue
+**Response:**
+Yes, the tool already calculates these values automatically. You may leave these fields blank in the input template, and the tool will compute them.
 
-    for portfolio in os.listdir(country_path):
-        portfolio_path = os.path.join(country_path, portfolio)
-        if not os.path.isdir(portfolio_path):
-            continue
+---
 
-        # Key for storing results for this portfolio
-        portfolio_key = (country, portfolio)
+**Stakeholder Point:**
+Can this help us arrive at the break-even point where a change in cash flow or discount rate results in NIL headroom/shortfall?
 
-        for run_date in os.listdir(portfolio_path):
-            run_date_path = os.path.join(portfolio_path, run_date)
-            if not os.path.isdir(run_date_path):
-                continue
+**Response:**
+Yes, this feature already exists as "Headroom Utilization." With one click, you can get the break-even values for all CGUs across multiple scenarios, including changes in cash flow, discount rate, growth rate, and more.
 
-            # Look for run_result zip(s) in this run_date folder
-            for fname in os.listdir(run_date_path):
-                if not is_run_result_zip(fname):
-                    continue
+---
 
-                zip_path = os.path.join(run_date_path, fname)
+**Stakeholder Point:**
+Please advise if the tool can run on a cloud environment instead of a local machine. This would help ensure review controls.
 
-                try:
-                    with zipfile.ZipFile(zip_path, 'r') as zf:
-                        for member in zf.namelist():
-                            # Skip folder entries
-                            if member.endswith('/') or member.endswith('\\'):
-                                continue
+**Response:**
+Due to infrastructure limitations, hosting the solution in a cloud environment is currently not possible.
+However, all analysis results are fully downloadable to support easy sharing and review.
 
-                            # Normalize path to forward slashes
-                            norm = member.replace("\\", "/")
-                            parts = norm.split("/")
+---
 
-                            if len(parts) < 2:
-                                # e.g. files at root of zip - ignore
-                                continue
+**Stakeholder Point:**
+FRP PBT data – Can the tool calculate the last outer-year PBT using preceding-year growth rates for all CGUs, especially when the last-year FRP (e.g., 2030) is not available?
 
-                            top_level = parts[0].lower()   # inputs / rulebooks / outputs
-                            file_name = parts[-1]          # actual file name
+**Response:**
+This enhancement has been incorporated into the tool.
 
-                            if top_level == "inputs":
-                                portfolio_files[portfolio_key]["inputs"].add(file_name)
-                            elif top_level == "rulebooks":
-                                portfolio_files[portfolio_key]["rulebooks"].add(file_name)
-                            elif top_level == "outputs":
-                                portfolio_files[portfolio_key]["outputs"].add(file_name)
+---
 
-                except zipfile.BadZipFile:
-                    print(f"⚠️ Skipping bad zip file: {zip_path}")
-                except Exception as e:
-                    print(f"⚠️ Error reading {zip_path}: {e}")
+**Stakeholder Point:**
+FRP Tax data – Similar to the above, can the tax rate be automatically applied using the preceding year’s rate?
 
-# 🔄 Display results
-for (country, portfolio), files_dict in portfolio_files.items():
-    print(f"\n=== Country: {country} | Portfolio: {portfolio} ===")
+**Response:**
+This enhancement has also been incorporated into the tool.
 
-    print("\nInputs files:")
-    for f in sorted(files_dict["inputs"]):
-        print(f"  - {f}")
+---
 
-    print("\nRulebooks files:")
-    for f in sorted(files_dict["rulebooks"]):
-        print(f"  - {f}")
+**Stakeholder Point:**
+Discount rate – Since it is sourced from Deloitte in percentage format, can the tool accept it in the same format to avoid errors?
 
-    print("\nOutputs files:")
-    for f in sorted(files_dict["outputs"]):
-        print(f"  - {f}")
+**Response:**
+Yes, the tool accepts the discount rate in percentage format. For example, if the rate is 4.12%, it should be entered as 4.12.
+
+---
+
+**Stakeholder Point:**
+CET1 Actual – Can the tool calculate this on its own instead of requiring calculation in the VIU EUC file?
+
+**Response:**
+Yes, CET1 Actual is now calculated within the tool. You may leave this field blank in the input template.
+
+---
+
+**Stakeholder Point:**
+Look Ahead tab – Once the testing date is entered, can the remaining year fraction be auto-calculated?
+
+**Response:**
+Yes, the remaining year is auto-calculated by the tool, and the field can be left blank in the template.
+
+---
+
+**Stakeholder Point:**
+To get the TOR rate for the month – Can it be auto-fetched from the TOR rate ET table in the Input folder?
+
+**Response:**
+We will add an automation rule in the input automation tool to populate TOR automatically.
+
+---
+
+**Final Request:**
+Please provide a standard input format for RWA, PBT, and Tax so that we can update the input automation tool and share it with you for UAT.
+

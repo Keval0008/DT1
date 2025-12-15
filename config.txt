@@ -1,85 +1,70 @@
-**Stakeholder Point:**
-Instead of putting in all the input values in the predefined Excel template, can we upload all the inputs onto the tool itself to avoid manual effort? This functionality was discussed earlier—please advise the progress.
+import pandas as pd
 
-**Response:**
-The solution is feasible if a fixed input format for RWA, PBT, and Tax can be provided. Currently, these formats change frequently across sites, making automation unreliable.
-If a fixed format cannot be provided, we recommend keeping both solutions separate, since the Impairment Tool is a global solution and we would need to introduce an additional validation layer between the tools to ensure accuracy.
+def preprocess_access_df(df_access: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expand the ; separated users column into one row per (entity, portfolio, user_id).
+    """
+    df = df_access.copy()
+    # Split the users column on ';' and explode
+    df['user_id'] = df['users'].str.split(';')
+    df = df.explode('user_id')
+    
+    # Clean spaces and keep only non-empty user_ids
+    df['user_id'] = df['user_id'].astype(str).str.strip()
+    df = df[df['user_id'] != '']
+    
+    return df[['entity', 'portfolio', 'user_id']]
 
----
 
-**Stakeholder Point:**
-We would like the tool to calculate some of the inputs on its own rather than doing it in Excel—for example, CET1 capital, Tangible Equity, RWA, etc.
+def get_user_entity_portfolio(
+    user_id: str,
+    df_access_long: pd.DataFrame,
+    df_admin: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Return all (entity, portfolio) pairs the user has access to.
+    If user is admin, return all unique entity-portfolio combos.
+    """
+    is_admin = (df_admin['user_id'] == user_id).any()
+    
+    if is_admin:
+        # Admin: access to everything
+        result = df_access_long[['entity', 'portfolio']].drop_duplicates()
+    else:
+        # Normal user: filter by user_id
+        result = (
+            df_access_long[df_access_long['user_id'] == user_id]
+            [['entity', 'portfolio']]
+            .drop_duplicates()
+        )
+    
+    # Optional: sort for nicer UI
+    result = result.sort_values(['entity', 'portfolio']).reset_index(drop=True)
+    return result
 
-**Response:**
-Yes, the tool already calculates these values automatically. You may leave these fields blank in the input template, and the tool will compute them.
 
----
+# ------------ Example usage ------------
 
-**Stakeholder Point:**
-Can this help us arrive at the break-even point where a change in cash flow or discount rate results in NIL headroom/shortfall?
+# Example df_access
+df_access = pd.DataFrame({
+    'entity': ['India', 'India', 'US'],
+    'portfolio': ['Retail', 'Corporate', 'Retail'],
+    'users': [
+        '11112222; 33334444',     # India - Retail
+        '11112222; 55556666',     # India - Corporate
+        '77778888; 33334444'      # US - Retail
+    ]
+})
 
-**Response:**
-Yes, this feature already exists as "Headroom Utilization." With one click, you can get the break-even values for all CGUs across multiple scenarios, including changes in cash flow, discount rate, growth rate, and more.
+# Example df_admin
+df_admin = pd.DataFrame({
+    'user_id': ['99990000', '55556666']   # 55556666 is an admin in this example
+})
 
----
+# 1) Preprocess once at app startup
+df_access_long = preprocess_access_df(df_access)
 
-**Stakeholder Point:**
-Please advise if the tool can run on a cloud environment instead of a local machine. This would help ensure review controls.
-
-**Response:**
-Due to infrastructure limitations, hosting the solution in a cloud environment is currently not possible.
-However, all analysis results are fully downloadable to support easy sharing and review.
-
----
-
-**Stakeholder Point:**
-FRP PBT data – Can the tool calculate the last outer-year PBT using preceding-year growth rates for all CGUs, especially when the last-year FRP (e.g., 2030) is not available?
-
-**Response:**
-This enhancement has been incorporated into the tool.
-
----
-
-**Stakeholder Point:**
-FRP Tax data – Similar to the above, can the tax rate be automatically applied using the preceding year’s rate?
-
-**Response:**
-This enhancement has also been incorporated into the tool.
-
----
-
-**Stakeholder Point:**
-Discount rate – Since it is sourced from Deloitte in percentage format, can the tool accept it in the same format to avoid errors?
-
-**Response:**
-Yes, the tool accepts the discount rate in percentage format. For example, if the rate is 4.12%, it should be entered as 4.12.
-
----
-
-**Stakeholder Point:**
-CET1 Actual – Can the tool calculate this on its own instead of requiring calculation in the VIU EUC file?
-
-**Response:**
-Yes, CET1 Actual is now calculated within the tool. You may leave this field blank in the input template.
-
----
-
-**Stakeholder Point:**
-Look Ahead tab – Once the testing date is entered, can the remaining year fraction be auto-calculated?
-
-**Response:**
-Yes, the remaining year is auto-calculated by the tool, and the field can be left blank in the template.
-
----
-
-**Stakeholder Point:**
-To get the TOR rate for the month – Can it be auto-fetched from the TOR rate ET table in the Input folder?
-
-**Response:**
-We will add an automation rule in the input automation tool to populate TOR automatically.
-
----
-
-**Final Request:**
-Please provide a standard input format for RWA, PBT, and Tax so that we can update the input automation tool and share it with you for UAT.
-
+# 2) Get access for a specific user
+user_id = '11112222'
+user_access_df = get_user_entity_portfolio(user_id, df_access_long, df_admin)
+print(user_access_df)

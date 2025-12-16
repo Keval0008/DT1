@@ -1,70 +1,112 @@
-import pandas as pd
+from pathlib import Path
+import re
+import zipfile
+import pickle
+from datetime import datetime
 
-def preprocess_access_df(df_access: pd.DataFrame) -> pd.DataFrame:
+
+DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
+ZIP_RE = re.compile(r"^(?P<id>\d{8})_(?P<date>\d{8})_(?P<time>\d{6})\.zip$")  # 8digits_yyyymmdd_hhmmss.zip
+
+
+def get_latest_date_folder(portfolio_path: Path) -> Path:
+    """Return latest YYYY-MM-DD folder inside portfolio_path."""
+    if not portfolio_path.exists():
+        raise FileNotFoundError(f"Portfolio path does not exist: {portfolio_path}")
+
+    candidates = []
+    for p in portfolio_path.iterdir():
+        if p.is_dir() and DATE_DIR_RE.match(p.name):
+            d = datetime.strptime(p.name, "%Y-%m-%d").date()
+            candidates.append((d, p))
+
+    if not candidates:
+        raise FileNotFoundError(f"No date folders (YYYY-MM-DD) found inside: {portfolio_path}")
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[-1][1]
+
+
+def parse_zip_datetime(zip_name: str) -> datetime | None:
+    """Parse datetime from 8digits_yyyymmdd_hhmmss.zip; return None if not matching."""
+    m = ZIP_RE.match(zip_name)
+    if not m:
+        return None
+    dt_str = m.group("date") + m.group("time")  # yyyymmddhhmmss
+    return datetime.strptime(dt_str, "%Y%m%d%H%M%S")
+
+
+def get_latest_zip(date_folder: Path) -> Path:
+    """Return latest zip in date_folder based on datetime embedded in filename."""
+    zips = []
+    for p in date_folder.iterdir():
+        if p.is_file() and p.suffix.lower() == ".zip":
+            dt = parse_zip_datetime(p.name)
+            if dt:
+                zips.append((dt, p))
+
+    if not zips:
+        raise FileNotFoundError(f"No matching zip files found in: {date_folder}")
+
+    zips.sort(key=lambda x: x[0])
+    return zips[-1][1]
+
+
+def load_pickles_from_zip(zip_path: Path):
     """
-    Expand the ; separated users column into one row per (entity, portfolio, user_id).
+    Inside zip:
+      - control*.pkl -> ControlResults
+      - selectedrulebook*.pkl -> SelectedRulebook
+      - cache_data/**.pkl -> input_data (recursive under cache_data)
+    Keys: Path(name).stem (same as f.stem), i.e. filename only without .pkl.
     """
-    df = df_access.copy()
-    # Split the users column on ';' and explode
-    df['user_id'] = df['users'].str.split(';')
-    df = df.explode('user_id')
-    
-    # Clean spaces and keep only non-empty user_ids
-    df['user_id'] = df['user_id'].astype(str).str.strip()
-    df = df[df['user_id'] != '']
-    
-    return df[['entity', 'portfolio', 'user_id']]
+    ControlResults = {}
+    SelectedRulebook = {}
+    input_data = {}
+
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for name in z.namelist():
+            if name.endswith("/"):
+                continue
+            if not name.lower().endswith(".pkl"):
+                continue
+
+            stem = Path(name).stem
+            file_only_lower = Path(name).name.lower()
+            path_lower = name.lower()
+
+            with z.open(name) as f:
+                obj = pickle.load(f)
+
+            # 1) cache_data pickles (including subfolders)
+            if path_lower.startswith("cache_data/"):
+                input_data[stem] = obj
+                continue
+
+            # 2) top-level / other pickles in zip
+            if "selectedrulebook" in file_only_lower:
+                SelectedRulebook[stem] = obj
+            elif "control" in file_only_lower:
+                ControlResults[stem] = obj
+
+    return ControlResults, SelectedRulebook, input_data
 
 
-def get_user_entity_portfolio(
-    user_id: str,
-    df_access_long: pd.DataFrame,
-    df_admin: pd.DataFrame
-) -> pd.DataFrame:
+def load_all_for_entity_portfolio(base_root: str | Path, entity: str, portfolio: str):
     """
-    Return all (entity, portfolio) pairs the user has access to.
-    If user is admin, return all unique entity-portfolio combos.
+    Returns:
+      latest_date_folder_path,
+      latest_zip_path,
+      ControlResults,
+      SelectedRulebook,
+      input_data
     """
-    is_admin = (df_admin['user_id'] == user_id).any()
-    
-    if is_admin:
-        # Admin: access to everything
-        result = df_access_long[['entity', 'portfolio']].drop_duplicates()
-    else:
-        # Normal user: filter by user_id
-        result = (
-            df_access_long[df_access_long['user_id'] == user_id]
-            [['entity', 'portfolio']]
-            .drop_duplicates()
-        )
-    
-    # Optional: sort for nicer UI
-    result = result.sort_values(['entity', 'portfolio']).reset_index(drop=True)
-    return result
+    base_root = Path(base_root)
+    portfolio_path = base_root / entity / portfolio
 
+    latest_date_folder = get_latest_date_folder(portfolio_path)
+    latest_zip = get_latest_zip(latest_date_folder)
 
-# ------------ Example usage ------------
+    ControlResults, SelectedRulebook, input_data = load_pickles_from_zip(latest_zip)
 
-# Example df_access
-df_access = pd.DataFrame({
-    'entity': ['India', 'India', 'US'],
-    'portfolio': ['Retail', 'Corporate', 'Retail'],
-    'users': [
-        '11112222; 33334444',     # India - Retail
-        '11112222; 55556666',     # India - Corporate
-        '77778888; 33334444'      # US - Retail
-    ]
-})
-
-# Example df_admin
-df_admin = pd.DataFrame({
-    'user_id': ['99990000', '55556666']   # 55556666 is an admin in this example
-})
-
-# 1) Preprocess once at app startup
-df_access_long = preprocess_access_df(df_access)
-
-# 2) Get access for a specific user
-user_id = '11112222'
-user_access_df = get_user_entity_portfolio(user_id, df_access_long, df_admin)
-print(user_access_df)
+    return latest_date_folder, latest_zip, ControlResults, SelectedRulebook, input_data

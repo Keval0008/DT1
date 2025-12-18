@@ -1,112 +1,108 @@
-from pathlib import Path
-import re
-import zipfile
-import pickle
-from datetime import datetime
+import time
+import pandas as pd
+from dash import Dash, dcc, html, Input, Output, callback, no_update
+
+app = Dash(__name__)
+
+app.layout = html.Div(
+    [
+        # ✅ Fullscreen loader wraps the Store(s)
+        dcc.Loading(
+            id="full_loader",
+            type="default",
+            fullscreen=True,
+            children=html.Div(
+                [
+                    dcc.Store(id="store_dict"),
+                    dcc.Store(id="store_list"),
+                    dcc.Store(id="store_df"),
+                ]
+            ),
+        ),
+
+        # ✅ Custom text overlay (shown only while loading)
+        html.Div(
+            id="loading_text",
+            style={
+                "position": "fixed",
+                "top": "58%",
+                "left": "50%",
+                "transform": "translate(-50%, -50%)",
+                "zIndex": 9999,
+                "fontSize": "18px",
+                "fontWeight": "600",
+            },
+        ),
+
+        # Tabs (default selected)
+        dcc.Tabs(
+            id="tabs",
+            value="tab-1",  # ✅ default
+            children=[
+                dcc.Tab(label="Tab 1", value="tab-1"),
+                dcc.Tab(label="Tab 2", value="tab-2"),
+            ],
+        ),
+        html.Div(id="tabs-content"),
+    ]
+)
+
+# ✅ Example: load data once (triggered on page load)
+@callback(
+    Output("store_dict", "data"),
+    Output("store_list", "data"),
+    Output("store_df", "data"),
+    Input("tabs", "id"),  # simple trigger that fires once on load
+    prevent_initial_call=False,
+)
+def load_big_data(_):
+    # simulate heavy load
+    time.sleep(2)
+
+    my_dict = {"a": 1, "b": 2}
+    my_list = [10, 20, 30]
+
+    df = pd.DataFrame({"x": [1, 2, 3], "y": ["p", "q", "r"]})
+    df_data = df.to_dict("records")  # JSON-serializable
+
+    return my_dict, my_list, df_data
+
+# ✅ Show custom text only while store_df is loading
+@callback(
+    Output("loading_text", "children"),
+    Input("store_df", "loading_state"),
+)
+def show_loading_text(loading_state):
+    if loading_state and loading_state.get("is_loading"):
+        return "Loading data… please wait"
+    return ""
+
+# ✅ Tab content depends on tab + stored data
+@callback(
+    Output("tabs-content", "children"),
+    Input("tabs", "value"),
+    Input("store_dict", "data"),
+    Input("store_list", "data"),
+    Input("store_df", "data"),
+)
+def render_tab(tab, d, l, df_data):
+    if not (d and l and df_data):
+        return html.Div("Waiting for data...")
+
+    df = pd.DataFrame(df_data)
+
+    if tab == "tab-1":
+        return html.Div(
+            [
+                html.H4("Tab 1"),
+                html.Div(f"dict keys: {list(d.keys())}"),
+                html.Div(f"list length: {len(l)}"),
+                html.Div(f"df shape: {df.shape}"),
+            ]
+        )
+
+    return html.Div([html.H4("Tab 2"), html.Div("Second tab content")])
 
 
-DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # YYYY-MM-DD
-ZIP_RE = re.compile(r"^(?P<id>\d{8})_(?P<date>\d{8})_(?P<time>\d{6})\.zip$")  # 8digits_yyyymmdd_hhmmss.zip
-
-
-def get_latest_date_folder(portfolio_path: Path) -> Path:
-    """Return latest YYYY-MM-DD folder inside portfolio_path."""
-    if not portfolio_path.exists():
-        raise FileNotFoundError(f"Portfolio path does not exist: {portfolio_path}")
-
-    candidates = []
-    for p in portfolio_path.iterdir():
-        if p.is_dir() and DATE_DIR_RE.match(p.name):
-            d = datetime.strptime(p.name, "%Y-%m-%d").date()
-            candidates.append((d, p))
-
-    if not candidates:
-        raise FileNotFoundError(f"No date folders (YYYY-MM-DD) found inside: {portfolio_path}")
-
-    candidates.sort(key=lambda x: x[0])
-    return candidates[-1][1]
-
-
-def parse_zip_datetime(zip_name: str) -> datetime | None:
-    """Parse datetime from 8digits_yyyymmdd_hhmmss.zip; return None if not matching."""
-    m = ZIP_RE.match(zip_name)
-    if not m:
-        return None
-    dt_str = m.group("date") + m.group("time")  # yyyymmddhhmmss
-    return datetime.strptime(dt_str, "%Y%m%d%H%M%S")
-
-
-def get_latest_zip(date_folder: Path) -> Path:
-    """Return latest zip in date_folder based on datetime embedded in filename."""
-    zips = []
-    for p in date_folder.iterdir():
-        if p.is_file() and p.suffix.lower() == ".zip":
-            dt = parse_zip_datetime(p.name)
-            if dt:
-                zips.append((dt, p))
-
-    if not zips:
-        raise FileNotFoundError(f"No matching zip files found in: {date_folder}")
-
-    zips.sort(key=lambda x: x[0])
-    return zips[-1][1]
-
-
-def load_pickles_from_zip(zip_path: Path):
-    """
-    Inside zip:
-      - control*.pkl -> ControlResults
-      - selectedrulebook*.pkl -> SelectedRulebook
-      - cache_data/**.pkl -> input_data (recursive under cache_data)
-    Keys: Path(name).stem (same as f.stem), i.e. filename only without .pkl.
-    """
-    ControlResults = {}
-    SelectedRulebook = {}
-    input_data = {}
-
-    with zipfile.ZipFile(zip_path, "r") as z:
-        for name in z.namelist():
-            if name.endswith("/"):
-                continue
-            if not name.lower().endswith(".pkl"):
-                continue
-
-            stem = Path(name).stem
-            file_only_lower = Path(name).name.lower()
-            path_lower = name.lower()
-
-            with z.open(name) as f:
-                obj = pickle.load(f)
-
-            # 1) cache_data pickles (including subfolders)
-            if path_lower.startswith("cache_data/"):
-                input_data[stem] = obj
-                continue
-
-            # 2) top-level / other pickles in zip
-            if "selectedrulebook" in file_only_lower:
-                SelectedRulebook[stem] = obj
-            elif "control" in file_only_lower:
-                ControlResults[stem] = obj
-
-    return ControlResults, SelectedRulebook, input_data
-
-
-def load_all_for_entity_portfolio(base_root: str | Path, entity: str, portfolio: str):
-    """
-    Returns:
-      latest_date_folder_path,
-      latest_zip_path,
-      ControlResults,
-      SelectedRulebook,
-      input_data
-    """
-    base_root = Path(base_root)
-    portfolio_path = base_root / entity / portfolio
-
-    latest_date_folder = get_latest_date_folder(portfolio_path)
-    latest_zip = get_latest_zip(latest_date_folder)
-
-    ControlResults, SelectedRulebook, input_data = load_pickles_from_zip(latest_zip)
-
-    return latest_date_folder, latest_zip, ControlResults, SelectedRulebook, input_data
+if __name__ == "__main__":
+    app.run_server(debug=True)

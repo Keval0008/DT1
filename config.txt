@@ -1,108 +1,49 @@
+import subprocess
+import sys
 import time
-import pandas as pd
-from dash import Dash, dcc, html, Input, Output, callback, no_update
+import webview
+import socket
 
-app = Dash(__name__)
+HOST = "127.0.0.1"
+PORT = 8501
 
-app.layout = html.Div(
-    [
-        # ✅ Fullscreen loader wraps the Store(s)
-        dcc.Loading(
-            id="full_loader",
-            type="default",
-            fullscreen=True,
-            children=html.Div(
-                [
-                    dcc.Store(id="store_dict"),
-                    dcc.Store(id="store_list"),
-                    dcc.Store(id="store_df"),
-                ]
-            ),
-        ),
+def is_port_open(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex((host, port)) == 0
 
-        # ✅ Custom text overlay (shown only while loading)
-        html.Div(
-            id="loading_text",
-            style={
-                "position": "fixed",
-                "top": "58%",
-                "left": "50%",
-                "transform": "translate(-50%, -50%)",
-                "zIndex": 9999,
-                "fontSize": "18px",
-                "fontWeight": "600",
-            },
-        ),
+def main():
+    # Start Streamlit in the background
+    p = subprocess.Popen(
+        [
+            sys.executable, "-m", "streamlit", "run", "app.py",
+            "--server.address", HOST,
+            "--server.port", str(PORT),
+            "--server.headless", "true",
+            "--browser.gatherUsageStats", "false",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
-        # Tabs (default selected)
-        dcc.Tabs(
-            id="tabs",
-            value="tab-1",  # ✅ default
-            children=[
-                dcc.Tab(label="Tab 1", value="tab-1"),
-                dcc.Tab(label="Tab 2", value="tab-2"),
-            ],
-        ),
-        html.Div(id="tabs-content"),
-    ]
-)
+    # Wait until Streamlit is listening
+    for _ in range(200):  # ~20 seconds max (200 * 0.1)
+        if is_port_open(HOST, PORT):
+            break
+        time.sleep(0.1)
 
-# ✅ Example: load data once (triggered on page load)
-@callback(
-    Output("store_dict", "data"),
-    Output("store_list", "data"),
-    Output("store_df", "data"),
-    Input("tabs", "id"),  # simple trigger that fires once on load
-    prevent_initial_call=False,
-)
-def load_big_data(_):
-    # simulate heavy load
-    time.sleep(2)
-
-    my_dict = {"a": 1, "b": 2}
-    my_list = [10, 20, 30]
-
-    df = pd.DataFrame({"x": [1, 2, 3], "y": ["p", "q", "r"]})
-    df_data = df.to_dict("records")  # JSON-serializable
-
-    return my_dict, my_list, df_data
-
-# ✅ Show custom text only while store_df is loading
-@callback(
-    Output("loading_text", "children"),
-    Input("store_df", "loading_state"),
-)
-def show_loading_text(loading_state):
-    if loading_state and loading_state.get("is_loading"):
-        return "Loading data… please wait"
-    return ""
-
-# ✅ Tab content depends on tab + stored data
-@callback(
-    Output("tabs-content", "children"),
-    Input("tabs", "value"),
-    Input("store_dict", "data"),
-    Input("store_list", "data"),
-    Input("store_df", "data"),
-)
-def render_tab(tab, d, l, df_data):
-    if not (d and l and df_data):
-        return html.Div("Waiting for data...")
-
-    df = pd.DataFrame(df_data)
-
-    if tab == "tab-1":
-        return html.Div(
-            [
-                html.H4("Tab 1"),
-                html.Div(f"dict keys: {list(d.keys())}"),
-                html.Div(f"list length: {len(l)}"),
-                html.Div(f"df shape: {df.shape}"),
-            ]
+    try:
+        # Open native window
+        webview.create_window(
+            "My Streamlit Desktop App",
+            f"http://{HOST}:{PORT}",
+            width=1200,
+            height=800,
         )
-
-    return html.Div([html.H4("Tab 2"), html.Div("Second tab content")])
-
+        webview.start()
+    finally:
+        # Close Streamlit when window closes
+        p.terminate()
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    main()

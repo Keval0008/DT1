@@ -1,9 +1,10 @@
 import time
 import pandas as pd
 
-from dash import Dash, html, dcc, Input, Output
+from dash import Dash, html, dcc, Input, Output, State, no_update
 import dash_table
 import plotly.express as px
+
 
 # -----------------------------
 # Dummy data
@@ -17,11 +18,8 @@ df = pd.DataFrame(
     }
 )
 
-subcat_map = {
-    "A": ["A1", "A2"],
-    "B": ["B1", "B2"],
-    "C": ["C1", "C2"],
-}
+subcat_map = {"A": ["A1", "A2"], "B": ["B1", "B2"], "C": ["C1", "C2"]}
+
 
 # -----------------------------
 # App
@@ -30,77 +28,25 @@ app = Dash(__name__)
 
 app.layout = html.Div(
     [
-        # Simple CSS (no assets folder needed)
-        html.Style(
-            """
-            .topbar {
-                position: sticky;
-                top: 0;
-                z-index: 2;
-                background: white;
-                border-bottom: 1px solid #eee;
-                padding: 14px 16px;
-            }
-            .row {
-                display: flex;
-                gap: 12px;
-                flex-wrap: wrap;
-                align-items: center;
-            }
-            .control {
-                min-width: 260px;
-                flex: 0 0 auto;
-            }
-            .content {
-                padding: 16px;
-            }
-            .overlay {
-                position: fixed;
-                inset: 0;
-                width: 100vw;
-                height: 100vh;
-                background: rgba(255, 255, 255, 0.85);
-                z-index: 9999;
-                display: none;           /* toggled via callback */
-                align-items: center;
-                justify-content: center;
-                flex-direction: column;
-                gap: 14px;
-                font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-            }
-            .overlay-text {
-                font-size: 18px;
-                font-weight: 600;
-            }
-            """
-        ),
-
-        # FULLSCREEN OVERLAY (shown while data loads)
+        # Top controls
         html.Div(
-            id="fullscreen-overlay",
-            className="overlay",
-            children=[
-                dcc.Loading(
-                    type="circle",
-                    fullscreen=False,  # we're already fullscreen via the overlay div
-                    children=html.Div(),
-                ),
-                html.Div("please wait while loading the data", className="overlay-text"),
-            ],
-        ),
-
-        # Controls
-        html.Div(
-            className="topbar",
+            style={
+                "position": "sticky",
+                "top": 0,
+                "zIndex": 2,
+                "background": "white",
+                "borderBottom": "1px solid #eee",
+                "padding": "14px 16px",
+            },
             children=[
                 html.H3("Dash Dashboard (Dummy Data)", style={"margin": "0 0 10px 0"}),
                 html.Div(
-                    className="row",
+                    style={"display": "flex", "gap": "12px", "flexWrap": "wrap", "alignItems": "center"},
                     children=[
                         html.Div(
-                            className="control",
+                            style={"minWidth": "260px"},
                             children=[
-                                html.Div("Category", style={"fontWeight": 600, "marginBottom": 6}),
+                                html.Div("Dropdown 1 (Category)", style={"fontWeight": 600, "marginBottom": 6}),
                                 dcc.Dropdown(
                                     id="dd-category",
                                     options=[{"label": c, "value": c} for c in sorted(df["category"].unique())],
@@ -110,14 +56,15 @@ app.layout = html.Div(
                             ],
                         ),
                         html.Div(
-                            className="control",
+                            style={"minWidth": "260px"},
                             children=[
-                                html.Div("Subcategory", style={"fontWeight": 600, "marginBottom": 6}),
+                                html.Div("Dropdown 2 (Subcategory)", style={"fontWeight": 600, "marginBottom": 6}),
                                 dcc.Dropdown(
                                     id="dd-subcat",
-                                    options=[{"label": s, "value": s} for s in subcat_map["A"]],
-                                    value=subcat_map["A"][0],
-                                    clearable=False,
+                                    options=[],     # will be filled by callback
+                                    value=None,     # important: no selection initially
+                                    placeholder="Select a subcategory...",
+                                    clearable=True,
                                 ),
                             ],
                         ),
@@ -126,51 +73,101 @@ app.layout = html.Div(
             ],
         ),
 
-        # Output area
+        # Message overlay (we toggle it ON/OFF while Loading is active)
         html.Div(
-            className="content",
+            id="loading-message-overlay",
+            style={
+                "display": "none",
+                "position": "fixed",
+                "inset": 0,
+                "zIndex": 10000,
+                "background": "rgba(255,255,255,0.0)",  # keep transparent; spinner is handled by dcc.Loading
+                "pointerEvents": "none",
+            },
             children=[
-                html.Div(id="summary", style={"marginBottom": 12, "fontWeight": 600}),
-                dcc.Graph(id="chart", config={"displayModeBar": False}),
-                html.H4("Preview Table", style={"marginTop": 16}),
-                dash_table.DataTable(
-                    id="table",
-                    page_size=10,
-                    style_table={"overflowX": "auto"},
-                    style_cell={"padding": "8px", "fontFamily": "system-ui"},
-                    style_header={"fontWeight": "700"},
-                ),
+                html.Div(
+                    "please wait while loading the data",
+                    style={
+                        "position": "fixed",
+                        "top": "55%",
+                        "left": "50%",
+                        "transform": "translate(-50%, -50%)",
+                        "fontSize": "18px",
+                        "fontWeight": 700,
+                        "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+                        "background": "white",
+                        "padding": "10px 14px",
+                        "borderRadius": "10px",
+                        "border": "1px solid #eee",
+                        "boxShadow": "0 8px 22px rgba(0,0,0,0.08)",
+                    },
+                )
             ],
+        ),
+
+        # FULLSCREEN LOADER: wraps output area
+        dcc.Loading(
+            id="full-loader",
+            type="circle",
+            fullscreen=True,  # ✅ FULLSCREEN loader
+            children=html.Div(
+                id="output-area",
+                style={"padding": "16px"},
+                children=[
+                    html.Div(
+                        id="hint",
+                        style={"padding": "14px", "border": "1px dashed #ddd", "borderRadius": "10px"},
+                        children="Select Dropdown 2 to load data...",
+                    ),
+                    html.Div(id="summary", style={"marginTop": 12, "fontWeight": 600}),
+                    dcc.Graph(id="chart", config={"displayModeBar": False}),
+                    html.H4("Preview Table", style={"marginTop": 16}),
+                    dash_table.DataTable(
+                        id="table",
+                        page_size=10,
+                        style_table={"overflowX": "auto"},
+                        style_cell={"padding": "8px", "fontFamily": "system-ui"},
+                        style_header={"fontWeight": "700"},
+                    ),
+                ],
+            ),
         ),
     ]
 )
 
 # -----------------------------
-# 1) Cascading dropdown: category -> subcategory options
+# 1) Dropdown 1 -> Dropdown 2 options
+#    IMPORTANT: we set Dropdown 2 value to None so user must select it.
 # -----------------------------
 @app.callback(
     Output("dd-subcat", "options"),
     Output("dd-subcat", "value"),
     Input("dd-category", "value"),
 )
-def update_subcat_options(category):
-    options = [{"label": s, "value": s} for s in subcat_map[category]]
-    value = subcat_map[category][0]
-    return options, value
+def update_subcats(category):
+    options = [{"label": s, "value": s} for s in subcat_map.get(category, [])]
+    return options, None  # ✅ reset value so data won't load automatically
+
 
 # -----------------------------
-# 2) Data load on subcategory select (simulate delay)
+# 2) Data loads ONLY when Dropdown 2 is selected
 # -----------------------------
 @app.callback(
+    Output("hint", "children"),
     Output("summary", "children"),
     Output("chart", "figure"),
     Output("table", "data"),
     Output("table", "columns"),
-    Input("dd-category", "value"),
     Input("dd-subcat", "value"),
+    State("dd-category", "value"),
+    prevent_initial_call=True,
 )
-def load_data(category, subcat):
-    # Simulate a heavier fetch/compute
+def load_data(subcat, category):
+    if not subcat:
+        # if user clears dropdown2
+        return "Select Dropdown 2 to load data...", "", no_update, [], []
+
+    # simulate delay so loader is visible
     time.sleep(2)
 
     dff = df[(df["category"] == category) & (df["subcat"] == subcat)].copy()
@@ -181,35 +178,30 @@ def load_data(category, subcat):
     cols = [{"name": c, "id": c} for c in dff.columns]
     data = dff.head(30).to_dict("records")
 
-    summary = f"Showing {len(dff)} rows for Category={category}, Subcategory={subcat}"
-    return summary, fig, data, cols
+    return "", f"Showing {len(dff)} rows for Category={category}, Subcategory={subcat}", fig, data, cols
+
 
 # -----------------------------
-# 3) Fullscreen overlay toggle based on chart loading_state
-#    (overlay shows while the chart callback is running)
+# 3) Show/hide the message overlay while loading happens
+#    We listen to the output area's loading_state.
 # -----------------------------
 @app.callback(
-    Output("fullscreen-overlay", "style"),
-    Input("chart", "loading_state"),
+    Output("loading-message-overlay", "style"),
+    Input("output-area", "loading_state"),
 )
-def toggle_overlay(loading_state):
+def toggle_loading_message(loading_state):
     is_loading = bool(loading_state and loading_state.get("is_loading"))
     if is_loading:
         return {
-            "display": "flex",
+            "display": "block",
             "position": "fixed",
             "inset": 0,
-            "width": "100vw",
-            "height": "100vh",
-            "background": "rgba(255, 255, 255, 0.85)",
-            "zIndex": 9999,
-            "alignItems": "center",
-            "justifyContent": "center",
-            "flexDirection": "column",
-            "gap": "14px",
-            "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+            "zIndex": 10000,
+            "background": "rgba(255,255,255,0.0)",
+            "pointerEvents": "none",
         }
     return {"display": "none"}
+
 
 if __name__ == "__main__":
     app.run_server(debug=True)

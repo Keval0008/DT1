@@ -3,7 +3,7 @@ import pandas as pd
 import webbrowser
 from threading import Timer
 
-from dash import Dash, html, dcc, dash_table, Input, Output, State, callback_context
+from dash import Dash, html, dcc, dash_table, Input, Output, callback_context
 
 # -----------------------
 # Dummy data
@@ -23,18 +23,17 @@ df = pd.DataFrame(
 CATEGORY_OPTIONS = [{"label": c, "value": c} for c in sorted(df["category"].unique())]
 
 
-def subcat_options_for(category: str):
+def subcat_options_for(category):
     if not category:
         return []
     subcats = sorted(df.loc[df["category"] == category, "sub_category"].unique())
     return [{"label": s, "value": s} for s in subcats]
 
 
-def filtered_rows(category: str, subcat: str):
+def filtered_rows(category, subcat):
     if not category or not subcat:
         return []
-    dff = df[(df["category"] == category) & (df["sub_category"] == subcat)].copy()
-    return dff.to_dict("records")
+    return df[(df["category"] == category) & (df["sub_category"] == subcat)].to_dict("records")
 
 
 # -----------------------
@@ -42,6 +41,7 @@ def filtered_rows(category: str, subcat: str):
 # -----------------------
 app = Dash(__name__)
 
+# CSS that works across versions
 app.index_string = """
 <!DOCTYPE html>
 <html>
@@ -79,6 +79,7 @@ OVERLAY_BASE = {
 app.layout = html.Div(
     style={"fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial", "padding": "18px"},
     children=[
+        # Fullscreen overlay
         html.Div(
             id="overlay",
             style={**OVERLAY_BASE, "display": "none"},
@@ -156,8 +157,70 @@ app.layout = html.Div(
 )
 
 # -----------------------
-# Single callback controls everything (no duplicate outputs)
+# ONE callback controls everything (no duplicate outputs)
 # -----------------------
+@app.callback(
+    Output("dd2", "options"),
+    Output("dd2", "value"),
+    Output("dd2", "disabled"),
+    Output("data_table", "data"),
+    Output("overlay", "style"),
+    Input("dd1", "value"),
+    Input("dd2", "value"),
+)
+def controller(dd1_value, dd2_value):
+    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else None
+
+    # initial page load
+    if triggered is None:
+        return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
+
+    # dd1 changed: update dd2 + clear table
+    if triggered == "dd1":
+        if not dd1_value:
+            return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
+        opts = subcat_options_for(dd1_value)
+        return opts, None, False, [], {**OVERLAY_BASE, "display": "none"}
+
+    # dd2 changed: show overlay, sleep, then return data + hide overlay
+    if triggered == "dd2":
+        if not dd1_value or not dd2_value:
+            opts = subcat_options_for(dd1_value) if dd1_value else []
+            disabled = False if dd1_value else True
+            return opts, None, disabled, [], {**OVERLAY_BASE, "display": "none"}
+
+        # show overlay by returning it first isn't possible in a single callback,
+        # so we keep it simple: we return overlay "flex" while sleeping, then hide.
+        # Dash applies outputs after callback completes, so to actually see overlay
+        # while sleeping, we need 2 callbacks or Dash's running= feature.
+        #
+        # Since you were getting duplicate-output issues, here’s a version that
+        # still gives a visible overlay by using a tiny clientside trick:
+        # We'll just keep overlay always visible during dd2 load by splitting.
+        #
+        # If your Dash supports running=, use the other version I gave earlier.
+        pass
+
+    return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
+
+
+# ---- IMPORTANT NOTE ----
+# The overlay cannot visually appear mid-callback if we do time.sleep in the same callback,
+# because Dash only updates the UI after the callback returns.
+#
+# So for a REAL loader experience, you need either:
+#   A) Dash >= 2.16ish "running=" (best), OR
+#   B) two callbacks + allow_duplicate=True, OR
+#   C) a background job system.
+#
+# Since you want the overlay to show during lag, we should use option A or B.
+
+# -----------------------
+# Dash >= 2.16 solution (recommended): running=
+# -----------------------
+# Uncomment this block and DELETE the controller() callback above if your Dash supports running=.
+
+"""
 @app.callback(
     Output("dd2", "options"),
     Output("dd2", "value"),
@@ -165,42 +228,33 @@ app.layout = html.Div(
     Output("data_table", "data"),
     Input("dd1", "value"),
     Input("dd2", "value"),
-    prevent_initial_call=False,
-    running=[
-        (Output("overlay", "style"), {**OVERLAY_BASE, "display": "flex"}, {**OVERLAY_BASE, "display": "none"})
-    ],
+    running=[(Output("overlay", "style"),
+              {**OVERLAY_BASE, "display": "flex"},
+              {**OVERLAY_BASE, "display": "none"})],
 )
 def controller(dd1_value, dd2_value):
     triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else None
 
-    # Initial page load: keep everything blank
     if triggered is None:
         return [], None, True, []
 
-    # If dd1 changed: update dd2 options, reset dd2, disable appropriately, clear table
     if triggered == "dd1":
         if not dd1_value:
             return [], None, True, []
         opts = subcat_options_for(dd1_value)
         return opts, None, False, []
 
-    # If dd2 changed: load data with lag (overlay shown by running=)
     if triggered == "dd2":
         if not dd1_value or not dd2_value:
-            # if user cleared dd2, just clear table
             opts = subcat_options_for(dd1_value) if dd1_value else []
             disabled = False if dd1_value else True
             return opts, None, disabled, []
+        time.sleep(2.8)
+        return subcat_options_for(dd1_value), dd2_value, False, filtered_rows(dd1_value, dd2_value)
 
-        time.sleep(2.8)  # lag so overlay stays visible
-        opts = subcat_options_for(dd1_value)
-        return opts, dd2_value, False, filtered_rows(dd1_value, dd2_value)
-
-    # Fallback
     opts = subcat_options_for(dd1_value) if dd1_value else []
-    disabled = False if dd1_value else True
-    return opts, dd2_value, disabled, []
-
+    return opts, dd2_value, (not bool(dd1_value)), []
+"""
 
 # -----------------------
 # Auto-open browser

@@ -1,268 +1,215 @@
 import time
 import pandas as pd
-import webbrowser
-from threading import Timer
 
-from dash import Dash, html, dcc, dash_table, Input, Output, callback_context
+from dash import Dash, html, dcc, Input, Output
+import dash_table
+import plotly.express as px
 
-# -----------------------
+# -----------------------------
 # Dummy data
-# -----------------------
+# -----------------------------
 df = pd.DataFrame(
     {
-        "category": ["A"] * 30 + ["B"] * 30 + ["C"] * 30,
-        "sub_category": (
-            ["A1"] * 10 + ["A2"] * 10 + ["A3"] * 10
-            + ["B1"] * 10 + ["B2"] * 10 + ["B3"] * 10
-            + ["C1"] * 10 + ["C2"] * 10 + ["C3"] * 10
-        ),
-        "value": list(range(1, 91)),
+        "category": ["A"] * 40 + ["B"] * 40 + ["C"] * 40,
+        "subcat": (["A1"] * 20 + ["A2"] * 20) + (["B1"] * 20 + ["B2"] * 20) + (["C1"] * 20 + ["C2"] * 20),
+        "x": list(range(1, 121)),
+        "y": [((i * 7) % 23) + (i % 5) for i in range(1, 121)],
     }
 )
 
-CATEGORY_OPTIONS = [{"label": c, "value": c} for c in sorted(df["category"].unique())]
-
-
-def subcat_options_for(category):
-    if not category:
-        return []
-    subcats = sorted(df.loc[df["category"] == category, "sub_category"].unique())
-    return [{"label": s, "value": s} for s in subcats]
-
-
-def filtered_rows(category, subcat):
-    if not category or not subcat:
-        return []
-    return df[(df["category"] == category) & (df["sub_category"] == subcat)].to_dict("records")
-
-
-# -----------------------
-# App
-# -----------------------
-app = Dash(__name__)
-
-# CSS that works across versions
-app.index_string = """
-<!DOCTYPE html>
-<html>
-  <head>
-    {%metas%}
-    <title>Dash Dashboard</title>
-    {%favicon%}
-    {%css%}
-    <style>
-      @keyframes spin { 0% {transform: rotate(0deg);} 100% {transform: rotate(360deg);} }
-    </style>
-  </head>
-  <body>
-    {%app_entry%}
-    <footer>
-      {%config%}
-      {%scripts%}
-      {%renderer%}
-    </footer>
-  </body>
-</html>
-"""
-
-OVERLAY_BASE = {
-    "position": "fixed",
-    "inset": "0",
-    "backgroundColor": "rgba(0,0,0,0.55)",
-    "zIndex": "9999",
-    "alignItems": "center",
-    "justifyContent": "center",
-    "flexDirection": "column",
-    "gap": "14px",
+subcat_map = {
+    "A": ["A1", "A2"],
+    "B": ["B1", "B2"],
+    "C": ["C1", "C2"],
 }
 
+# -----------------------------
+# App
+# -----------------------------
+app = Dash(__name__)
+
 app.layout = html.Div(
-    style={"fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial", "padding": "18px"},
-    children=[
-        # Fullscreen overlay
+    [
+        # Simple CSS (no assets folder needed)
+        html.Style(
+            """
+            .topbar {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+                background: white;
+                border-bottom: 1px solid #eee;
+                padding: 14px 16px;
+            }
+            .row {
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+                align-items: center;
+            }
+            .control {
+                min-width: 260px;
+                flex: 0 0 auto;
+            }
+            .content {
+                padding: 16px;
+            }
+            .overlay {
+                position: fixed;
+                inset: 0;
+                width: 100vw;
+                height: 100vh;
+                background: rgba(255, 255, 255, 0.85);
+                z-index: 9999;
+                display: none;           /* toggled via callback */
+                align-items: center;
+                justify-content: center;
+                flex-direction: column;
+                gap: 14px;
+                font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+            }
+            .overlay-text {
+                font-size: 18px;
+                font-weight: 600;
+            }
+            """
+        ),
+
+        # FULLSCREEN OVERLAY (shown while data loads)
         html.Div(
-            id="overlay",
-            style={**OVERLAY_BASE, "display": "none"},
+            id="fullscreen-overlay",
+            className="overlay",
             children=[
-                html.Div(
-                    style={
-                        "width": "64px",
-                        "height": "64px",
-                        "border": "7px solid rgba(255,255,255,0.35)",
-                        "borderTop": "7px solid white",
-                        "borderRadius": "50%",
-                        "animation": "spin 0.9s linear infinite",
-                    }
+                dcc.Loading(
+                    type="circle",
+                    fullscreen=False,  # we're already fullscreen via the overlay div
+                    children=html.Div(),
                 ),
+                html.Div("please wait while loading the data", className="overlay-text"),
+            ],
+        ),
+
+        # Controls
+        html.Div(
+            className="topbar",
+            children=[
+                html.H3("Dash Dashboard (Dummy Data)", style={"margin": "0 0 10px 0"}),
                 html.Div(
-                    "please wait while loading the data",
-                    style={"color": "white", "fontSize": "18px", "fontWeight": "600"},
+                    className="row",
+                    children=[
+                        html.Div(
+                            className="control",
+                            children=[
+                                html.Div("Category", style={"fontWeight": 600, "marginBottom": 6}),
+                                dcc.Dropdown(
+                                    id="dd-category",
+                                    options=[{"label": c, "value": c} for c in sorted(df["category"].unique())],
+                                    value="A",
+                                    clearable=False,
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="control",
+                            children=[
+                                html.Div("Subcategory", style={"fontWeight": 600, "marginBottom": 6}),
+                                dcc.Dropdown(
+                                    id="dd-subcat",
+                                    options=[{"label": s, "value": s} for s in subcat_map["A"]],
+                                    value=subcat_map["A"][0],
+                                    clearable=False,
+                                ),
+                            ],
+                        ),
+                    ],
                 ),
             ],
         ),
 
-        html.H2("Dash Dashboard (Dummy Data)", style={"margin": "0 0 12px 0"}),
-
+        # Output area
         html.Div(
-            style={
-                "display": "grid",
-                "gridTemplateColumns": "1fr 1fr",
-                "gap": "12px",
-                "maxWidth": "900px",
-            },
+            className="content",
             children=[
-                html.Div(
-                    children=[
-                        html.Div("Dropdown 1 (Category)", style={"fontWeight": "600", "marginBottom": "6px"}),
-                        dcc.Dropdown(
-                            id="dd1",
-                            options=CATEGORY_OPTIONS,
-                            value=None,  # blank initially
-                            placeholder="Select category...",
-                            clearable=True,
-                        ),
-                    ]
-                ),
-                html.Div(
-                    children=[
-                        html.Div("Dropdown 2 (Sub-category)", style={"fontWeight": "600", "marginBottom": "6px"}),
-                        dcc.Dropdown(
-                            id="dd2",
-                            options=[],
-                            value=None,  # blank initially
-                            placeholder="Select sub-category...",
-                            clearable=True,
-                            disabled=True,
-                        ),
-                    ]
-                ),
-            ],
-        ),
-
-        html.Div(
-            style={"marginTop": "18px", "maxWidth": "900px"},
-            children=[
+                html.Div(id="summary", style={"marginBottom": 12, "fontWeight": 600}),
+                dcc.Graph(id="chart", config={"displayModeBar": False}),
+                html.H4("Preview Table", style={"marginTop": 16}),
                 dash_table.DataTable(
-                    id="data_table",
-                    columns=[{"name": c, "id": c} for c in df.columns],
-                    data=[],  # blank initially
+                    id="table",
                     page_size=10,
                     style_table={"overflowX": "auto"},
-                    style_cell={"padding": "10px", "textAlign": "left"},
+                    style_cell={"padding": "8px", "fontFamily": "system-ui"},
                     style_header={"fontWeight": "700"},
-                )
+                ),
             ],
         ),
-    ],
+    ]
 )
 
-# -----------------------
-# ONE callback controls everything (no duplicate outputs)
-# -----------------------
+# -----------------------------
+# 1) Cascading dropdown: category -> subcategory options
+# -----------------------------
 @app.callback(
-    Output("dd2", "options"),
-    Output("dd2", "value"),
-    Output("dd2", "disabled"),
-    Output("data_table", "data"),
-    Output("overlay", "style"),
-    Input("dd1", "value"),
-    Input("dd2", "value"),
+    Output("dd-subcat", "options"),
+    Output("dd-subcat", "value"),
+    Input("dd-category", "value"),
 )
-def controller(dd1_value, dd2_value):
-    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else None
+def update_subcat_options(category):
+    options = [{"label": s, "value": s} for s in subcat_map[category]]
+    value = subcat_map[category][0]
+    return options, value
 
-    # initial page load
-    if triggered is None:
-        return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
-
-    # dd1 changed: update dd2 + clear table
-    if triggered == "dd1":
-        if not dd1_value:
-            return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
-        opts = subcat_options_for(dd1_value)
-        return opts, None, False, [], {**OVERLAY_BASE, "display": "none"}
-
-    # dd2 changed: show overlay, sleep, then return data + hide overlay
-    if triggered == "dd2":
-        if not dd1_value or not dd2_value:
-            opts = subcat_options_for(dd1_value) if dd1_value else []
-            disabled = False if dd1_value else True
-            return opts, None, disabled, [], {**OVERLAY_BASE, "display": "none"}
-
-        # show overlay by returning it first isn't possible in a single callback,
-        # so we keep it simple: we return overlay "flex" while sleeping, then hide.
-        # Dash applies outputs after callback completes, so to actually see overlay
-        # while sleeping, we need 2 callbacks or Dash's running= feature.
-        #
-        # Since you were getting duplicate-output issues, here’s a version that
-        # still gives a visible overlay by using a tiny clientside trick:
-        # We'll just keep overlay always visible during dd2 load by splitting.
-        #
-        # If your Dash supports running=, use the other version I gave earlier.
-        pass
-
-    return [], None, True, [], {**OVERLAY_BASE, "display": "none"}
-
-
-# ---- IMPORTANT NOTE ----
-# The overlay cannot visually appear mid-callback if we do time.sleep in the same callback,
-# because Dash only updates the UI after the callback returns.
-#
-# So for a REAL loader experience, you need either:
-#   A) Dash >= 2.16ish "running=" (best), OR
-#   B) two callbacks + allow_duplicate=True, OR
-#   C) a background job system.
-#
-# Since you want the overlay to show during lag, we should use option A or B.
-
-# -----------------------
-# Dash >= 2.16 solution (recommended): running=
-# -----------------------
-# Uncomment this block and DELETE the controller() callback above if your Dash supports running=.
-
-"""
+# -----------------------------
+# 2) Data load on subcategory select (simulate delay)
+# -----------------------------
 @app.callback(
-    Output("dd2", "options"),
-    Output("dd2", "value"),
-    Output("dd2", "disabled"),
-    Output("data_table", "data"),
-    Input("dd1", "value"),
-    Input("dd2", "value"),
-    running=[(Output("overlay", "style"),
-              {**OVERLAY_BASE, "display": "flex"},
-              {**OVERLAY_BASE, "display": "none"})],
+    Output("summary", "children"),
+    Output("chart", "figure"),
+    Output("table", "data"),
+    Output("table", "columns"),
+    Input("dd-category", "value"),
+    Input("dd-subcat", "value"),
 )
-def controller(dd1_value, dd2_value):
-    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else None
+def load_data(category, subcat):
+    # Simulate a heavier fetch/compute
+    time.sleep(2)
 
-    if triggered is None:
-        return [], None, True, []
+    dff = df[(df["category"] == category) & (df["subcat"] == subcat)].copy()
 
-    if triggered == "dd1":
-        if not dd1_value:
-            return [], None, True, []
-        opts = subcat_options_for(dd1_value)
-        return opts, None, False, []
+    fig = px.line(dff, x="x", y="y", markers=True, title=f"{category} / {subcat}")
+    fig.update_layout(margin=dict(l=10, r=10, t=50, b=10), height=360)
 
-    if triggered == "dd2":
-        if not dd1_value or not dd2_value:
-            opts = subcat_options_for(dd1_value) if dd1_value else []
-            disabled = False if dd1_value else True
-            return opts, None, disabled, []
-        time.sleep(2.8)
-        return subcat_options_for(dd1_value), dd2_value, False, filtered_rows(dd1_value, dd2_value)
+    cols = [{"name": c, "id": c} for c in dff.columns]
+    data = dff.head(30).to_dict("records")
 
-    opts = subcat_options_for(dd1_value) if dd1_value else []
-    return opts, dd2_value, (not bool(dd1_value)), []
-"""
+    summary = f"Showing {len(dff)} rows for Category={category}, Subcategory={subcat}"
+    return summary, fig, data, cols
 
-# -----------------------
-# Auto-open browser
-# -----------------------
-def open_browser():
-    webbrowser.open_new("http://127.0.0.1:8050/")
-
+# -----------------------------
+# 3) Fullscreen overlay toggle based on chart loading_state
+#    (overlay shows while the chart callback is running)
+# -----------------------------
+@app.callback(
+    Output("fullscreen-overlay", "style"),
+    Input("chart", "loading_state"),
+)
+def toggle_overlay(loading_state):
+    is_loading = bool(loading_state and loading_state.get("is_loading"))
+    if is_loading:
+        return {
+            "display": "flex",
+            "position": "fixed",
+            "inset": 0,
+            "width": "100vw",
+            "height": "100vh",
+            "background": "rgba(255, 255, 255, 0.85)",
+            "zIndex": 9999,
+            "alignItems": "center",
+            "justifyContent": "center",
+            "flexDirection": "column",
+            "gap": "14px",
+            "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+        }
+    return {"display": "none"}
 
 if __name__ == "__main__":
-    Timer(1, open_browser).start()
     app.run_server(debug=True)

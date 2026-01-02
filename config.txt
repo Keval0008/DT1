@@ -3,7 +3,7 @@ import pandas as pd
 import webbrowser
 from threading import Timer
 
-from dash import Dash, html, dcc, dash_table, Input, Output, State
+from dash import Dash, html, dcc, dash_table, Input, Output, State, callback_context
 
 # -----------------------
 # Dummy data
@@ -42,7 +42,6 @@ def filtered_rows(category: str, subcat: str):
 # -----------------------
 app = Dash(__name__)
 
-# CSS via index_string (works across versions)
 app.index_string = """
 <!DOCTYPE html>
 <html>
@@ -66,8 +65,7 @@ app.index_string = """
 </html>
 """
 
-OVERLAY_STYLE = {
-    "display": "none",  # will be toggled by callback running=
+OVERLAY_BASE = {
     "position": "fixed",
     "inset": "0",
     "backgroundColor": "rgba(0,0,0,0.55)",
@@ -81,10 +79,9 @@ OVERLAY_STYLE = {
 app.layout = html.Div(
     style={"fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial", "padding": "18px"},
     children=[
-        # Fullscreen overlay
         html.Div(
             id="overlay",
-            style=OVERLAY_STYLE,
+            style={**OVERLAY_BASE, "display": "none"},
             children=[
                 html.Div(
                     style={
@@ -159,39 +156,50 @@ app.layout = html.Div(
 )
 
 # -----------------------
-# Callbacks
+# Single callback controls everything (no duplicate outputs)
 # -----------------------
-
-# dd1 -> dd2 options + reset dd2 + disable/enable + clear table
 @app.callback(
     Output("dd2", "options"),
     Output("dd2", "value"),
     Output("dd2", "disabled"),
     Output("data_table", "data"),
     Input("dd1", "value"),
-)
-def update_dd2(category):
-    if not category:
-        return [], None, True, []
-    opts = subcat_options_for(category)
-    return opts, None, False, []  # dd2 stays blank until user selects
-
-
-# dd2 -> load table (with lag) + fullscreen overlay while running
-@app.callback(
-    Output("data_table", "data"),
     Input("dd2", "value"),
-    State("dd1", "value"),
-    prevent_initial_call=True,
+    prevent_initial_call=False,
     running=[
-        (Output("overlay", "style"), {**OVERLAY_STYLE, "display": "flex"}, {**OVERLAY_STYLE, "display": "none"})
+        (Output("overlay", "style"), {**OVERLAY_BASE, "display": "flex"}, {**OVERLAY_BASE, "display": "none"})
     ],
 )
-def load_data(subcat, category):
-    if not category or not subcat:
-        return []
-    time.sleep(2.8)  # lag so overlay stays visible
-    return filtered_rows(category, subcat)
+def controller(dd1_value, dd2_value):
+    triggered = callback_context.triggered[0]["prop_id"].split(".")[0] if callback_context.triggered else None
+
+    # Initial page load: keep everything blank
+    if triggered is None:
+        return [], None, True, []
+
+    # If dd1 changed: update dd2 options, reset dd2, disable appropriately, clear table
+    if triggered == "dd1":
+        if not dd1_value:
+            return [], None, True, []
+        opts = subcat_options_for(dd1_value)
+        return opts, None, False, []
+
+    # If dd2 changed: load data with lag (overlay shown by running=)
+    if triggered == "dd2":
+        if not dd1_value or not dd2_value:
+            # if user cleared dd2, just clear table
+            opts = subcat_options_for(dd1_value) if dd1_value else []
+            disabled = False if dd1_value else True
+            return opts, None, disabled, []
+
+        time.sleep(2.8)  # lag so overlay stays visible
+        opts = subcat_options_for(dd1_value)
+        return opts, dd2_value, False, filtered_rows(dd1_value, dd2_value)
+
+    # Fallback
+    opts = subcat_options_for(dd1_value) if dd1_value else []
+    disabled = False if dd1_value else True
+    return opts, dd2_value, disabled, []
 
 
 # -----------------------
@@ -204,4 +212,3 @@ def open_browser():
 if __name__ == "__main__":
     Timer(1, open_browser).start()
     app.run_server(debug=True)
-

@@ -1,49 +1,200 @@
-import subprocess
-import sys
 import time
-import webview
-import socket
+import pandas as pd
+from dash import Dash, html, dcc, dash_table, Input, Output, State, no_update
 
-HOST = "127.0.0.1"
-PORT = 8501
+# -----------------------
+# Dummy data
+# -----------------------
+df = pd.DataFrame(
+    {
+        "category": ["A"] * 30 + ["B"] * 30 + ["C"] * 30,
+        "sub_category": (
+            ["A1"] * 10 + ["A2"] * 10 + ["A3"] * 10 +
+            ["B1"] * 10 + ["B2"] * 10 + ["B3"] * 10 +
+            ["C1"] * 10 + ["C2"] * 10 + ["C3"] * 10
+        ),
+        "value": list(range(1, 91)),
+    }
+)
 
-def is_port_open(host, port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.2)
-        return s.connect_ex((host, port)) == 0
+CATEGORY_OPTIONS = [{"label": c, "value": c} for c in sorted(df["category"].unique())]
 
-def main():
-    # Start Streamlit in the background
-    p = subprocess.Popen(
-        [
-            sys.executable, "-m", "streamlit", "run", "app.py",
-            "--server.address", HOST,
-            "--server.port", str(PORT),
-            "--server.headless", "true",
-            "--browser.gatherUsageStats", "false",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
-    # Wait until Streamlit is listening
-    for _ in range(200):  # ~20 seconds max (200 * 0.1)
-        if is_port_open(HOST, PORT):
-            break
-        time.sleep(0.1)
+def subcat_options_for(category: str):
+    subcats = sorted(df.loc[df["category"] == category, "sub_category"].unique())
+    return [{"label": s, "value": s} for s in subcats]
 
-    try:
-        # Open native window
-        webview.create_window(
-            "My Streamlit Desktop App",
-            f"http://{HOST}:{PORT}",
-            width=1200,
-            height=800,
-        )
-        webview.start()
-    finally:
-        # Close Streamlit when window closes
-        p.terminate()
+
+def filtered_rows(category: str, subcat: str):
+    dff = df[(df["category"] == category) & (df["sub_category"] == subcat)].copy()
+    return dff.to_dict("records")
+
+
+# -----------------------
+# App
+# -----------------------
+app = Dash(__name__)
+
+# Simple fullscreen overlay spinner via CSS
+SPINNER_CSS = """
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+"""
+
+app.layout = html.Div(
+    style={"fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial", "padding": "18px"},
+    children=[
+        html.Style(SPINNER_CSS),
+
+        # Fullscreen overlay (hidden by default)
+        html.Div(
+            id="overlay",
+            style={
+                "display": "none",
+                "position": "fixed",
+                "inset": "0",
+                "backgroundColor": "rgba(0,0,0,0.55)",
+                "zIndex": "9999",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "flexDirection": "column",
+                "gap": "14px",
+            },
+            children=[
+                html.Div(  # spinner
+                    style={
+                        "width": "64px",
+                        "height": "64px",
+                        "border": "7px solid rgba(255,255,255,0.35)",
+                        "borderTop": "7px solid white",
+                        "borderRadius": "50%",
+                        "animation": "spin 0.9s linear infinite",
+                    }
+                ),
+                html.Div(
+                    "please wait while loading the data",
+                    style={"color": "white", "fontSize": "18px", "fontWeight": "600"},
+                ),
+            ],
+        ),
+
+        # Stores loader state ("idle" | "loading")
+        dcc.Store(id="loading_state", data="idle"),
+
+        html.H2("Dash Dashboard (Dummy Data)", style={"margin": "0 0 12px 0"}),
+
+        # Top controls
+        html.Div(
+            style={
+                "display": "grid",
+                "gridTemplateColumns": "1fr 1fr",
+                "gap": "12px",
+                "maxWidth": "900px",
+            },
+            children=[
+                html.Div(
+                    children=[
+                        html.Div("Dropdown 1 (Category)", style={"fontWeight": "600", "marginBottom": "6px"}),
+                        dcc.Dropdown(
+                            id="dd1",
+                            options=CATEGORY_OPTIONS,
+                            value=CATEGORY_OPTIONS[0]["value"],
+                            clearable=False,
+                        ),
+                    ]
+                ),
+                html.Div(
+                    children=[
+                        html.Div("Dropdown 2 (Sub-category)", style={"fontWeight": "600", "marginBottom": "6px"}),
+                        dcc.Dropdown(
+                            id="dd2",
+                            options=subcat_options_for(CATEGORY_OPTIONS[0]["value"]),
+                            value=subcat_options_for(CATEGORY_OPTIONS[0]["value"])[0]["value"],
+                            clearable=False,
+                        ),
+                    ]
+                ),
+            ],
+        ),
+
+        # Output area
+        html.Div(
+            id="table_container",
+            style={"marginTop": "18px", "maxWidth": "900px"},
+            children=[
+                dash_table.DataTable(
+                    id="data_table",
+                    columns=[{"name": c, "id": c} for c in df.columns],
+                    data=filtered_rows(CATEGORY_OPTIONS[0]["value"], subcat_options_for(CATEGORY_OPTIONS[0]["value"])[0]["value"]),
+                    page_size=10,
+                    style_table={"overflowX": "auto"},
+                    style_cell={"padding": "10px", "textAlign": "left"},
+                    style_header={"fontWeight": "700"},
+                )
+            ],
+        ),
+    ],
+)
+
+# -----------------------
+# Callbacks
+# -----------------------
+
+# 1) Dropdown 1 -> modify Dropdown 2 options + value
+@app.callback(
+    Output("dd2", "options"),
+    Output("dd2", "value"),
+    Input("dd1", "value"),
+)
+def update_dd2(category):
+    opts = subcat_options_for(category)
+    return opts, (opts[0]["value"] if opts else None)
+
+
+# 2) Dropdown 2 selection -> immediately flip loader ON
+@app.callback(
+    Output("loading_state", "data", allow_duplicate=True),
+    Input("dd2", "value"),
+    prevent_initial_call=True,
+)
+def turn_loader_on(_):
+    return "loading"
+
+
+# 3) Long "load" (lag) -> update table + flip loader OFF
+@app.callback(
+    Output("data_table", "data"),
+    Output("loading_state", "data", allow_duplicate=True),
+    Input("dd2", "value"),
+    State("dd1", "value"),
+    prevent_initial_call=True,
+)
+def load_data(subcat, category):
+    # Add lag so loader stays longer
+    time.sleep(2.8)  # tweak this to make it longer/shorter
+
+    if not category or not subcat:
+        return [], "idle"
+
+    return filtered_rows(category, subcat), "idle"
+
+
+# 4) Control overlay visibility from store
+@app.callback(
+    Output("overlay", "style"),
+    Input("loading_state", "data"),
+    State("overlay", "style"),
+)
+def toggle_overlay(state, current_style):
+    base = dict(current_style or {})
+    if state == "loading":
+        base.update({"display": "flex"})
+    else:
+        base.update({"display": "none"})
+    return base
+
 
 if __name__ == "__main__":
-    main()
+    app.run_server(debug=True)

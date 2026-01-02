@@ -1,12 +1,9 @@
 import time
 import pandas as pd
-from dash import Dash, html, dcc, dash_table, Input, Output, State
 import webbrowser
 from threading import Timer
 
-
-def open_browser():
-    webbrowser.open_new("http://127.0.0.1:8050/")
+from dash import Dash, html, dcc, dash_table, Input, Output, State
 
 # -----------------------
 # Dummy data
@@ -15,9 +12,9 @@ df = pd.DataFrame(
     {
         "category": ["A"] * 30 + ["B"] * 30 + ["C"] * 30,
         "sub_category": (
-            ["A1"] * 10 + ["A2"] * 10 + ["A3"] * 10 +
-            ["B1"] * 10 + ["B2"] * 10 + ["B3"] * 10 +
-            ["C1"] * 10 + ["C2"] * 10 + ["C3"] * 10
+            ["A1"] * 10 + ["A2"] * 10 + ["A3"] * 10
+            + ["B1"] * 10 + ["B2"] * 10 + ["B3"] * 10
+            + ["C1"] * 10 + ["C2"] * 10 + ["C3"] * 10
         ),
         "value": list(range(1, 91)),
     }
@@ -45,52 +42,51 @@ def filtered_rows(category: str, subcat: str):
 # -----------------------
 app = Dash(__name__)
 
-# Put CSS in index_string (works across Dash versions)
+# CSS via index_string (works across versions)
 app.index_string = """
 <!DOCTYPE html>
 <html>
-    <head>
-        {%metas%}
-        <title>Dash Dashboard</title>
-        {%favicon%}
-        {%css%}
-        <style>
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-        </style>
-    </head>
-    <body>
-        {%app_entry%}
-        <footer>
-            {%config%}
-            {%scripts%}
-            {%renderer%}
-        </footer>
-    </body>
+  <head>
+    {%metas%}
+    <title>Dash Dashboard</title>
+    {%favicon%}
+    {%css%}
+    <style>
+      @keyframes spin { 0% {transform: rotate(0deg);} 100% {transform: rotate(360deg);} }
+    </style>
+  </head>
+  <body>
+    {%app_entry%}
+    <footer>
+      {%config%}
+      {%scripts%}
+      {%renderer%}
+    </footer>
+  </body>
 </html>
 """
+
+OVERLAY_STYLE = {
+    "display": "none",  # will be toggled by callback running=
+    "position": "fixed",
+    "inset": "0",
+    "backgroundColor": "rgba(0,0,0,0.55)",
+    "zIndex": "9999",
+    "alignItems": "center",
+    "justifyContent": "center",
+    "flexDirection": "column",
+    "gap": "14px",
+}
 
 app.layout = html.Div(
     style={"fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial", "padding": "18px"},
     children=[
-        # Fullscreen overlay (hidden by default)
+        # Fullscreen overlay
         html.Div(
             id="overlay",
-            style={
-                "display": "none",
-                "position": "fixed",
-                "inset": "0",
-                "backgroundColor": "rgba(0,0,0,0.55)",
-                "zIndex": "9999",
-                "alignItems": "center",
-                "justifyContent": "center",
-                "flexDirection": "column",
-                "gap": "14px",
-            },
+            style=OVERLAY_STYLE,
             children=[
-                html.Div(  # spinner
+                html.Div(
                     style={
                         "width": "64px",
                         "height": "64px",
@@ -107,12 +103,8 @@ app.layout = html.Div(
             ],
         ),
 
-        # Store loader state ("idle" | "loading")
-        dcc.Store(id="loading_state", data="idle"),
-
         html.H2("Dash Dashboard (Dummy Data)", style={"margin": "0 0 12px 0"}),
 
-        # Top controls
         html.Div(
             style={
                 "display": "grid",
@@ -127,7 +119,7 @@ app.layout = html.Div(
                         dcc.Dropdown(
                             id="dd1",
                             options=CATEGORY_OPTIONS,
-                            value=None,          # <-- blank initially
+                            value=None,  # blank initially
                             placeholder="Select category...",
                             clearable=True,
                         ),
@@ -139,17 +131,16 @@ app.layout = html.Div(
                         dcc.Dropdown(
                             id="dd2",
                             options=[],
-                            value=None,          # <-- blank initially
+                            value=None,  # blank initially
                             placeholder="Select sub-category...",
                             clearable=True,
-                            disabled=True,       # disabled until dd1 picked
+                            disabled=True,
                         ),
                     ]
                 ),
             ],
         ),
 
-        # Output area
         html.Div(
             style={"marginTop": "18px", "maxWidth": "900px"},
             children=[
@@ -171,72 +162,46 @@ app.layout = html.Div(
 # Callbacks
 # -----------------------
 
-# 1) Dropdown 1 -> modify Dropdown 2 options + value + disabled
+# dd1 -> dd2 options + reset dd2 + disable/enable + clear table
 @app.callback(
     Output("dd2", "options"),
     Output("dd2", "value"),
     Output("dd2", "disabled"),
+    Output("data_table", "data"),
     Input("dd1", "value"),
 )
 def update_dd2(category):
     if not category:
-        return [], None, True
+        return [], None, True, []
     opts = subcat_options_for(category)
-    return opts, None, False  # keep dd2 blank even after dd1 changes
+    return opts, None, False, []  # dd2 stays blank until user selects
 
 
-# 2) Dropdown 2 selection -> immediately flip loader ON (only when user actually selects)
-@app.callback(
-    Output("loading_state", "data"),
-    Input("dd2", "value"),
-    prevent_initial_call=True,
-)
-def turn_loader_on(subcat):
-    if not subcat:
-        return "idle"
-    return "loading"
-
-
-# 3) Long "load" (lag) -> update table + flip loader OFF
+# dd2 -> load table (with lag) + fullscreen overlay while running
 @app.callback(
     Output("data_table", "data"),
-    Output("loading_state", "data"),
     Input("dd2", "value"),
     State("dd1", "value"),
     prevent_initial_call=True,
+    running=[
+        (Output("overlay", "style"), {**OVERLAY_STYLE, "display": "flex"}, {**OVERLAY_STYLE, "display": "none"})
+    ],
 )
 def load_data(subcat, category):
     if not category or not subcat:
-        return [], "idle"
-
-    # Add lag so loader stays longer
-    time.sleep(2.8)  # tweak this
-
-    return filtered_rows(category, subcat), "idle"
+        return []
+    time.sleep(2.8)  # lag so overlay stays visible
+    return filtered_rows(category, subcat)
 
 
-# 4) Control overlay visibility from store
-@app.callback(
-    Output("overlay", "style"),
-    Input("loading_state", "data"),
-)
-def toggle_overlay(state):
-    if state == "loading":
-        return {
-            "display": "flex",
-            "position": "fixed",
-            "inset": "0",
-            "backgroundColor": "rgba(0,0,0,0.55)",
-            "zIndex": "9999",
-            "alignItems": "center",
-            "justifyContent": "center",
-            "flexDirection": "column",
-            "gap": "14px",
-        }
-    return {"display": "none"}
+# -----------------------
+# Auto-open browser
+# -----------------------
+def open_browser():
+    webbrowser.open_new("http://127.0.0.1:8050/")
 
 
 if __name__ == "__main__":
-    Timer(1, open_browser).start()  # opens browser after server starts
+    Timer(1, open_browser).start()
     app.run_server(debug=True)
 

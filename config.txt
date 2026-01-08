@@ -1,7 +1,12 @@
+import base64
+import uuid
+from io import BytesIO
+
 import dash
-from dash import html, dcc, Input, Output, State
+from dash import html, dcc, Input, Output, State, no_update
 
 from utils.constants import APP_TITLE, TAB_REFERENCE_LABEL, TAB_FINANCIAL_LABEL
+from services.run_date_parser import extract_run_date_from_xlsx
 
 
 app = dash.Dash(__name__, title=APP_TITLE)
@@ -12,33 +17,74 @@ def reference_tab_layout():
     return html.Div(
         style={"maxWidth": "900px", "marginTop": "16px"},
         children=[
-            html.H4("Upload Reference Files"),
+            # 1) Upload & session controls
+            html.Div(
+                style={"border": "1px solid #ddd", "borderRadius": "8px", "padding": "14px"},
+                children=[
+                    html.H4("1) Upload & session controls"),
 
-            dcc.Upload(
-                id="ref_upload",
-                children=html.Div(["Drag & drop or ", html.A("select .xlsx files")]),
-                multiple=True,
-                style={
-                    "width": "100%",
-                    "height": "70px",
-                    "lineHeight": "70px",
-                    "borderWidth": "1px",
-                    "borderStyle": "dashed",
-                    "borderRadius": "8px",
-                    "textAlign": "center",
-                    "cursor": "pointer",
-                },
+                    dcc.Upload(
+                        id="ref_upload",
+                        children=html.Div(["Drag & drop or ", html.A("select .xlsx files")]),
+                        multiple=True,
+                        style={
+                            "width": "100%",
+                            "height": "70px",
+                            "lineHeight": "70px",
+                            "borderWidth": "1px",
+                            "borderStyle": "dashed",
+                            "borderRadius": "8px",
+                            "textAlign": "center",
+                            "cursor": "pointer",
+                        },
+                    ),
+
+                    html.Div(id="ref_upload_status", style={"marginTop": "10px"}),
+
+                    html.Button(
+                        "Clear Session",
+                        id="ref_clear_session_btn",
+                        style={"marginTop": "10px"},
+                    ),
+
+                    dcc.Store(id="ref_files_store", storage_type="memory"),
+                ],
             ),
 
-            dcc.Store(id="ref_uploaded_filenames_store", storage_type="memory"),
+            html.Div(style={"height": "14px"}),
 
-            html.Div(style={"height": "12px"}),
-
-            html.H4("Uploaded Files"),
+            # 2) Current vs Previous file selection
             html.Div(
-                id="ref_uploaded_files_list",
-                children=html.Div("No files uploaded yet."),
+                style={"border": "1px solid #ddd", "borderRadius": "8px", "padding": "14px"},
+                children=[
+                    html.H4("2) Current vs Previous file selection"),
+
+                    html.Div(
+                        id="ref_current_main_text",
+                        children="Current/Main file: —",
+                        style={"marginBottom": "10px"},
+                    ),
+
+                    html.Label("Reference file (previous runs only)"),
+                    dcc.Dropdown(
+                        id="ref_reference_dropdown",
+                        options=[],
+                        value=None,
+                        placeholder="Upload files to populate previous runs",
+                        clearable=False,
+                    ),
+                ],
+            ),
+
+            html.Div(style={"height": "14px"}),
+
+            # Uploaded files view
+            html.Div(
                 style={"border": "1px solid #eee", "borderRadius": "8px", "padding": "12px"},
+                children=[
+                    html.H4("Uploaded files in session"),
+                    html.Div(id="ref_uploaded_files_list", children="No files uploaded yet."),
+                ],
             ),
         ],
     )
@@ -81,24 +127,104 @@ def render_tab(tab_value):
 
 
 @app.callback(
-    Output("ref_uploaded_filenames_store", "data"),
+    Output("ref_files_store", "data"),
+    Output("ref_upload_status", "children"),
+    Output("ref_current_main_text", "children"),
+    Output("ref_reference_dropdown", "options"),
+    Output("ref_reference_dropdown", "value"),
     Output("ref_uploaded_files_list", "children"),
+    Input("ref_upload", "contents"),
     Input("ref_upload", "filename"),
-    State("ref_uploaded_filenames_store", "data"),
+    Input("ref_clear_session_btn", "n_clicks"),
+    State("ref_files_store", "data"),
     prevent_initial_call=True,
 )
-def handle_ref_upload(filenames, existing):
-    if not filenames:
-        return existing, html.Div("No files uploaded yet.")
+def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store):
+    triggered = dash.callback_context.triggered[0]["prop_id"].split(".")[0]
 
-    existing = existing or []
-    # append new filenames, keep unique, preserve order
-    merged = existing + [f for f in filenames if f not in existing]
+    # Clear session
+    if triggered == "ref_clear_session_btn":
+        return (
+            None,
+            "Session cleared.",
+            "Current/Main file: —",
+            [],
+            None,
+            "No files uploaded yet.",
+        )
 
-    return (
-        merged,
-        html.Ul([html.Li(name) for name in merged], style={"margin": 0, "paddingLeft": "18px"}),
+    if not contents_list or not filename_list:
+        return no_update, no_update, no_update, no_update, no_update, no_update
+
+    existing = existing_store or []
+    added = []
+    invalid_count = 0
+
+    for contents, fname in zip(contents_list, filename_list):
+        try:
+            _, b64data = contents.split(",", 1)
+            file_bytes = base64.b64decode(b64data)
+        except Exception:
+            file_bytes = b""
+
+        run_info = extract_run_date_from_xlsx(BytesIO(file_bytes))
+        valid = run_info["valid"]
+
+        if not valid:
+            invalid_count += 1
+
+        added.append(
+            {
+                "file_id": str(uuid.uuid4()),
+                "filename": fname,
+                "valid": valid,
+                "run_date_raw": run_info.get("run_date_raw"),
+                "run_date": run_info["run_date_parsed"],
+                "run_date_display": (
+                    run_info["run_date_parsed"].strftime("%Y-%m-%d %H:%M:%S")
+                    if run_info["run_date_parsed"]
+                    else ""
+                ),
+            }
+        )
+
+    store = existing + added
+
+    # Determine current/main file
+    valid_files = [f for f in store if f["valid"] and f["run_date"]]
+    current_file = max(valid_files, key=lambda x: x["run_date"]) if valid_files else None
+
+    current_text = (
+        f"Current/Main file: {current_file['filename']}"
+        if current_file
+        else "Current/Main file: —"
     )
+
+    # Reference dropdown = previous valid files
+    options = []
+    if current_file:
+        for f in valid_files:
+            if f["file_id"] == current_file["file_id"]:
+                continue
+            label = f"{f['filename']} (Run: {f['run_date_display']})"
+            options.append({"label": label, "value": f["file_id"]})
+
+    status_msg = f"Uploaded {len(added)} file(s). Total in session: {len(store)}."
+    if invalid_count:
+        status_msg += f" {invalid_count} file(s) had missing/invalid run date."
+
+    uploaded_list = html.Ul(
+        [
+            html.Li(
+                f"{f['filename']} | "
+                f"{f['run_date_display'] if f['run_date_display'] else 'No run date found'}"
+            )
+            for f in store
+        ],
+        style={"margin": 0, "paddingLeft": "18px"},
+    )
+
+    return store, status_msg, current_text, options, None, uploaded_list
 
 
 if __name__ == "__main__":

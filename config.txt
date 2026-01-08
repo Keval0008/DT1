@@ -4,86 +4,165 @@ from io import BytesIO
 
 import dash
 from dash import html, dcc, Input, Output, State, no_update
+import dash_bootstrap_components as dbc
 
 from utils.constants import APP_TITLE, TAB_REFERENCE_LABEL, TAB_FINANCIAL_LABEL
 from services.run_date_parser import extract_run_date_from_xlsx
 
 
-app = dash.Dash(__name__, title=APP_TITLE)
+app = dash.Dash(__name__, title=APP_TITLE, external_stylesheets=[dbc.themes.FLATLY])
 server = app.server
 
 
-def reference_tab_layout():
-    return html.Div(
-        style={"maxWidth": "900px", "marginTop": "16px"},
-        children=[
-            # 1) Upload & session controls
-            html.Div(
-                style={"border": "1px solid #ddd", "borderRadius": "8px", "padding": "14px"},
-                children=[
-                    html.H4("1) Upload & session controls"),
-
-                    dcc.Upload(
-                        id="ref_upload",
-                        children=html.Div(["Drag & drop or ", html.A("select .xlsx files")]),
-                        multiple=True,
-                        style={
-                            "width": "100%",
-                            "height": "70px",
-                            "lineHeight": "70px",
-                            "borderWidth": "1px",
-                            "borderStyle": "dashed",
-                            "borderRadius": "8px",
-                            "textAlign": "center",
-                            "cursor": "pointer",
-                        },
-                    ),
-
-                    html.Div(id="ref_upload_status", style={"marginTop": "10px"}),
-
-                    html.Button(
-                        "Clear Session",
-                        id="ref_clear_session_btn",
-                        style={"marginTop": "10px"},
-                    ),
-
-                    dcc.Store(id="ref_files_store", storage_type="memory"),
-                ],
-            ),
-
-            html.Div(style={"height": "14px"}),
-
-            # 2) Current vs Previous file selection
-            html.Div(
-                style={"border": "1px solid #ddd", "borderRadius": "8px", "padding": "14px"},
-                children=[
-                    html.H4("2) Current vs Previous file selection"),
-
+def _upload_box():
+    return dcc.Upload(
+        id="ref_upload",
+        multiple=True,
+        children=dbc.Card(
+            dbc.CardBody(
+                [
                     html.Div(
-                        id="ref_current_main_text",
-                        children="Current/Main file: —",
-                        style={"marginBottom": "10px"},
-                    ),
-
-                    html.Label("Reference file (previous runs only)"),
-                    dcc.Dropdown(
-                        id="ref_reference_dropdown",
-                        options=[],
-                        value=None,
-                        placeholder="Upload files to populate previous runs",
-                        clearable=False,
-                    ),
+                        [
+                            html.Div("Drag & drop files here", className="fw-semibold"),
+                            html.Div("or click to browse (.xlsx)", className="text-muted small"),
+                        ],
+                        className="text-center",
+                    )
                 ],
+                className="py-4",
             ),
+            className="border border-2 border-secondary border-opacity-25",
+            style={"borderStyle": "dashed"},
+        ),
+        style={"width": "100%", "cursor": "pointer"},
+    )
 
-            html.Div(style={"height": "14px"}),
 
-            # Uploaded files view
-            html.Div(
-                style={"border": "1px solid #eee", "borderRadius": "8px", "padding": "12px"},
+def _render_uploaded_files_list(files_store):
+    if not files_store:
+        return dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0")
+
+    items = []
+    for f in files_store:
+        badge_color = "success" if f.get("valid") else "danger"
+        run_txt = f.get("run_date_display") or "Run date not found"
+        items.append(
+            dbc.ListGroupItem(
+                [
+                    html.Div(
+                        [
+                            html.Span(f.get("filename", ""), className="fw-semibold"),
+                            dbc.Badge("Valid" if f.get("valid") else "Invalid", color=badge_color, className="ms-2"),
+                        ]
+                    ),
+                    html.Div(run_txt, className="text-muted small"),
+                ],
+                className="py-2",
+            )
+        )
+
+    return dbc.ListGroup(items, flush=True)
+
+
+def reference_tab_layout():
+    return dbc.Container(
+        fluid=True,
+        className="py-3",
+        children=[
+            dcc.Store(id="ref_files_store", storage_type="memory"),
+
+            dbc.Row(
+                className="g-3 align-items-stretch",
                 children=[
-                    html.H4("Uploaded files in session"),
-                    html.Div(id="ref_uploaded_files_list", children="No files uploaded yet."),
+                    # LEFT: Upload & Session Controls (includes uploaded files list)
+                    dbc.Col(
+                        md=6,
+                        children=dbc.Card(
+                            className="h-100 shadow-sm",
+                            children=[
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            html.Span("Upload & Session Controls", className="fw-semibold"),
+                                            html.Span("  •  Upload multiple .xlsx files and manage session", className="text-muted small"),
+                                        ]
+                                    )
+                                ),
+                                dbc.CardBody(
+                                    className="d-flex flex-column",
+                                    children=[
+                                        _upload_box(),
+
+                                        html.Div(className="mt-3"),
+                                        dbc.Alert(
+                                            id="ref_upload_status",
+                                            color="info",
+                                            className="py-2 mb-3",
+                                            children="Upload files to begin.",
+                                        ),
+
+                                        dbc.Button(
+                                            "Clear Session",
+                                            id="ref_clear_session_btn",
+                                            color="outline-danger",
+                                            className="mb-3",
+                                        ),
+
+                                        html.Div(
+                                            [
+                                                html.Div("Uploaded files in session", className="fw-semibold mb-2"),
+                                                html.Div(id="ref_uploaded_files_list"),
+                                            ],
+                                            className="mt-auto",  # pushes list towards bottom if there’s extra space
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
+
+                    # RIGHT: Current vs Previous selection
+                    dbc.Col(
+                        md=6,
+                        children=dbc.Card(
+                            className="h-100 shadow-sm",
+                            children=[
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            html.Span("Current vs Previous File Selection", className="fw-semibold"),
+                                            html.Span("  •  Auto-picks latest run date as Main", className="text-muted small"),
+                                        ]
+                                    )
+                                ),
+                                dbc.CardBody(
+                                    children=[
+                                        dbc.Alert(
+                                            id="ref_current_main_alert",
+                                            color="primary",
+                                            className="py-2",
+                                            children="Current/Main file: —",
+                                        ),
+
+                                        html.Div(className="mt-3"),
+                                        dbc.Label("Reference file (previous runs only)"),
+                                        dcc.Dropdown(
+                                            id="ref_reference_dropdown",
+                                            options=[],
+                                            value=None,
+                                            placeholder="Upload at least 2 valid files to select a reference",
+                                            clearable=False,
+                                        ),
+
+                                        dbc.FormText(
+                                            "Only files with a valid run date in row 1 appear here. "
+                                            "The latest valid run date becomes the Current/Main file."
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -91,16 +170,36 @@ def reference_tab_layout():
 
 
 def financial_tab_layout():
-    return html.Div(
-        style={"maxWidth": "900px", "marginTop": "16px"},
-        children=[html.Div("Financial Data Check UI will go here")],
+    return dbc.Container(
+        fluid=True,
+        className="py-3",
+        children=[
+            dbc.Card(
+                className="shadow-sm",
+                children=[
+                    dbc.CardHeader(html.Span("Financial Data Check", className="fw-semibold")),
+                    dbc.CardBody("Financial Data Check UI will go here."),
+                ],
+            )
+        ],
     )
 
 
-app.layout = html.Div(
-    style={"maxWidth": "1100px", "margin": "20px auto", "fontFamily": "Arial"},
+app.layout = dbc.Container(
+    fluid=True,
+    className="py-3",
     children=[
-        html.H2(APP_TITLE),
+        dbc.Row(
+            children=[
+                dbc.Col(
+                    children=[
+                        html.H2(APP_TITLE, className="mb-0"),
+                        html.Div("Upload, detect current run, compare with a reference run.", className="text-muted"),
+                    ]
+                )
+            ],
+            className="mb-3",
+        ),
 
         dcc.Tabs(
             id="main_tabs",
@@ -111,7 +210,7 @@ app.layout = html.Div(
             ],
         ),
 
-        html.Div(id="tab_content"),
+        html.Div(id="tab_content", className="mt-3"),
     ],
 )
 
@@ -129,7 +228,8 @@ def render_tab(tab_value):
 @app.callback(
     Output("ref_files_store", "data"),
     Output("ref_upload_status", "children"),
-    Output("ref_current_main_text", "children"),
+    Output("ref_upload_status", "color"),
+    Output("ref_current_main_alert", "children"),
     Output("ref_reference_dropdown", "options"),
     Output("ref_reference_dropdown", "value"),
     Output("ref_uploaded_files_list", "children"),
@@ -146,15 +246,16 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
     if triggered == "ref_clear_session_btn":
         return (
             None,
-            "Session cleared.",
+            "Session cleared. Upload files to begin.",
+            "info",
             "Current/Main file: —",
             [],
             None,
-            "No files uploaded yet.",
+            _render_uploaded_files_list(None),
         )
 
     if not contents_list or not filename_list:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     existing = existing_store or []
     added = []
@@ -168,7 +269,8 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
             file_bytes = b""
 
         run_info = extract_run_date_from_xlsx(BytesIO(file_bytes))
-        valid = run_info["valid"]
+        valid = bool(run_info.get("valid"))
+        run_dt = run_info.get("run_date_parsed")
 
         if not valid:
             invalid_count += 1
@@ -179,52 +281,42 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
                 "filename": fname,
                 "valid": valid,
                 "run_date_raw": run_info.get("run_date_raw"),
-                "run_date": run_info["run_date_parsed"],
-                "run_date_display": (
-                    run_info["run_date_parsed"].strftime("%Y-%m-%d %H:%M:%S")
-                    if run_info["run_date_parsed"]
-                    else ""
-                ),
+                "run_date_iso": run_dt.isoformat() if run_dt else None,
+                "run_date_display": run_dt.strftime("%Y-%m-%d %H:%M:%S") if run_dt else "",
             }
         )
 
     store = existing + added
 
-    # Determine current/main file
-    valid_files = [f for f in store if f["valid"] and f["run_date"]]
-    current_file = max(valid_files, key=lambda x: x["run_date"]) if valid_files else None
+    # Determine current/main file = latest valid run date
+    valid_files = [f for f in store if f.get("valid") and f.get("run_date_iso")]
+    current_file = max(valid_files, key=lambda x: x["run_date_iso"]) if valid_files else None
 
     current_text = (
-        f"Current/Main file: {current_file['filename']}"
+        f"Current/Main file: {current_file['filename']}  (Run: {current_file['run_date_display']})"
         if current_file
         else "Current/Main file: —"
     )
 
-    # Reference dropdown = previous valid files
+    # Reference dropdown options = previous valid files (exclude current)
     options = []
     if current_file:
         for f in valid_files:
             if f["file_id"] == current_file["file_id"]:
                 continue
-            label = f"{f['filename']} (Run: {f['run_date_display']})"
-            options.append({"label": label, "value": f["file_id"]})
+            options.append({"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]})
 
-    status_msg = f"Uploaded {len(added)} file(s). Total in session: {len(store)}."
+    # Status message
+    msg = f"Uploaded {len(added)} file(s). Total in session: {len(store)}."
+    color = "success"
     if invalid_count:
-        status_msg += f" {invalid_count} file(s) had missing/invalid run date."
+        msg += f" {invalid_count} file(s) had missing/invalid run date in row 1."
+        color = "warning"
 
-    uploaded_list = html.Ul(
-        [
-            html.Li(
-                f"{f['filename']} | "
-                f"{f['run_date_display'] if f['run_date_display'] else 'No run date found'}"
-            )
-            for f in store
-        ],
-        style={"margin": 0, "paddingLeft": "18px"},
-    )
+    uploaded_list_ui = _render_uploaded_files_list(store)
 
-    return store, status_msg, current_text, options, None, uploaded_list
+    # Reset dropdown selection on new upload to avoid stale selections
+    return store, msg, color, current_text, options, None, uploaded_list_ui
 
 
 if __name__ == "__main__":

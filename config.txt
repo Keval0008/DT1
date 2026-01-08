@@ -10,7 +10,8 @@ from utils.constants import (
     APP_TITLE,
     TAB_REFERENCE_LABEL,
     TAB_FINANCIAL_LABEL,
-    EXPECTED_COLUMNS_DEFAULT,  # make sure this exists in constants.py
+    EXPECTED_COLUMNS_DEFAULT,
+    KEY_COLUMN,
 )
 from services.run_date_parser import extract_run_date_from_xlsx
 
@@ -69,8 +70,14 @@ def _render_uploaded_files_list(files_store):
     return dbc.ListGroup(items, flush=True)
 
 
+def _default_compare_columns():
+    # Default compare columns = expected columns minus key column
+    return [c for c in EXPECTED_COLUMNS_DEFAULT if c != KEY_COLUMN]
+
+
 def reference_tab_layout():
-    compare_options = [{"label": c, "value": c} for c in EXPECTED_COLUMNS_DEFAULT]
+    compare_default = _default_compare_columns()
+    compare_options = [{"label": c, "value": c} for c in compare_default]
 
     return dbc.Container(
         fluid=True,
@@ -188,7 +195,7 @@ def reference_tab_layout():
                                     html.Div(
                                         [
                                             html.Span("Comparison Settings", className="fw-semibold"),
-                                            html.Span("  •  Choose key, optional compare columns, and header overrides", className="text-muted small"),
+                                            html.Span("  •  Key + compare columns + optional header overrides", className="text-muted small"),
                                         ]
                                     )
                                 ),
@@ -200,18 +207,20 @@ def reference_tab_layout():
                                                 dbc.Col(
                                                     md=6,
                                                     children=[
-                                                        dbc.Label(
+                                                        dbc.Label("Key column"),
+                                                        dbc.InputGroup(
                                                             [
-                                                                "Key column ",
-                                                                dbc.Badge("required", color="danger", className="ms-1"),
+                                                                dbc.Input(
+                                                                    value=KEY_COLUMN,
+                                                                    disabled=True,
+                                                                ),
+                                                                dbc.InputGroupText("from constants.py"),
                                                             ]
                                                         ),
-                                                        dbc.Input(
-                                                            id="key_column_input",
-                                                            type="text",
-                                                            placeholder="e.g. customer_id",
+                                                        dbc.FormText(
+                                                            "Used to match rows between Main and Reference. "
+                                                            "Kept constant to avoid configuration mistakes."
                                                         ),
-                                                        dbc.FormText("This column must exist in both Main and Reference files."),
                                                     ],
                                                 ),
                                                 dbc.Col(
@@ -222,9 +231,11 @@ def reference_tab_layout():
                                                             id="compare_columns_dropdown",
                                                             options=compare_options,
                                                             multi=True,
-                                                            placeholder="Leave empty to use default expected columns (backend)",
+                                                            placeholder="Leave empty to compare all default columns",
                                                         ),
-                                                        dbc.FormText("If empty, backend uses EXPECTED_COLUMNS_DEFAULT."),
+                                                        dbc.FormText(
+                                                            "Default compare list = EXPECTED_COLUMNS_DEFAULT minus KEY_COLUMN."
+                                                        ),
                                                     ],
                                                 ),
                                             ],
@@ -271,8 +282,8 @@ def reference_tab_layout():
                                                             ],
                                                         ),
                                                         dbc.FormText(
-                                                            "Use this if column headers are not auto-detected correctly. "
-                                                            "Row numbers are 1-based (Excel style)."
+                                                            "Use this only if auto header detection fails (multiple tables, merged headers, etc.). "
+                                                            "Row numbers are Excel-style (1-based)."
                                                         ),
                                                     ],
                                                 ),
@@ -299,7 +310,7 @@ def reference_tab_layout():
                                                         id="run_compare_status",
                                                         color="secondary",
                                                         className="py-2 mb-0",
-                                                        children="Set key column, choose reference, then run comparison.",
+                                                        children="Select a reference file, then run comparison.",
                                                     ),
                                                 ),
                                             ],
@@ -336,6 +347,7 @@ app.layout = dbc.Container(
     className="py-3",
     children=[
         dbc.Row(
+            className="mb-3",
             children=[
                 dbc.Col(
                     children=[
@@ -344,7 +356,6 @@ app.layout = dbc.Container(
                     ]
                 )
             ],
-            className="mb-3",
         ),
 
         dcc.Tabs(
@@ -371,7 +382,7 @@ def render_tab(tab_value):
     return financial_tab_layout()
 
 
-# --- Upload + Current/Main + Reference dropdown ---
+# Upload + Current/Main + Reference dropdown
 @app.callback(
     Output("ref_files_store", "data"),
     Output("ref_upload_status", "children"),
@@ -466,40 +477,34 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
     return store, msg, color, current_text, options, None, uploaded_list_ui
 
 
-# --- Run Comparison button (UI-only validation + status messages for now) ---
+# Run Comparison button (UI-only status + validation)
 @app.callback(
     Output("run_compare_status", "children"),
     Output("run_compare_status", "color"),
     Input("run_compare_btn", "n_clicks"),
     State("ref_files_store", "data"),
     State("ref_reference_dropdown", "value"),
-    State("key_column_input", "value"),
     State("compare_columns_dropdown", "value"),
     State("main_header_override", "value"),
     State("ref_header_override", "value"),
     prevent_initial_call=True,
 )
-def run_comparison_ui_only(n_clicks, files_store, ref_file_id, key_col, compare_cols, main_hdr, ref_hdr):
-    # Basic validations (UI-level)
+def run_comparison_ui_only(n_clicks, files_store, ref_file_id, compare_cols, main_hdr, ref_hdr):
     if not files_store:
         return "Upload files first.", "danger"
 
     if not ref_file_id:
         return "Select a reference file from previous runs.", "danger"
 
-    if not key_col or not str(key_col).strip():
-        return "Key column is required. Enter the key column name.", "danger"
+    # Default compare columns if user leaves empty
+    used_compare = compare_cols if compare_cols else _default_compare_columns()
 
-    # Informative status: what will happen
-    used_compare = compare_cols if compare_cols else ["(backend default expected list)"]
     main_hdr_text = f"{int(main_hdr)}" if main_hdr else "auto-detect"
     ref_hdr_text = f"{int(ref_hdr)}" if ref_hdr else "auto-detect"
 
-    # This is where backend will be called in next step
     msg = (
-        "Ready to run. "
-        f"Key='{key_col.strip()}', "
-        f"Compare cols={used_compare if len(used_compare) <= 8 else (used_compare[:8] + ['...'])}, "
+        f"Ready to run. Key='{KEY_COLUMN}', "
+        f"Compare cols count={len(used_compare)}, "
         f"Header(Main={main_hdr_text}, Ref={ref_hdr_text}). "
         "Next step: connect backend to detect headers, compute diffs, and generate the report."
     )

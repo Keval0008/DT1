@@ -6,7 +6,12 @@ import dash
 from dash import html, dcc, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 
-from utils.constants import APP_TITLE, TAB_REFERENCE_LABEL, TAB_FINANCIAL_LABEL
+from utils.constants import (
+    APP_TITLE,
+    TAB_REFERENCE_LABEL,
+    TAB_FINANCIAL_LABEL,
+    EXPECTED_COLUMNS_DEFAULT,  # make sure this exists in constants.py
+)
 from services.run_date_parser import extract_run_date_from_xlsx
 
 
@@ -65,12 +70,16 @@ def _render_uploaded_files_list(files_store):
 
 
 def reference_tab_layout():
+    compare_options = [{"label": c, "value": c} for c in EXPECTED_COLUMNS_DEFAULT]
+
     return dbc.Container(
         fluid=True,
         className="py-3",
         children=[
+            # Stores
             dcc.Store(id="ref_files_store", storage_type="memory"),
 
+            # Row 1: Upload + Selection (equal width/height)
             dbc.Row(
                 className="g-3 align-items-stretch",
                 children=[
@@ -113,7 +122,7 @@ def reference_tab_layout():
                                                 html.Div("Uploaded files in session", className="fw-semibold mb-2"),
                                                 html.Div(id="ref_uploaded_files_list"),
                                             ],
-                                            className="mt-auto",  # pushes list towards bottom if there’s extra space
+                                            className="mt-auto",
                                         ),
                                     ],
                                 ),
@@ -163,6 +172,143 @@ def reference_tab_layout():
                             ],
                         ),
                     ),
+                ],
+            ),
+
+            # Row 2: Comparison settings + Run action
+            dbc.Row(
+                className="g-3 mt-1",
+                children=[
+                    dbc.Col(
+                        md=12,
+                        children=dbc.Card(
+                            className="shadow-sm",
+                            children=[
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            html.Span("Comparison Settings", className="fw-semibold"),
+                                            html.Span("  •  Choose key, optional compare columns, and header overrides", className="text-muted small"),
+                                        ]
+                                    )
+                                ),
+                                dbc.CardBody(
+                                    children=[
+                                        dbc.Row(
+                                            className="g-3",
+                                            children=[
+                                                dbc.Col(
+                                                    md=6,
+                                                    children=[
+                                                        dbc.Label(
+                                                            [
+                                                                "Key column ",
+                                                                dbc.Badge("required", color="danger", className="ms-1"),
+                                                            ]
+                                                        ),
+                                                        dbc.Input(
+                                                            id="key_column_input",
+                                                            type="text",
+                                                            placeholder="e.g. customer_id",
+                                                        ),
+                                                        dbc.FormText("This column must exist in both Main and Reference files."),
+                                                    ],
+                                                ),
+                                                dbc.Col(
+                                                    md=6,
+                                                    children=[
+                                                        dbc.Label("Compare columns (optional)"),
+                                                        dcc.Dropdown(
+                                                            id="compare_columns_dropdown",
+                                                            options=compare_options,
+                                                            multi=True,
+                                                            placeholder="Leave empty to use default expected columns (backend)",
+                                                        ),
+                                                        dbc.FormText("If empty, backend uses EXPECTED_COLUMNS_DEFAULT."),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
+
+                                        html.Hr(className="my-3"),
+
+                                        # Header override accordion (collapsible)
+                                        dbc.Accordion(
+                                            start_collapsed=True,
+                                            children=[
+                                                dbc.AccordionItem(
+                                                    title="Header detection overrides (optional)",
+                                                    children=[
+                                                        dbc.Row(
+                                                            className="g-3",
+                                                            children=[
+                                                                dbc.Col(
+                                                                    md=6,
+                                                                    children=[
+                                                                        dbc.Label("Main header row override (1-based)"),
+                                                                        dbc.Input(
+                                                                            id="main_header_override",
+                                                                            type="number",
+                                                                            min=1,
+                                                                            step=1,
+                                                                            placeholder="Leave empty for auto-detect",
+                                                                        ),
+                                                                    ],
+                                                                ),
+                                                                dbc.Col(
+                                                                    md=6,
+                                                                    children=[
+                                                                        dbc.Label("Reference header row override (1-based)"),
+                                                                        dbc.Input(
+                                                                            id="ref_header_override",
+                                                                            type="number",
+                                                                            min=1,
+                                                                            step=1,
+                                                                            placeholder="Leave empty for auto-detect",
+                                                                        ),
+                                                                    ],
+                                                                ),
+                                                            ],
+                                                        ),
+                                                        dbc.FormText(
+                                                            "Use this if column headers are not auto-detected correctly. "
+                                                            "Row numbers are 1-based (Excel style)."
+                                                        ),
+                                                    ],
+                                                ),
+                                            ],
+                                        ),
+
+                                        html.Div(className="mt-3"),
+
+                                        dbc.Row(
+                                            className="g-2 align-items-center",
+                                            children=[
+                                                dbc.Col(
+                                                    md=3,
+                                                    children=dbc.Button(
+                                                        "Run Comparison",
+                                                        id="run_compare_btn",
+                                                        color="primary",
+                                                        className="w-100",
+                                                    ),
+                                                ),
+                                                dbc.Col(
+                                                    md=9,
+                                                    children=dbc.Alert(
+                                                        id="run_compare_status",
+                                                        color="secondary",
+                                                        className="py-2 mb-0",
+                                                        children="Set key column, choose reference, then run comparison.",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    )
                 ],
             ),
         ],
@@ -225,6 +371,7 @@ def render_tab(tab_value):
     return financial_tab_layout()
 
 
+# --- Upload + Current/Main + Reference dropdown ---
 @app.callback(
     Output("ref_files_store", "data"),
     Output("ref_upload_status", "children"),
@@ -306,7 +453,7 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
                 continue
             options.append({"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]})
 
-    # Status message
+    # Upload status
     msg = f"Uploaded {len(added)} file(s). Total in session: {len(store)}."
     color = "success"
     if invalid_count:
@@ -315,8 +462,48 @@ def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store
 
     uploaded_list_ui = _render_uploaded_files_list(store)
 
-    # Reset dropdown selection on new upload to avoid stale selections
+    # Reset dropdown selection on new upload
     return store, msg, color, current_text, options, None, uploaded_list_ui
+
+
+# --- Run Comparison button (UI-only validation + status messages for now) ---
+@app.callback(
+    Output("run_compare_status", "children"),
+    Output("run_compare_status", "color"),
+    Input("run_compare_btn", "n_clicks"),
+    State("ref_files_store", "data"),
+    State("ref_reference_dropdown", "value"),
+    State("key_column_input", "value"),
+    State("compare_columns_dropdown", "value"),
+    State("main_header_override", "value"),
+    State("ref_header_override", "value"),
+    prevent_initial_call=True,
+)
+def run_comparison_ui_only(n_clicks, files_store, ref_file_id, key_col, compare_cols, main_hdr, ref_hdr):
+    # Basic validations (UI-level)
+    if not files_store:
+        return "Upload files first.", "danger"
+
+    if not ref_file_id:
+        return "Select a reference file from previous runs.", "danger"
+
+    if not key_col or not str(key_col).strip():
+        return "Key column is required. Enter the key column name.", "danger"
+
+    # Informative status: what will happen
+    used_compare = compare_cols if compare_cols else ["(backend default expected list)"]
+    main_hdr_text = f"{int(main_hdr)}" if main_hdr else "auto-detect"
+    ref_hdr_text = f"{int(ref_hdr)}" if ref_hdr else "auto-detect"
+
+    # This is where backend will be called in next step
+    msg = (
+        "Ready to run. "
+        f"Key='{key_col.strip()}', "
+        f"Compare cols={used_compare if len(used_compare) <= 8 else (used_compare[:8] + ['...'])}, "
+        f"Header(Main={main_hdr_text}, Ref={ref_hdr_text}). "
+        "Next step: connect backend to detect headers, compute diffs, and generate the report."
+    )
+    return msg, "primary"
 
 
 if __name__ == "__main__":

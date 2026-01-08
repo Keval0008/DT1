@@ -1,61 +1,67 @@
-import re
-from datetime import datetime
-from typing import Optional, Dict
+from typing import List, Optional
 
 import openpyxl
 
 
-# Matches: Mon Jun 30 23:03:36 HKY 2025
-RUN_DATE_REGEX = re.compile(
-    r"\b(?P<dow>Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
-    r"(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
-    r"(?P<day>\d{1,2})\s+"
-    r"(?P<time>\d{2}:\d{2}:\d{2})\s+"
-    r"(?P<tz>[A-Za-z]{2,5})\s+"
-    r"(?P<year>\d{4})\b"
-)
+def _norm(s) -> str:
+    if s is None:
+        return ""
+    return str(s).strip().lower()
 
 
-def _parse_run_date(match: re.Match) -> Optional[datetime]:
-    # Ignore timezone token (HKY etc.) because it might not map cleanly
-    dow = match.group("dow")
-    mon = match.group("mon")
-    day = match.group("day")
-    time = match.group("time")
-    year = match.group("year")
-
-    text = f"{dow} {mon} {day} {time} {year}"
-    return datetime.strptime(text, "%a %b %d %H:%M:%S %Y")
-
-
-def extract_run_date_from_xlsx(path: str, sheet_name: Optional[str] = None) -> Dict:
+def detect_header_row(
+    path: str,
+    expected_columns: List[str],
+    max_rows: int = 35,
+    max_cols: int = 80,
+    sheet_name: Optional[str] = None,
+) -> int:
     """
-    Searches row 1 for a run date like "Mon Jun 30 23:03:36 HKY 2025".
-    Returns dict with:
-      valid: bool
-      run_date_raw: str|None
-      run_date_parsed: datetime|None
+    Auto-detect header row by scanning for max matches of expected column names.
+    Returns 1-based row index.
     """
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
 
-    # Read row 1 cells (up to some reasonable width)
-    row1 = []
-    for cell in ws[1]:
-        if cell.value is None:
-            row1.append("")
-        else:
-            row1.append(str(cell.value))
+    expected = set([_norm(c) for c in expected_columns if _norm(c)])
+    if not expected:
+        raise ValueError("expected_columns is empty")
 
-    joined = " | ".join(row1)
-    m = RUN_DATE_REGEX.search(joined)
-    if not m:
-        return {"valid": False, "run_date_raw": None, "run_date_parsed": None}
+    best_row = None
+    best_score = -1
 
-    raw = m.group(0)
-    try:
-        dt = _parse_run_date(m)
-    except Exception:
-        return {"valid": False, "run_date_raw": raw, "run_date_parsed": None}
+    for r in range(1, max_rows + 1):
+        values = []
+        for c in range(1, max_cols + 1):
+            v = ws.cell(row=r, column=c).value
+            values.append(_norm(v))
+        score = sum(1 for v in values if v in expected)
 
-    return {"valid": True, "run_date_raw": raw, "run_date_parsed": dt}
+        if score > best_score:
+            best_score = score
+            best_row = r
+
+    if best_row is None or best_score <= 0:
+        raise ValueError("Could not detect header row (no expected columns found). Try manual override.")
+
+    return best_row
+
+
+def build_column_options(path: str, header_row: int, sheet_name: Optional[str] = None):
+    """
+    Return dropdown options from header row values.
+    """
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    cols = []
+    # scan some columns
+    for c in range(1, 200):
+        v = ws.cell(row=header_row, column=c).value
+        if v is None:
+            continue
+        name = str(v).strip()
+        if name and name not in cols:
+            cols.append(name)
+
+    return [{"label": c, "value": c} for c in cols]

@@ -1,10 +1,11 @@
-import base64
+import os
 import uuid
-from io import BytesIO
+from datetime import datetime
 
 import dash
 from dash import html, dcc, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
+from dash import dash_table
 
 from utils.constants import (
     APP_TITLE,
@@ -12,12 +13,25 @@ from utils.constants import (
     TAB_FINANCIAL_LABEL,
     EXPECTED_COLUMNS_DEFAULT,
     KEY_COLUMN,
+    HEADER_SCAN_ROWS_MAX,
+    HEADER_SCAN_COLS_MAX,
 )
+
+from services.file_io import save_uploaded_xlsx, ensure_session_dir, cleanup_session_dir
 from services.run_date_parser import extract_run_date_from_xlsx
+from services.schema_detector import detect_header_row
+from services.diff_engine import run_reference_check
+from services.report_writer import write_anomaly_report_xlsx
 
 
+# ---- App ----
 app = dash.Dash(__name__, title=APP_TITLE, external_stylesheets=[dbc.themes.FLATLY])
 server = app.server
+
+
+# ---- Helpers ----
+def default_compare_columns():
+    return [c for c in EXPECTED_COLUMNS_DEFAULT if c != KEY_COLUMN]
 
 
 def _upload_box():
@@ -44,53 +58,48 @@ def _upload_box():
     )
 
 
-def _render_uploaded_files_list(files_store):
-    if not files_store:
-        return dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0")
-
-    items = []
-    for f in files_store:
-        badge_color = "success" if f.get("valid") else "danger"
-        run_txt = f.get("run_date_display") or "Run date not found"
-        items.append(
-            dbc.ListGroupItem(
+def _summary_cards(summary: dict):
+    def _card(title, value):
+        return dbc.Card(
+            dbc.CardBody(
                 [
-                    html.Div(
-                        [
-                            html.Span(f.get("filename", ""), className="fw-semibold"),
-                            dbc.Badge("Valid" if f.get("valid") else "Invalid", color=badge_color, className="ms-2"),
-                        ]
-                    ),
-                    html.Div(run_txt, className="text-muted small"),
-                ],
-                className="py-2",
-            )
+                    html.Div(title, className="text-muted small"),
+                    html.Div(str(value), className="fs-3 fw-bold"),
+                ]
+            ),
+            className="shadow-sm",
         )
 
-    return dbc.ListGroup(items, flush=True)
-
-
-def _default_compare_columns():
-    # Default compare columns = expected columns minus key column
-    return [c for c in EXPECTED_COLUMNS_DEFAULT if c != KEY_COLUMN]
+    return dbc.Row(
+        className="g-3",
+        children=[
+            dbc.Col(_card("Added rows", summary.get("added_rows", 0)), md=3),
+            dbc.Col(_card("Deleted rows", summary.get("deleted_rows", 0)), md=3),
+            dbc.Col(_card("Modified rows", summary.get("modified_rows", 0)), md=3),
+            dbc.Col(_card("Modified cells", summary.get("modified_cells", 0)), md=3),
+        ],
+    )
 
 
 def reference_tab_layout():
-    compare_default = _default_compare_columns()
-    compare_options = [{"label": c, "value": c} for c in compare_default]
+    compare_opts = [{"label": c, "value": c} for c in default_compare_columns()]
 
     return dbc.Container(
         fluid=True,
         className="py-3",
         children=[
             # Stores
-            dcc.Store(id="ref_files_store", storage_type="memory"),
+            dcc.Store(id="session_store", storage_type="memory"),
+            dcc.Store(id="ref_files_store", storage_type="memory"),      # uploaded metadata
+            dcc.Store(id="ref_meta_store", storage_type="memory"),       # current/main id etc.
+            dcc.Store(id="diff_store", storage_type="memory"),           # anomalies + summary
+            dcc.Store(id="report_path_store", storage_type="memory"),    # report path
 
-            # Row 1: Upload + Selection (equal width/height)
+            # Row 1: Upload & Selection cards (same width/height)
             dbc.Row(
                 className="g-3 align-items-stretch",
                 children=[
-                    # LEFT: Upload & Session Controls (includes uploaded files list)
+                    # LEFT
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -100,7 +109,7 @@ def reference_tab_layout():
                                     html.Div(
                                         [
                                             html.Span("Upload & Session Controls", className="fw-semibold"),
-                                            html.Span("  •  Upload multiple .xlsx files and manage session", className="text-muted small"),
+                                            html.Span("  •  Upload multiple .xlsx files", className="text-muted small"),
                                         ]
                                     )
                                 ),
@@ -110,11 +119,15 @@ def reference_tab_layout():
                                         _upload_box(),
 
                                         html.Div(className="mt-3"),
-                                        dbc.Alert(
-                                            id="ref_upload_status",
-                                            color="info",
-                                            className="py-2 mb-3",
-                                            children="Upload files to begin.",
+
+                                        dcc.Loading(
+                                            type="default",
+                                            children=dbc.Alert(
+                                                id="ref_upload_status",
+                                                color="info",
+                                                className="py-2 mb-3",
+                                                children="Upload files to begin.",
+                                            ),
                                         ),
 
                                         dbc.Button(
@@ -127,7 +140,13 @@ def reference_tab_layout():
                                         html.Div(
                                             [
                                                 html.Div("Uploaded files in session", className="fw-semibold mb-2"),
-                                                html.Div(id="ref_uploaded_files_list"),
+                                                dcc.Loading(
+                                                    type="default",
+                                                    children=html.Div(
+                                                        id="ref_files_table_wrapper",
+                                                        children=dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0"),
+                                                    ),
+                                                ),
                                             ],
                                             className="mt-auto",
                                         ),
@@ -137,7 +156,7 @@ def reference_tab_layout():
                         ),
                     ),
 
-                    # RIGHT: Current vs Previous selection
+                    # RIGHT
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -153,11 +172,14 @@ def reference_tab_layout():
                                 ),
                                 dbc.CardBody(
                                     children=[
-                                        dbc.Alert(
-                                            id="ref_current_main_alert",
-                                            color="primary",
-                                            className="py-2",
-                                            children="Current/Main file: —",
+                                        dcc.Loading(
+                                            type="default",
+                                            children=dbc.Alert(
+                                                id="ref_current_main_alert",
+                                                color="primary",
+                                                className="py-2",
+                                                children="Current/Main file: —",
+                                            ),
                                         ),
 
                                         html.Div(className="mt-3"),
@@ -169,7 +191,6 @@ def reference_tab_layout():
                                             placeholder="Upload at least 2 valid files to select a reference",
                                             clearable=False,
                                         ),
-
                                         dbc.FormText(
                                             "Only files with a valid run date in row 1 appear here. "
                                             "The latest valid run date becomes the Current/Main file."
@@ -182,7 +203,7 @@ def reference_tab_layout():
                 ],
             ),
 
-            # Row 2: Comparison settings + Run action
+            # Row 2: Comparison settings + action
             dbc.Row(
                 className="g-3 mt-1",
                 children=[
@@ -195,7 +216,7 @@ def reference_tab_layout():
                                     html.Div(
                                         [
                                             html.Span("Comparison Settings", className="fw-semibold"),
-                                            html.Span("  •  Key + compare columns + optional header overrides", className="text-muted small"),
+                                            html.Span("  •  Fixed key + optional column selection + header overrides", className="text-muted small"),
                                         ]
                                     )
                                 ),
@@ -210,17 +231,11 @@ def reference_tab_layout():
                                                         dbc.Label("Key column"),
                                                         dbc.InputGroup(
                                                             [
-                                                                dbc.Input(
-                                                                    value=KEY_COLUMN,
-                                                                    disabled=True,
-                                                                ),
+                                                                dbc.Input(value=KEY_COLUMN, disabled=True),
                                                                 dbc.InputGroupText("from constants.py"),
                                                             ]
                                                         ),
-                                                        dbc.FormText(
-                                                            "Used to match rows between Main and Reference. "
-                                                            "Kept constant to avoid configuration mistakes."
-                                                        ),
+                                                        dbc.FormText("Used to match rows between Main and Reference."),
                                                     ],
                                                 ),
                                                 dbc.Col(
@@ -229,12 +244,12 @@ def reference_tab_layout():
                                                         dbc.Label("Compare columns (optional)"),
                                                         dcc.Dropdown(
                                                             id="compare_columns_dropdown",
-                                                            options=compare_options,
+                                                            options=compare_opts,
                                                             multi=True,
                                                             placeholder="Leave empty to compare all default columns",
                                                         ),
                                                         dbc.FormText(
-                                                            "Default compare list = EXPECTED_COLUMNS_DEFAULT minus KEY_COLUMN."
+                                                            "Default = EXPECTED_COLUMNS_DEFAULT minus KEY_COLUMN."
                                                         ),
                                                     ],
                                                 ),
@@ -243,7 +258,6 @@ def reference_tab_layout():
 
                                         html.Hr(className="my-3"),
 
-                                        # Header override accordion (collapsible)
                                         dbc.Accordion(
                                             start_collapsed=True,
                                             children=[
@@ -282,8 +296,7 @@ def reference_tab_layout():
                                                             ],
                                                         ),
                                                         dbc.FormText(
-                                                            "Use this only if auto header detection fails (multiple tables, merged headers, etc.). "
-                                                            "Row numbers are Excel-style (1-based)."
+                                                            "Use only if auto header detection fails (merged headers, multiple tables, etc.)."
                                                         ),
                                                     ],
                                                 ),
@@ -298,7 +311,7 @@ def reference_tab_layout():
                                                 dbc.Col(
                                                     md=3,
                                                     children=dbc.Button(
-                                                        "Run Comparison",
+                                                        [dbc.Spinner(size="sm", className="me-2"), "Run Comparison"],
                                                         id="run_compare_btn",
                                                         color="primary",
                                                         className="w-100",
@@ -306,11 +319,14 @@ def reference_tab_layout():
                                                 ),
                                                 dbc.Col(
                                                     md=9,
-                                                    children=dbc.Alert(
-                                                        id="run_compare_status",
-                                                        color="secondary",
-                                                        className="py-2 mb-0",
-                                                        children="Select a reference file, then run comparison.",
+                                                    children=dcc.Loading(
+                                                        type="default",
+                                                        children=dbc.Alert(
+                                                            id="run_compare_status",
+                                                            color="secondary",
+                                                            className="py-2 mb-0",
+                                                            children="Select a reference file, then run comparison.",
+                                                        ),
                                                     ),
                                                 ),
                                             ],
@@ -322,6 +338,90 @@ def reference_tab_layout():
                     )
                 ],
             ),
+
+            # Row 3: Output (summary + anomalies + download)
+            dbc.Row(
+                className="g-3 mt-1",
+                children=[
+                    dbc.Col(
+                        md=12,
+                        children=dbc.Card(
+                            className="shadow-sm",
+                            children=[
+                                dbc.CardHeader(
+                                    html.Div(
+                                        [
+                                            html.Span("Output", className="fw-semibold"),
+                                            html.Span("  •  Summary, anomalies, and report download", className="text-muted small"),
+                                        ]
+                                    )
+                                ),
+                                dbc.CardBody(
+                                    children=[
+                                        html.Div(id="summary_cards_area"),
+                                        html.Hr(className="my-3"),
+
+                                        dcc.Loading(
+                                            type="default",
+                                            children=dash_table.DataTable(
+                                                id="anomaly_table",
+                                                columns=[
+                                                    {"name": "Change type", "id": "change_type"},
+                                                    {"name": "Key", "id": "key"},
+                                                    {"name": "Column name", "id": "column_name"},
+                                                    {"name": "Old value", "id": "old_value"},
+                                                    {"name": "New value", "id": "new_value"},
+                                                ],
+                                                data=[],
+                                                page_size=12,
+                                                filter_action="native",
+                                                sort_action="native",
+                                                style_table={"overflowX": "auto"},
+                                                style_cell={
+                                                    "padding": "8px",
+                                                    "fontSize": "13px",
+                                                    "maxWidth": "260px",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                },
+                                                style_header={"fontWeight": "bold"},
+                                            ),
+                                        ),
+
+                                        html.Div(className="mt-3"),
+
+                                        dbc.Row(
+                                            className="g-2 align-items-center",
+                                            children=[
+                                                dbc.Col(
+                                                    md=3,
+                                                    children=dbc.Button(
+                                                        "Download Anomaly Report (.xlsx)",
+                                                        id="download_btn",
+                                                        color="success",
+                                                        className="w-100",
+                                                    ),
+                                                ),
+                                                dbc.Col(
+                                                    md=9,
+                                                    children=dbc.Alert(
+                                                        id="download_hint",
+                                                        color="secondary",
+                                                        className="py-2 mb-0",
+                                                        children="Run comparison first to generate a report.",
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    )
+                ],
+            ),
+
+            dcc.Download(id="download_report"),
         ],
     )
 
@@ -342,6 +442,7 @@ def financial_tab_layout():
     )
 
 
+# ---- App Layout ----
 app.layout = dbc.Container(
     fluid=True,
     className="py-3",
@@ -357,7 +458,6 @@ app.layout = dbc.Container(
                 )
             ],
         ),
-
         dcc.Tabs(
             id="main_tabs",
             value="reference_tab",
@@ -366,7 +466,6 @@ app.layout = dbc.Container(
                 dcc.Tab(label=TAB_FINANCIAL_LABEL, value="financial_tab"),
             ],
         ),
-
         html.Div(id="tab_content", className="mt-3"),
     ],
 )
@@ -377,138 +476,364 @@ app.layout = dbc.Container(
     Input("main_tabs", "value"),
 )
 def render_tab(tab_value):
-    if tab_value == "reference_tab":
-        return reference_tab_layout()
-    return financial_tab_layout()
+    return reference_tab_layout() if tab_value == "reference_tab" else financial_tab_layout()
 
 
-# Upload + Current/Main + Reference dropdown
+# ---- Upload callback: save files, extract run date, compute current/main, build dropdown + files table ----
 @app.callback(
+    Output("session_store", "data"),
     Output("ref_files_store", "data"),
+    Output("ref_meta_store", "data"),
     Output("ref_upload_status", "children"),
     Output("ref_upload_status", "color"),
     Output("ref_current_main_alert", "children"),
     Output("ref_reference_dropdown", "options"),
     Output("ref_reference_dropdown", "value"),
-    Output("ref_uploaded_files_list", "children"),
+    Output("ref_files_table_wrapper", "children"),
     Input("ref_upload", "contents"),
     Input("ref_upload", "filename"),
     Input("ref_clear_session_btn", "n_clicks"),
+    State("session_store", "data"),
     State("ref_files_store", "data"),
     prevent_initial_call=True,
 )
-def handle_ref_upload(contents_list, filename_list, clear_clicks, existing_store):
+def handle_upload(contents_list, filename_list, clear_clicks, session_data, existing_files):
     triggered = dash.callback_context.triggered[0]["prop_id"].split(".")[0]
 
-    # Clear session
+    # Clear session: delete temp files + reset all state
     if triggered == "ref_clear_session_btn":
+        if session_data and session_data.get("session_id"):
+            cleanup_session_dir(session_data["session_id"])
         return (
+            None,
+            None,
             None,
             "Session cleared. Upload files to begin.",
             "info",
             "Current/Main file: —",
             [],
             None,
-            _render_uploaded_files_list(None),
+            dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0"),
         )
 
     if not contents_list or not filename_list:
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
-    existing = existing_store or []
-    added = []
+    session_id = (session_data or {}).get("session_id") or str(uuid.uuid4())
+    ensure_session_dir(session_id)
+
+    files = existing_files or []
     invalid_count = 0
+    added_count = 0
 
+    # Save each uploaded file to /tmp and extract run date from row 1
     for contents, fname in zip(contents_list, filename_list):
-        try:
-            _, b64data = contents.split(",", 1)
-            file_bytes = base64.b64decode(b64data)
-        except Exception:
-            file_bytes = b""
+        file_id = str(uuid.uuid4())
+        path = save_uploaded_xlsx(session_id, file_id, fname, contents)
 
-        run_info = extract_run_date_from_xlsx(BytesIO(file_bytes))
-        valid = bool(run_info.get("valid"))
-        run_dt = run_info.get("run_date_parsed")
+        rd = extract_run_date_from_xlsx(path)
+        valid = bool(rd.get("valid"))
+        run_dt = rd.get("run_date_parsed")
 
-        if not valid:
+        if not valid or run_dt is None:
             invalid_count += 1
 
-        added.append(
+        files.append(
             {
-                "file_id": str(uuid.uuid4()),
+                "file_id": file_id,
                 "filename": fname,
+                "path": path,
                 "valid": valid,
-                "run_date_raw": run_info.get("run_date_raw"),
                 "run_date_iso": run_dt.isoformat() if run_dt else None,
                 "run_date_display": run_dt.strftime("%Y-%m-%d %H:%M:%S") if run_dt else "",
             }
         )
+        added_count += 1
 
-    store = existing + added
-
-    # Determine current/main file = latest valid run date
-    valid_files = [f for f in store if f.get("valid") and f.get("run_date_iso")]
-    current_file = max(valid_files, key=lambda x: x["run_date_iso"]) if valid_files else None
+    # Determine current/main as latest valid run date
+    valid_files = [f for f in files if f["valid"] and f["run_date_iso"]]
+    current = max(valid_files, key=lambda x: x["run_date_iso"]) if valid_files else None
+    current_id = current["file_id"] if current else None
 
     current_text = (
-        f"Current/Main file: {current_file['filename']}  (Run: {current_file['run_date_display']})"
-        if current_file
+        f"Current/Main file: {current['filename']}  (Run: {current['run_date_display']})"
+        if current
         else "Current/Main file: —"
     )
 
-    # Reference dropdown options = previous valid files (exclude current)
-    options = []
-    if current_file:
+    # Build reference dropdown (previous valid files only)
+    ref_options = []
+    if current:
         for f in valid_files:
-            if f["file_id"] == current_file["file_id"]:
+            if f["file_id"] == current_id:
                 continue
-            options.append({"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]})
+            ref_options.append(
+                {"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]}
+            )
 
-    # Upload status
-    msg = f"Uploaded {len(added)} file(s). Total in session: {len(store)}."
+    # Files table data (status + valid yes/no)
+    table_rows = []
+    for f in files:
+        status = "Current(Main)" if (current_id and f["file_id"] == current_id) else "Previous"
+        table_rows.append(
+            {
+                "filename": f["filename"],
+                "run_date": f["run_date_display"] if f["run_date_display"] else "",
+                "status": status,
+                "valid": "Yes" if f["valid"] else "No",
+            }
+        )
+
+    files_table = dash_table.DataTable(
+        id="files_table",
+        columns=[
+            {"name": "Filename", "id": "filename"},
+            {"name": "Run date (parsed)", "id": "run_date"},
+            {"name": "Status", "id": "status"},
+            {"name": "Valid run date", "id": "valid"},
+        ],
+        data=table_rows,
+        page_size=8,
+        style_table={"overflowX": "auto"},
+        style_cell={"padding": "8px", "fontSize": "13px"},
+        style_header={"fontWeight": "bold"},
+    )
+
+    meta = {"current_file_id": current_id}
+
+    msg = f"Uploaded {added_count} file(s). Total in session: {len(files)}."
     color = "success"
     if invalid_count:
         msg += f" {invalid_count} file(s) had missing/invalid run date in row 1."
         color = "warning"
 
-    uploaded_list_ui = _render_uploaded_files_list(store)
+    return (
+        {"session_id": session_id},
+        files,
+        meta,
+        msg,
+        color,
+        current_text,
+        ref_options,
+        None,          # reset dropdown selection after upload
+        files_table,
+    )
 
-    # Reset dropdown selection on new upload
-    return store, msg, color, current_text, options, None, uploaded_list_ui
 
-
-# Run Comparison button (UI-only status + validation)
+# ---- Run Comparison callback: detect headers, run diff, generate report, fill summary + anomaly table ----
 @app.callback(
     Output("run_compare_status", "children"),
     Output("run_compare_status", "color"),
+    Output("diff_store", "data"),
+    Output("summary_cards_area", "children"),
+    Output("anomaly_table", "data"),
+    Output("report_path_store", "data"),
+    Output("download_hint", "children"),
+    Output("download_hint", "color"),
     Input("run_compare_btn", "n_clicks"),
+    State("session_store", "data"),
     State("ref_files_store", "data"),
+    State("ref_meta_store", "data"),
     State("ref_reference_dropdown", "value"),
     State("compare_columns_dropdown", "value"),
     State("main_header_override", "value"),
     State("ref_header_override", "value"),
     prevent_initial_call=True,
 )
-def run_comparison_ui_only(n_clicks, files_store, ref_file_id, compare_cols, main_hdr, ref_hdr):
+def run_comparison(
+    n_clicks,
+    session_data,
+    files_store,
+    meta_store,
+    ref_file_id,
+    compare_cols_selected,
+    main_hdr_override,
+    ref_hdr_override,
+):
+    # Validation
+    if not session_data or not session_data.get("session_id"):
+        return (
+            "Upload files first.",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
+
     if not files_store:
-        return "Upload files first.", "danger"
+        return (
+            "Upload files first.",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
+
+    current_id = (meta_store or {}).get("current_file_id")
+    if not current_id:
+        return (
+            "Could not determine Current/Main file. Make sure at least one file has a valid run date in row 1.",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
 
     if not ref_file_id:
-        return "Select a reference file from previous runs.", "danger"
+        return (
+            "Select a reference file from previous runs.",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
 
-    # Default compare columns if user leaves empty
-    used_compare = compare_cols if compare_cols else _default_compare_columns()
+    files_by_id = {f["file_id"]: f for f in files_store}
+    main = files_by_id.get(current_id)
+    ref = files_by_id.get(ref_file_id)
 
-    main_hdr_text = f"{int(main_hdr)}" if main_hdr else "auto-detect"
-    ref_hdr_text = f"{int(ref_hdr)}" if ref_hdr else "auto-detect"
+    if not main or not ref:
+        return (
+            "Main/Reference file not found in session. Try uploading again.",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
 
-    msg = (
-        f"Ready to run. Key='{KEY_COLUMN}', "
-        f"Compare cols count={len(used_compare)}, "
-        f"Header(Main={main_hdr_text}, Ref={ref_hdr_text}). "
-        "Next step: connect backend to detect headers, compute diffs, and generate the report."
+    # Compare columns: default if empty
+    compare_cols = compare_cols_selected if compare_cols_selected else default_compare_columns()
+
+    # Header rows: override if provided, else detect
+    try:
+        expected_for_detection = EXPECTED_COLUMNS_DEFAULT  # includes key is fine for detection
+        main_header_row = int(main_hdr_override) if main_hdr_override else detect_header_row(
+            main["path"], expected_for_detection, max_rows=HEADER_SCAN_ROWS_MAX, max_cols=HEADER_SCAN_COLS_MAX
+        )
+        ref_header_row = int(ref_hdr_override) if ref_hdr_override else detect_header_row(
+            ref["path"], expected_for_detection, max_rows=HEADER_SCAN_ROWS_MAX, max_cols=HEADER_SCAN_COLS_MAX
+        )
+    except Exception as e:
+        return (
+            f"Header detection failed: {e}",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
+
+    # Run diff
+    try:
+        result = run_reference_check(
+            main_path=main["path"],
+            ref_path=ref["path"],
+            key_column=KEY_COLUMN,
+            compare_columns=compare_cols,
+            main_header_row=main_header_row,
+            ref_header_row=ref_header_row,
+            main_filename=main["filename"],
+            ref_filename=ref["filename"],
+            main_run_date=main.get("run_date_iso"),
+            ref_run_date=ref.get("run_date_iso"),
+        )
+    except Exception as e:
+        return (
+            f"Comparison failed: {e}",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
+
+    summary = result["summary"]
+    anomalies_df = result["anomalies_df"]
+
+    # Generate report
+    session_id = session_data["session_id"]
+    out_dir = ensure_session_dir(session_id)
+    report_path = os.path.join(out_dir, f"anomaly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+
+    try:
+        write_anomaly_report_xlsx(report_path, summary, anomalies_df)
+    except Exception as e:
+        return (
+            f"Report generation failed: {e}",
+            "danger",
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            "Run comparison first to generate a report.",
+            "secondary",
+        )
+
+    # UI outputs
+    status_msg = (
+        f"Done. Headers detected → Main row {main_header_row}, Reference row {ref_header_row}. "
+        f"Report generated: {os.path.basename(report_path)}"
     )
-    return msg, "primary"
+
+    summary_ui = _summary_cards(summary)
+
+    # Cap anomalies shown in UI to avoid freezing for huge outputs
+    anomalies_records = anomalies_df.head(5000).to_dict("records")
+
+    diff_store = {
+        "summary": summary,
+        "anomalies_count": len(anomalies_df),
+    }
+
+    return (
+        status_msg,
+        "success",
+        diff_store,
+        summary_ui,
+        anomalies_records,
+        {"report_path": report_path},
+        f"Report ready: {os.path.basename(report_path)}",
+        "success",
+    )
+
+
+# ---- Download report ----
+@app.callback(
+    Output("download_report", "data"),
+    Output("download_hint", "children"),
+    Output("download_hint", "color"),
+    Input("download_btn", "n_clicks"),
+    State("report_path_store", "data"),
+    prevent_initial_call=True,
+)
+def download_report(n_clicks, report_path_store):
+    if not report_path_store or not report_path_store.get("report_path"):
+        return no_update, "Run comparison first to generate a report.", "secondary"
+
+    path = report_path_store["report_path"]
+    if not os.path.exists(path):
+        return no_update, "Report not found. Try running comparison again.", "warning"
+
+    return dcc.send_file(path), f"Downloading: {os.path.basename(path)}", "primary"
 
 
 if __name__ == "__main__":

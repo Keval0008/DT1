@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc
+from dash import html, dcc, Input, Output, State
 
 from utils.constants import APP_TITLE, TAB_REFERENCE_LABEL, TAB_FINANCIAL_LABEL
 
@@ -8,7 +8,51 @@ app = dash.Dash(__name__, title=APP_TITLE)
 server = app.server
 
 
+def reference_tab_layout():
+    return html.Div(
+        style={"maxWidth": "900px", "marginTop": "16px"},
+        children=[
+            html.H4("Upload Reference Files"),
+
+            dcc.Upload(
+                id="ref_upload",
+                children=html.Div(["Drag & drop or ", html.A("select .xlsx files")]),
+                multiple=True,
+                style={
+                    "width": "100%",
+                    "height": "70px",
+                    "lineHeight": "70px",
+                    "borderWidth": "1px",
+                    "borderStyle": "dashed",
+                    "borderRadius": "8px",
+                    "textAlign": "center",
+                    "cursor": "pointer",
+                },
+            ),
+
+            dcc.Store(id="ref_uploaded_filenames_store", storage_type="memory"),
+
+            html.Div(style={"height": "12px"}),
+
+            html.H4("Uploaded Files"),
+            html.Div(
+                id="ref_uploaded_files_list",
+                children=html.Div("No files uploaded yet."),
+                style={"border": "1px solid #eee", "borderRadius": "8px", "padding": "12px"},
+            ),
+        ],
+    )
+
+
+def financial_tab_layout():
+    return html.Div(
+        style={"maxWidth": "900px", "marginTop": "16px"},
+        children=[html.Div("Financial Data Check UI will go here")],
+    )
+
+
 app.layout = html.Div(
+    style={"maxWidth": "1100px", "margin": "20px auto", "fontFamily": "Arial"},
     children=[
         html.H2(APP_TITLE),
 
@@ -16,34 +60,45 @@ app.layout = html.Div(
             id="main_tabs",
             value="reference_tab",
             children=[
-                dcc.Tab(
-                    label=TAB_REFERENCE_LABEL,
-                    value="reference_tab",
-                ),
-                dcc.Tab(
-                    label=TAB_FINANCIAL_LABEL,
-                    value="financial_tab",
-                ),
+                dcc.Tab(label=TAB_REFERENCE_LABEL, value="reference_tab"),
+                dcc.Tab(label=TAB_FINANCIAL_LABEL, value="financial_tab"),
             ],
         ),
 
         html.Div(id="tab_content"),
-    ]
+    ],
 )
 
 
 @app.callback(
-    dash.Output("tab_content", "children"),
-    dash.Input("main_tabs", "value"),
+    Output("tab_content", "children"),
+    Input("main_tabs", "value"),
 )
 def render_tab(tab_value):
     if tab_value == "reference_tab":
-        return html.Div("Reference Data Check UI will go here")
+        return reference_tab_layout()
+    return financial_tab_layout()
 
-    if tab_value == "financial_tab":
-        return html.Div("Financial Data Check UI will go here")
 
-    return html.Div()
+@app.callback(
+    Output("ref_uploaded_filenames_store", "data"),
+    Output("ref_uploaded_files_list", "children"),
+    Input("ref_upload", "filename"),
+    State("ref_uploaded_filenames_store", "data"),
+    prevent_initial_call=True,
+)
+def handle_ref_upload(filenames, existing):
+    if not filenames:
+        return existing, html.Div("No files uploaded yet.")
+
+    existing = existing or []
+    # append new filenames, keep unique, preserve order
+    merged = existing + [f for f in filenames if f not in existing]
+
+    return (
+        merged,
+        html.Ul([html.Li(name) for name in merged], style={"margin": 0, "paddingLeft": "18px"}),
+    )
 
 
 if __name__ == "__main__":

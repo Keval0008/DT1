@@ -1,203 +1,61 @@
-import time
-import pandas as pd
+import re
+from datetime import datetime
+from typing import Optional, Dict
 
-from dash import Dash, html, dcc, Input, Output, State, no_update
-import dash_table
-import plotly.express as px
+import openpyxl
 
-# -----------------------------
-# Dummy data
-# -----------------------------
-df = pd.DataFrame(
-    {
-        "category": ["A"] * 40 + ["B"] * 40 + ["C"] * 40,
-        "subcat": (["A1"] * 20 + ["A2"] * 20) + (["B1"] * 20 + ["B2"] * 20) + (["C1"] * 20 + ["C2"] * 20),
-        "x": list(range(1, 121)),
-        "y": [((i * 7) % 23) + (i % 5) for i in range(1, 121)],
-    }
-)
-subcat_map = {"A": ["A1", "A2"], "B": ["B1", "B2"], "C": ["C1", "C2"]}
 
-app = Dash(__name__)
-
-# -----------------------------
-# Layout
-# -----------------------------
-app.layout = html.Div(
-    [
-        # Fullscreen overlay (we show/hide this in a callback)
-        html.Div(
-            id="fullscreen-overlay",
-            style={
-                "display": "none",
-                "position": "fixed",
-                "inset": 0,
-                "width": "100vw",
-                "height": "100vh",
-                "background": "rgba(255,255,255,0.9)",
-                "zIndex": 999999,
-                "alignItems": "center",
-                "justifyContent": "center",
-                "flexDirection": "column",
-                "gap": "14px",
-                "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-            },
-            children=[
-                # Any spinner you like. dcc.Loading gives a nice built-in one.
-                dcc.Loading(type="circle", fullscreen=False, children=html.Div()),
-                html.Div(
-                    "please wait while loading the data",
-                    style={"fontSize": "18px", "fontWeight": 700},
-                ),
-            ],
-        ),
-
-        # Controls
-        html.Div(
-            style={
-                "position": "sticky",
-                "top": 0,
-                "zIndex": 2,
-                "background": "white",
-                "borderBottom": "1px solid #eee",
-                "padding": "14px 16px",
-            },
-            children=[
-                html.H3("Dash Dashboard (Dummy Data)", style={"margin": "0 0 10px 0"}),
-                html.Div(
-                    style={"display": "flex", "gap": "12px", "flexWrap": "wrap"},
-                    children=[
-                        html.Div(
-                            style={"minWidth": "260px"},
-                            children=[
-                                html.Div("Dropdown 1 (Category)", style={"fontWeight": 600, "marginBottom": 6}),
-                                dcc.Dropdown(
-                                    id="dd-category",
-                                    options=[{"label": c, "value": c} for c in sorted(df["category"].unique())],
-                                    value="A",
-                                    clearable=False,
-                                ),
-                            ],
-                        ),
-                        html.Div(
-                            style={"minWidth": "260px"},
-                            children=[
-                                html.Div("Dropdown 2 (Subcategory)", style={"fontWeight": 600, "marginBottom": 6}),
-                                dcc.Dropdown(
-                                    id="dd-subcat",
-                                    options=[],
-                                    value=None,  # important: user must choose
-                                    placeholder="Select a subcategory...",
-                                    clearable=True,
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        ),
-
-        # Output area
-        html.Div(
-            id="output-area",
-            style={"padding": "16px"},
-            children=[
-                html.Div(
-                    id="hint",
-                    style={"padding": "14px", "border": "1px dashed #ddd", "borderRadius": "10px"},
-                    children="Select Dropdown 2 to load data...",
-                ),
-                html.Div(id="summary", style={"marginTop": 12, "fontWeight": 600}),
-                dcc.Graph(id="chart", config={"displayModeBar": False}),
-                html.H4("Preview Table", style={"marginTop": 16}),
-                dash_table.DataTable(
-                    id="table",
-                    page_size=10,
-                    style_table={"overflowX": "auto"},
-                    style_cell={"padding": "8px", "fontFamily": "system-ui"},
-                    style_header={"fontWeight": "700"},
-                ),
-            ],
-        ),
-    ]
+# Matches: Mon Jun 30 23:03:36 HKY 2025
+RUN_DATE_REGEX = re.compile(
+    r"\b(?P<dow>Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
+    r"(?P<mon>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+"
+    r"(?P<day>\d{1,2})\s+"
+    r"(?P<time>\d{2}:\d{2}:\d{2})\s+"
+    r"(?P<tz>[A-Za-z]{2,5})\s+"
+    r"(?P<year>\d{4})\b"
 )
 
-# -----------------------------
-# 1) Dropdown 1 -> Dropdown 2 options
-# -----------------------------
-@app.callback(
-    Output("dd-subcat", "options"),
-    Output("dd-subcat", "value"),
-    Input("dd-category", "value"),
-)
-def update_subcats(category):
-    options = [{"label": s, "value": s} for s in subcat_map.get(category, [])]
-    return options, None  # reset so data doesn't load automatically
+
+def _parse_run_date(match: re.Match) -> Optional[datetime]:
+    # Ignore timezone token (HKY etc.) because it might not map cleanly
+    dow = match.group("dow")
+    mon = match.group("mon")
+    day = match.group("day")
+    time = match.group("time")
+    year = match.group("year")
+
+    text = f"{dow} {mon} {day} {time} {year}"
+    return datetime.strptime(text, "%a %b %d %H:%M:%S %Y")
 
 
-# -----------------------------
-# 2) Data loads ONLY when Dropdown 2 selected
-# -----------------------------
-@app.callback(
-    Output("hint", "children"),
-    Output("summary", "children"),
-    Output("chart", "figure"),
-    Output("table", "data"),
-    Output("table", "columns"),
-    Input("dd-subcat", "value"),
-    State("dd-category", "value"),
-    prevent_initial_call=True,
-)
-def load_data(subcat, category):
-    if not subcat:
-        return "Select Dropdown 2 to load data...", "", no_update, [], []
+def extract_run_date_from_xlsx(path: str, sheet_name: Optional[str] = None) -> Dict:
+    """
+    Searches row 1 for a run date like "Mon Jun 30 23:03:36 HKY 2025".
+    Returns dict with:
+      valid: bool
+      run_date_raw: str|None
+      run_date_parsed: datetime|None
+    """
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
 
-    # simulate loading
-    time.sleep(2)
+    # Read row 1 cells (up to some reasonable width)
+    row1 = []
+    for cell in ws[1]:
+        if cell.value is None:
+            row1.append("")
+        else:
+            row1.append(str(cell.value))
 
-    dff = df[(df["category"] == category) & (df["subcat"] == subcat)].copy()
+    joined = " | ".join(row1)
+    m = RUN_DATE_REGEX.search(joined)
+    if not m:
+        return {"valid": False, "run_date_raw": None, "run_date_parsed": None}
 
-    fig = px.line(dff, x="x", y="y", markers=True, title=f"{category} / {subcat}")
-    fig.update_layout(margin=dict(l=10, r=10, t=50, b=10), height=360)
+    raw = m.group(0)
+    try:
+        dt = _parse_run_date(m)
+    except Exception:
+        return {"valid": False, "run_date_raw": raw, "run_date_parsed": None}
 
-    cols = [{"name": c, "id": c} for c in dff.columns]
-    data = dff.head(30).to_dict("records")
-
-    return "", f"Showing {len(dff)} rows for Category={category}, Subcategory={subcat}", fig, data, cols
-
-
-# -----------------------------
-# 3) Show fullscreen overlay whenever output-area is loading
-# -----------------------------
-@app.callback(
-    Output("fullscreen-overlay", "style"),
-    Input("output-area", "loading_state"),
-    prevent_initial_call=False,
-)
-def toggle_fullscreen_overlay(loading_state):
-    is_loading = bool(loading_state and loading_state.get("is_loading"))
-
-    base = {
-        "position": "fixed",
-        "inset": 0,
-        "width": "100vw",
-        "height": "100vh",
-        "background": "rgba(255,255,255,0.9)",
-        "zIndex": 999999,
-        "alignItems": "center",
-        "justifyContent": "center",
-        "flexDirection": "column",
-        "gap": "14px",
-        "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    }
-
-    if is_loading:
-        base["display"] = "flex"
-        return base
-
-    base["display"] = "none"
-    return base
-
-
-if __name__ == "__main__":
-    app.run_server(debug=True)
+    return {"valid": True, "run_date_raw": raw, "run_date_parsed": dt}

@@ -1,67 +1,150 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-import openpyxl
+import pandas as pd
 
-
-def _norm(s) -> str:
-    if s is None:
-        return ""
-    return str(s).strip().lower()
+from utils.normalize import norm_key, values_equal, norm_col
 
 
-def detect_header_row(
-    path: str,
-    expected_columns: List[str],
-    max_rows: int = 35,
-    max_cols: int = 80,
-    sheet_name: Optional[str] = None,
-) -> int:
+def _read_table(path: str, header_row_1based: int) -> pd.DataFrame:
     """
-    Auto-detect header row by scanning for max matches of expected column names.
-    Returns 1-based row index.
+    Reads Excel using pandas with the given header row (1-based).
+    Keeps all columns; caller filters.
     """
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
-
-    expected = set([_norm(c) for c in expected_columns if _norm(c)])
-    if not expected:
-        raise ValueError("expected_columns is empty")
-
-    best_row = None
-    best_score = -1
-
-    for r in range(1, max_rows + 1):
-        values = []
-        for c in range(1, max_cols + 1):
-            v = ws.cell(row=r, column=c).value
-            values.append(_norm(v))
-        score = sum(1 for v in values if v in expected)
-
-        if score > best_score:
-            best_score = score
-            best_row = r
-
-    if best_row is None or best_score <= 0:
-        raise ValueError("Could not detect header row (no expected columns found). Try manual override.")
-
-    return best_row
+    header_idx = header_row_1based - 1
+    df = pd.read_excel(path, header=header_idx, engine="openpyxl")
+    # Drop completely empty columns
+    df = df.loc[:, ~df.columns.to_series().apply(lambda x: str(x).startswith("Unnamed"))]
+    # Normalize col names
+    df.columns = [norm_col(c) for c in df.columns]
+    return df
 
 
-def build_column_options(path: str, header_row: int, sheet_name: Optional[str] = None):
-    """
-    Return dropdown options from header row values.
-    """
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb[wb.sheetnames[0]]
+def run_reference_check(
+    main_path: str,
+    ref_path: str,
+    key_column: str,
+    compare_columns: List[str],
+    main_header_row: int,
+    ref_header_row: int,
+    main_run_date: Optional[str] = None,
+    ref_run_date: Optional[str] = None,
+    main_filename: Optional[str] = None,
+    ref_filename: Optional[str] = None,
+) -> Dict[str, Any]:
+    df_main = _read_table(main_path, main_header_row)
+    df_ref = _read_table(ref_path, ref_header_row)
 
-    cols = []
-    # scan some columns
-    for c in range(1, 200):
-        v = ws.cell(row=header_row, column=c).value
-        if v is None:
-            continue
-        name = str(v).strip()
-        if name and name not in cols:
-            cols.append(name)
+    key_column = norm_col(key_column)
+    compare_columns = [norm_col(c) for c in compare_columns if norm_col(c)]
+    compare_columns = [c for c in compare_columns if c != key_column]
 
-    return [{"label": c, "value": c} for c in cols]
+    # Validate key column
+    if key_column not in df_main.columns:
+        raise ValueError(f"Key column '{key_column}' not found in MAIN columns: {list(df_main.columns)[:30]}...")
+    if key_column not in df_ref.columns:
+        raise ValueError(f"Key column '{key_column}' not found in REFERENCE columns: {list(df_ref.columns)[:30]}...")
+
+    # If compare columns not found, filter them out (but keep signal)
+    missing_main = [c for c in compare_columns if c not in df_main.columns]
+    missing_ref = [c for c in compare_columns if c not in df_ref.columns]
+    existing_compare = [c for c in compare_columns if (c in df_main.columns and c in df_ref.columns)]
+
+    if not existing_compare:
+        raise ValueError(
+            "None of the compare columns exist in both files. "
+            f"Missing in main: {missing_main}. Missing in reference: {missing_ref}."
+        )
+
+    # Normalize keys
+    df_main[key_column] = df_main[key_column].apply(norm_key)
+    df_ref[key_column] = df_ref[key_column].apply(norm_key)
+
+    # Basic key quality checks
+    if (df_main[key_column] == "").any():
+        raise ValueError("MAIN key column contains empty values.")
+    if (df_ref[key_column] == "").any():
+        raise ValueError("REFERENCE key column contains empty values.")
+
+    if df_main[key_column].duplicated().any():
+        dup = df_main.loc[df_main[key_column].duplicated(), key_column].head(5).tolist()
+        raise ValueError(f"MAIN key column has duplicates. Example keys: {dup}")
+    if df_ref[key_column].duplicated().any():
+        dup = df_ref.loc[df_ref[key_column].duplicated(), key_column].head(5).tolist()
+        raise ValueError(f"REFERENCE key column has duplicates. Example keys: {dup}")
+
+    main_map = df_main.set_index(key_column, drop=False)
+    ref_map = df_ref.set_index(key_column, drop=False)
+
+    main_keys = set(main_map.index.tolist())
+    ref_keys = set(ref_map.index.tolist())
+
+    added_keys = sorted(list(main_keys - ref_keys))
+    deleted_keys = sorted(list(ref_keys - main_keys))
+    common_keys = sorted(list(main_keys & ref_keys))
+
+    anomalies = []
+
+    # Added rows
+    for k in added_keys:
+        anomalies.append({
+            "change_type": "ADDED",
+            "key": k,
+            "column_name": "",
+            "old_value": "",
+            "new_value": "(new row)",
+        })
+
+    # Deleted rows
+    for k in deleted_keys:
+        anomalies.append({
+            "change_type": "DELETED",
+            "key": k,
+            "column_name": "",
+            "old_value": "(row existed)",
+            "new_value": "",
+        })
+
+    modified_rows = 0
+    modified_cells = 0
+
+    # Modified cells
+    for k in common_keys:
+        row_main = main_map.loc[k]
+        row_ref = ref_map.loc[k]
+
+        row_changed = False
+        for col in existing_compare:
+            a = row_ref.get(col, None)
+            b = row_main.get(col, None)
+            if not values_equal(a, b):
+                modified_cells += 1
+                row_changed = True
+                anomalies.append({
+                    "change_type": "MODIFIED",
+                    "key": k,
+                    "column_name": col,
+                    "old_value": "" if pd.isna(a) else a,
+                    "new_value": "" if pd.isna(b) else b,
+                })
+
+        if row_changed:
+            modified_rows += 1
+
+    anomalies_df = pd.DataFrame(anomalies, columns=["change_type", "key", "column_name", "old_value", "new_value"])
+
+    summary = {
+        "main_file": main_filename or "",
+        "ref_file": ref_filename or "",
+        "added_rows": len(added_keys),
+        "deleted_rows": len(deleted_keys),
+        "modified_rows": modified_rows,
+        "modified_cells": modified_cells,
+        "main_header_row": main_header_row,
+        "ref_header_row": ref_header_row,
+        "key_column": key_column,
+        "compare_columns_used": existing_compare,
+        "compare_columns_missing_in_main": missing_main,
+        "compare_columns_missing_in_ref": missing_ref,
+    }
+
+    return {"summary": summary, "anomalies_df": anomalies_df}

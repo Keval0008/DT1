@@ -24,12 +24,10 @@ from services.diff_engine import run_reference_check
 from services.report_writer import write_anomaly_report_xlsx
 
 
-# ---- App ----
 app = dash.Dash(__name__, title=APP_TITLE, external_stylesheets=[dbc.themes.FLATLY])
 server = app.server
 
 
-# ---- Helpers ----
 def default_compare_columns():
     return [c for c in EXPECTED_COLUMNS_DEFAULT if c != KEY_COLUMN]
 
@@ -81,6 +79,29 @@ def _summary_cards(summary: dict):
     )
 
 
+def _current_main_alert_content(filename: str | None, run_date_display: str | None):
+    # Label stays in alert’s base styling; filename+date get a green background pill.
+    if not filename:
+        return "Current/Main file: —"
+
+    pill_text = f"{filename}  |  {run_date_display or ''}".strip()
+    return html.Div(
+        className="d-flex flex-wrap align-items-center gap-2",
+        children=[
+            html.Span("Current/Main file:", className="fw-semibold"),
+            html.Span(
+                pill_text,
+                className="px-2 py-1 rounded",
+                style={
+                    "backgroundColor": "#d1e7dd",  # bootstrap success-subtle-ish
+                    "color": "#0f5132",            # bootstrap success text-ish
+                    "fontWeight": "600",
+                },
+            ),
+        ],
+    )
+
+
 def reference_tab_layout():
     compare_opts = [{"label": c, "value": c} for c in default_compare_columns()]
 
@@ -90,16 +111,32 @@ def reference_tab_layout():
         children=[
             # Stores
             dcc.Store(id="session_store", storage_type="memory"),
-            dcc.Store(id="ref_files_store", storage_type="memory"),      # uploaded metadata
-            dcc.Store(id="ref_meta_store", storage_type="memory"),       # current/main id etc.
-            dcc.Store(id="diff_store", storage_type="memory"),           # anomalies + summary
-            dcc.Store(id="report_path_store", storage_type="memory"),    # report path
+            dcc.Store(id="ref_files_store", storage_type="memory"),
+            dcc.Store(id="ref_meta_store", storage_type="memory"),
+            dcc.Store(id="diff_store", storage_type="memory"),
+            dcc.Store(id="report_path_store", storage_type="memory"),
+
+            # Top row: Clear session (left aligned)
+            dbc.Row(
+                className="mb-2",
+                children=[
+                    dbc.Col(
+                        md=12,
+                        children=dbc.Button(
+                            "Clear Session",
+                            id="ref_clear_session_btn",
+                            color="outline-danger",
+                            className="me-auto",
+                        ),
+                    )
+                ],
+            ),
 
             # Row 1: Upload & Selection cards (same width/height)
             dbc.Row(
                 className="g-3 align-items-stretch",
                 children=[
-                    # LEFT
+                    # LEFT: Upload & Session Controls (now WITHOUT Clear button)
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -119,7 +156,6 @@ def reference_tab_layout():
                                         _upload_box(),
 
                                         html.Div(className="mt-3"),
-
                                         dcc.Loading(
                                             type="default",
                                             children=dbc.Alert(
@@ -130,13 +166,6 @@ def reference_tab_layout():
                                             ),
                                         ),
 
-                                        dbc.Button(
-                                            "Clear Session",
-                                            id="ref_clear_session_btn",
-                                            color="outline-danger",
-                                            className="mb-3",
-                                        ),
-
                                         html.Div(
                                             [
                                                 html.Div("Uploaded files in session", className="fw-semibold mb-2"),
@@ -144,7 +173,11 @@ def reference_tab_layout():
                                                     type="default",
                                                     children=html.Div(
                                                         id="ref_files_table_wrapper",
-                                                        children=dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0"),
+                                                        children=dbc.Alert(
+                                                            "No files uploaded yet.",
+                                                            color="secondary",
+                                                            className="mb-0",
+                                                        ),
                                                     ),
                                                 ),
                                             ],
@@ -156,7 +189,7 @@ def reference_tab_layout():
                         ),
                     ),
 
-                    # RIGHT
+                    # RIGHT: Current vs Previous selection
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -203,221 +236,219 @@ def reference_tab_layout():
                 ],
             ),
 
-            # Row 2: Comparison settings + action
-            dbc.Row(
-                className="g-3 mt-1",
+            # Everything below becomes visible ONLY when reference file is selected
+            html.Div(
+                id="post_reference_sections",
+                style={"display": "none"},
                 children=[
-                    dbc.Col(
-                        md=12,
-                        children=dbc.Card(
-                            className="shadow-sm",
-                            children=[
-                                dbc.CardHeader(
-                                    html.Div(
-                                        [
-                                            html.Span("Comparison Settings", className="fw-semibold"),
-                                            html.Span("  •  Fixed key + optional column selection + header overrides", className="text-muted small"),
-                                        ]
-                                    )
-                                ),
-                                dbc.CardBody(
+                    # Row 2: Comparison settings + action
+                    dbc.Row(
+                        className="g-3 mt-1",
+                        children=[
+                            dbc.Col(
+                                md=12,
+                                children=dbc.Card(
+                                    className="shadow-sm",
                                     children=[
-                                        dbc.Row(
-                                            className="g-3",
-                                            children=[
-                                                dbc.Col(
-                                                    md=6,
-                                                    children=[
-                                                        dbc.Label("Key column"),
-                                                        dbc.InputGroup(
-                                                            [
-                                                                dbc.Input(value=KEY_COLUMN, disabled=True),
-                                                                dbc.InputGroupText("from constants.py"),
-                                                            ]
-                                                        ),
-                                                        dbc.FormText("Used to match rows between Main and Reference."),
-                                                    ],
-                                                ),
-                                                dbc.Col(
-                                                    md=6,
-                                                    children=[
-                                                        dbc.Label("Compare columns (optional)"),
-                                                        dcc.Dropdown(
-                                                            id="compare_columns_dropdown",
-                                                            options=compare_opts,
-                                                            multi=True,
-                                                            placeholder="Leave empty to compare all default columns",
-                                                        ),
-                                                        dbc.FormText(
-                                                            "Default = EXPECTED_COLUMNS_DEFAULT minus KEY_COLUMN."
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
+                                        dbc.CardHeader(
+                                            html.Div(
+                                                [
+                                                    html.Span("Comparison Settings", className="fw-semibold"),
+                                                    html.Span("  •  Fixed key + optional columns + header overrides", className="text-muted small"),
+                                                ]
+                                            )
                                         ),
-
-                                        html.Hr(className="my-3"),
-
-                                        dbc.Accordion(
-                                            start_collapsed=True,
+                                        dbc.CardBody(
                                             children=[
-                                                dbc.AccordionItem(
-                                                    title="Header detection overrides (optional)",
+                                                dbc.Row(
+                                                    className="g-3",
                                                     children=[
-                                                        dbc.Row(
-                                                            className="g-3",
+                                                        dbc.Col(
+                                                            md=6,
                                                             children=[
-                                                                dbc.Col(
-                                                                    md=6,
+                                                                dbc.Label("Key column"),
+                                                                dbc.InputGroup(
+                                                                    [
+                                                                        dbc.Input(value=KEY_COLUMN, disabled=True),
+                                                                        dbc.InputGroupText("from constants.py"),
+                                                                    ]
+                                                                ),
+                                                                dbc.FormText("Used to match rows between Main and Reference."),
+                                                            ],
+                                                        ),
+                                                        dbc.Col(
+                                                            md=6,
+                                                            children=[
+                                                                dbc.Label("Compare columns (optional)"),
+                                                                dcc.Dropdown(
+                                                                    id="compare_columns_dropdown",
+                                                                    options=compare_opts,
+                                                                    multi=True,
+                                                                    placeholder="Leave empty to compare all default columns",
+                                                                ),
+                                                                dbc.FormText("Default = EXPECTED_COLUMNS_DEFAULT minus KEY_COLUMN."),
+                                                            ],
+                                                        ),
+                                                    ],
+                                                ),
+                                                html.Hr(className="my-3"),
+                                                dbc.Accordion(
+                                                    start_collapsed=True,
+                                                    children=[
+                                                        dbc.AccordionItem(
+                                                            title="Header detection overrides (optional)",
+                                                            children=[
+                                                                dbc.Row(
+                                                                    className="g-3",
                                                                     children=[
-                                                                        dbc.Label("Main header row override (1-based)"),
-                                                                        dbc.Input(
-                                                                            id="main_header_override",
-                                                                            type="number",
-                                                                            min=1,
-                                                                            step=1,
-                                                                            placeholder="Leave empty for auto-detect",
+                                                                        dbc.Col(
+                                                                            md=6,
+                                                                            children=[
+                                                                                dbc.Label("Main header row override (1-based)"),
+                                                                                dbc.Input(
+                                                                                    id="main_header_override",
+                                                                                    type="number",
+                                                                                    min=1,
+                                                                                    step=1,
+                                                                                    placeholder="Leave empty for auto-detect",
+                                                                                ),
+                                                                            ],
+                                                                        ),
+                                                                        dbc.Col(
+                                                                            md=6,
+                                                                            children=[
+                                                                                dbc.Label("Reference header row override (1-based)"),
+                                                                                dbc.Input(
+                                                                                    id="ref_header_override",
+                                                                                    type="number",
+                                                                                    min=1,
+                                                                                    step=1,
+                                                                                    placeholder="Leave empty for auto-detect",
+                                                                                ),
+                                                                            ],
                                                                         ),
                                                                     ],
                                                                 ),
-                                                                dbc.Col(
-                                                                    md=6,
-                                                                    children=[
-                                                                        dbc.Label("Reference header row override (1-based)"),
-                                                                        dbc.Input(
-                                                                            id="ref_header_override",
-                                                                            type="number",
-                                                                            min=1,
-                                                                            step=1,
-                                                                            placeholder="Leave empty for auto-detect",
-                                                                        ),
-                                                                    ],
+                                                                dbc.FormText(
+                                                                    "Use only if auto header detection fails (merged headers, multiple tables, etc.)."
                                                                 ),
                                                             ],
                                                         ),
-                                                        dbc.FormText(
-                                                            "Use only if auto header detection fails (merged headers, multiple tables, etc.)."
+                                                    ],
+                                                ),
+                                                html.Div(className="mt-3"),
+                                                dbc.Row(
+                                                    className="g-2 align-items-center",
+                                                    children=[
+                                                        dbc.Col(
+                                                            md=3,
+                                                            children=dbc.Button(
+                                                                [dbc.Spinner(size="sm", className="me-2"), "Run Comparison"],
+                                                                id="run_compare_btn",
+                                                                color="primary",
+                                                                className="w-100",
+                                                            ),
+                                                        ),
+                                                        dbc.Col(
+                                                            md=9,
+                                                            children=dcc.Loading(
+                                                                type="default",
+                                                                children=dbc.Alert(
+                                                                    id="run_compare_status",
+                                                                    color="secondary",
+                                                                    className="py-2 mb-0",
+                                                                    children="Run comparison to generate anomalies and report.",
+                                                                ),
+                                                            ),
                                                         ),
                                                     ],
                                                 ),
                                             ],
                                         ),
-
-                                        html.Div(className="mt-3"),
-
-                                        dbc.Row(
-                                            className="g-2 align-items-center",
-                                            children=[
-                                                dbc.Col(
-                                                    md=3,
-                                                    children=dbc.Button(
-                                                        [dbc.Spinner(size="sm", className="me-2"), "Run Comparison"],
-                                                        id="run_compare_btn",
-                                                        color="primary",
-                                                        className="w-100",
-                                                    ),
-                                                ),
-                                                dbc.Col(
-                                                    md=9,
-                                                    children=dcc.Loading(
-                                                        type="default",
-                                                        children=dbc.Alert(
-                                                            id="run_compare_status",
-                                                            color="secondary",
-                                                            className="py-2 mb-0",
-                                                            children="Select a reference file, then run comparison.",
-                                                        ),
-                                                    ),
-                                                ),
-                                            ],
-                                        ),
                                     ],
                                 ),
-                            ],
-                        ),
-                    )
-                ],
-            ),
+                            )
+                        ],
+                    ),
 
-            # Row 3: Output (summary + anomalies + download)
-            dbc.Row(
-                className="g-3 mt-1",
-                children=[
-                    dbc.Col(
-                        md=12,
-                        children=dbc.Card(
-                            className="shadow-sm",
-                            children=[
-                                dbc.CardHeader(
-                                    html.Div(
-                                        [
-                                            html.Span("Output", className="fw-semibold"),
-                                            html.Span("  •  Summary, anomalies, and report download", className="text-muted small"),
-                                        ]
-                                    )
-                                ),
-                                dbc.CardBody(
+                    # Row 3: Output (summary + anomalies + download)
+                    dbc.Row(
+                        className="g-3 mt-1",
+                        children=[
+                            dbc.Col(
+                                md=12,
+                                children=dbc.Card(
+                                    className="shadow-sm",
                                     children=[
-                                        html.Div(id="summary_cards_area"),
-                                        html.Hr(className="my-3"),
-
-                                        dcc.Loading(
-                                            type="default",
-                                            children=dash_table.DataTable(
-                                                id="anomaly_table",
-                                                columns=[
-                                                    {"name": "Change type", "id": "change_type"},
-                                                    {"name": "Key", "id": "key"},
-                                                    {"name": "Column name", "id": "column_name"},
-                                                    {"name": "Old value", "id": "old_value"},
-                                                    {"name": "New value", "id": "new_value"},
-                                                ],
-                                                data=[],
-                                                page_size=12,
-                                                filter_action="native",
-                                                sort_action="native",
-                                                style_table={"overflowX": "auto"},
-                                                style_cell={
-                                                    "padding": "8px",
-                                                    "fontSize": "13px",
-                                                    "maxWidth": "260px",
-                                                    "overflow": "hidden",
-                                                    "textOverflow": "ellipsis",
-                                                },
-                                                style_header={"fontWeight": "bold"},
-                                            ),
+                                        dbc.CardHeader(
+                                            html.Div(
+                                                [
+                                                    html.Span("Output", className="fw-semibold"),
+                                                    html.Span("  •  Summary, anomalies, and report download", className="text-muted small"),
+                                                ]
+                                            )
                                         ),
-
-                                        html.Div(className="mt-3"),
-
-                                        dbc.Row(
-                                            className="g-2 align-items-center",
+                                        dbc.CardBody(
                                             children=[
-                                                dbc.Col(
-                                                    md=3,
-                                                    children=dbc.Button(
-                                                        "Download Anomaly Report (.xlsx)",
-                                                        id="download_btn",
-                                                        color="success",
-                                                        className="w-100",
+                                                html.Div(id="summary_cards_area"),
+                                                html.Hr(className="my-3"),
+                                                dcc.Loading(
+                                                    type="default",
+                                                    children=dash_table.DataTable(
+                                                        id="anomaly_table",
+                                                        columns=[
+                                                            {"name": "Change type", "id": "change_type"},
+                                                            {"name": "Key", "id": "key"},
+                                                            {"name": "Column name", "id": "column_name"},
+                                                            {"name": "Old value", "id": "old_value"},
+                                                            {"name": "New value", "id": "new_value"},
+                                                        ],
+                                                        data=[],
+                                                        page_size=12,
+                                                        filter_action="native",
+                                                        sort_action="native",
+                                                        style_table={"overflowX": "auto"},
+                                                        style_cell={
+                                                            "padding": "8px",
+                                                            "fontSize": "13px",
+                                                            "maxWidth": "260px",
+                                                            "overflow": "hidden",
+                                                            "textOverflow": "ellipsis",
+                                                        },
+                                                        style_header={"fontWeight": "bold"},
                                                     ),
                                                 ),
-                                                dbc.Col(
-                                                    md=9,
-                                                    children=dbc.Alert(
-                                                        id="download_hint",
-                                                        color="secondary",
-                                                        className="py-2 mb-0",
-                                                        children="Run comparison first to generate a report.",
-                                                    ),
+                                                html.Div(className="mt-3"),
+                                                dbc.Row(
+                                                    className="g-2 align-items-center",
+                                                    children=[
+                                                        dbc.Col(
+                                                            md=3,
+                                                            children=dbc.Button(
+                                                                "Download Anomaly Report (.xlsx)",
+                                                                id="download_btn",
+                                                                color="success",
+                                                                className="w-100",
+                                                            ),
+                                                        ),
+                                                        dbc.Col(
+                                                            md=9,
+                                                            children=dbc.Alert(
+                                                                id="download_hint",
+                                                                color="secondary",
+                                                                className="py-2 mb-0",
+                                                                children="Run comparison first to generate a report.",
+                                                            ),
+                                                        ),
+                                                    ],
                                                 ),
                                             ],
                                         ),
                                     ],
                                 ),
-                            ],
-                        ),
-                    )
+                            )
+                        ],
+                    ),
                 ],
             ),
 
@@ -442,7 +473,6 @@ def financial_tab_layout():
     )
 
 
-# ---- App Layout ----
 app.layout = dbc.Container(
     fluid=True,
     className="py-3",
@@ -479,7 +509,18 @@ def render_tab(tab_value):
     return reference_tab_layout() if tab_value == "reference_tab" else financial_tab_layout()
 
 
-# ---- Upload callback: save files, extract run date, compute current/main, build dropdown + files table ----
+# 1) Show/hide comparison + output sections only when reference file selected
+@app.callback(
+    Output("post_reference_sections", "style"),
+    Input("ref_reference_dropdown", "value"),
+)
+def toggle_post_sections(ref_value):
+    if ref_value:
+        return {"display": "block"}
+    return {"display": "none"}
+
+
+# Upload callback
 @app.callback(
     Output("session_store", "data"),
     Output("ref_files_store", "data"),
@@ -490,6 +531,14 @@ def render_tab(tab_value):
     Output("ref_reference_dropdown", "options"),
     Output("ref_reference_dropdown", "value"),
     Output("ref_files_table_wrapper", "children"),
+    Output("diff_store", "data"),
+    Output("summary_cards_area", "children"),
+    Output("anomaly_table", "data"),
+    Output("report_path_store", "data"),
+    Output("run_compare_status", "children"),
+    Output("run_compare_status", "color"),
+    Output("download_hint", "children"),
+    Output("download_hint", "color"),
     Input("ref_upload", "contents"),
     Input("ref_upload", "filename"),
     Input("ref_clear_session_btn", "n_clicks"),
@@ -500,24 +549,25 @@ def render_tab(tab_value):
 def handle_upload(contents_list, filename_list, clear_clicks, session_data, existing_files):
     triggered = dash.callback_context.triggered[0]["prop_id"].split(".")[0]
 
-    # Clear session: delete temp files + reset all state
+    # Clear session
     if triggered == "ref_clear_session_btn":
         if session_data and session_data.get("session_id"):
             cleanup_session_dir(session_data["session_id"])
+
         return (
-            None,
-            None,
-            None,
-            "Session cleared. Upload files to begin.",
-            "info",
-            "Current/Main file: —",
-            [],
-            None,
+            None, None, None,
+            "Session cleared. Upload files to begin.", "info",
+            _current_main_alert_content(None, None),
+            [], None,
             dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0"),
+            None, None, [],
+            None,
+            "Select a reference file, then run comparison.", "secondary",
+            "Run comparison first to generate a report.", "secondary",
         )
 
     if not contents_list or not filename_list:
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return (no_update,) * 17
 
     session_id = (session_data or {}).get("session_id") or str(uuid.uuid4())
     ensure_session_dir(session_id)
@@ -526,7 +576,6 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
     invalid_count = 0
     added_count = 0
 
-    # Save each uploaded file to /tmp and extract run date from row 1
     for contents, fname in zip(contents_list, filename_list):
         file_id = str(uuid.uuid4())
         path = save_uploaded_xlsx(session_id, file_id, fname, contents)
@@ -550,28 +599,22 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
         )
         added_count += 1
 
-    # Determine current/main as latest valid run date
     valid_files = [f for f in files if f["valid"] and f["run_date_iso"]]
     current = max(valid_files, key=lambda x: x["run_date_iso"]) if valid_files else None
     current_id = current["file_id"] if current else None
 
-    current_text = (
-        f"Current/Main file: {current['filename']}  (Run: {current['run_date_display']})"
-        if current
-        else "Current/Main file: —"
+    current_alert = _current_main_alert_content(
+        current["filename"] if current else None,
+        current["run_date_display"] if current else None,
     )
 
-    # Build reference dropdown (previous valid files only)
     ref_options = []
     if current:
         for f in valid_files:
             if f["file_id"] == current_id:
                 continue
-            ref_options.append(
-                {"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]}
-            )
+            ref_options.append({"label": f"{f['filename']} (Run: {f['run_date_display']})", "value": f["file_id"]})
 
-    # Files table data (status + valid yes/no)
     table_rows = []
     for f in files:
         status = "Current(Main)" if (current_id and f["file_id"] == current_id) else "Previous"
@@ -607,20 +650,29 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
         msg += f" {invalid_count} file(s) had missing/invalid run date in row 1."
         color = "warning"
 
+    # Reset comparison outputs on new upload (prevents stale report/anomalies)
     return (
         {"session_id": session_id},
         files,
         meta,
         msg,
         color,
-        current_text,
+        current_alert,
         ref_options,
-        None,          # reset dropdown selection after upload
+        None,
         files_table,
+        None,
+        None,
+        [],
+        None,
+        "Select a reference file, then run comparison.",
+        "secondary",
+        "Run comparison first to generate a report.",
+        "secondary",
     )
 
 
-# ---- Run Comparison callback: detect headers, run diff, generate report, fill summary + anomaly table ----
+# Run Comparison callback (backend)
 @app.callback(
     Output("run_compare_status", "children"),
     Output("run_compare_status", "color"),
@@ -650,15 +702,11 @@ def run_comparison(
     main_hdr_override,
     ref_hdr_override,
 ):
-    # Validation
     if not session_data or not session_data.get("session_id"):
         return (
             "Upload files first.",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
@@ -667,10 +715,7 @@ def run_comparison(
         return (
             "Upload files first.",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
@@ -678,12 +723,9 @@ def run_comparison(
     current_id = (meta_store or {}).get("current_file_id")
     if not current_id:
         return (
-            "Could not determine Current/Main file. Make sure at least one file has a valid run date in row 1.",
+            "Could not determine Current/Main file. Ensure at least one file has a valid run date in row 1.",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
@@ -692,10 +734,7 @@ def run_comparison(
         return (
             "Select a reference file from previous runs.",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
@@ -708,20 +747,16 @@ def run_comparison(
         return (
             "Main/Reference file not found in session. Try uploading again.",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
 
-    # Compare columns: default if empty
     compare_cols = compare_cols_selected if compare_cols_selected else default_compare_columns()
 
-    # Header rows: override if provided, else detect
+    # Header detection
     try:
-        expected_for_detection = EXPECTED_COLUMNS_DEFAULT  # includes key is fine for detection
+        expected_for_detection = EXPECTED_COLUMNS_DEFAULT
         main_header_row = int(main_hdr_override) if main_hdr_override else detect_header_row(
             main["path"], expected_for_detection, max_rows=HEADER_SCAN_ROWS_MAX, max_cols=HEADER_SCAN_COLS_MAX
         )
@@ -732,15 +767,12 @@ def run_comparison(
         return (
             f"Header detection failed: {e}",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
 
-    # Run diff
+    # Diff
     try:
         result = run_reference_check(
             main_path=main["path"],
@@ -758,10 +790,7 @@ def run_comparison(
         return (
             f"Comparison failed: {e}",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
@@ -769,7 +798,7 @@ def run_comparison(
     summary = result["summary"]
     anomalies_df = result["anomalies_df"]
 
-    # Generate report
+    # Report
     session_id = session_data["session_id"]
     out_dir = ensure_session_dir(session_id)
     report_path = os.path.join(out_dir, f"anomaly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
@@ -780,29 +809,20 @@ def run_comparison(
         return (
             f"Report generation failed: {e}",
             "danger",
-            no_update,
-            no_update,
-            no_update,
-            no_update,
+            no_update, no_update, no_update, no_update,
             "Run comparison first to generate a report.",
             "secondary",
         )
 
-    # UI outputs
     status_msg = (
-        f"Done. Headers detected → Main row {main_header_row}, Reference row {ref_header_row}. "
-        f"Report generated: {os.path.basename(report_path)}"
+        f"Done. Headers → Main row {main_header_row}, Reference row {ref_header_row}. "
+        f"Report: {os.path.basename(report_path)}"
     )
 
     summary_ui = _summary_cards(summary)
-
-    # Cap anomalies shown in UI to avoid freezing for huge outputs
     anomalies_records = anomalies_df.head(5000).to_dict("records")
 
-    diff_store = {
-        "summary": summary,
-        "anomalies_count": len(anomalies_df),
-    }
+    diff_store = {"summary": summary, "anomalies_count": int(len(anomalies_df))}
 
     return (
         status_msg,
@@ -816,7 +836,7 @@ def run_comparison(
     )
 
 
-# ---- Download report ----
+# Download
 @app.callback(
     Output("download_report", "data"),
     Output("download_hint", "children"),

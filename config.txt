@@ -1,150 +1,87 @@
-from typing import List, Optional, Dict, Any
+from typing import Dict
 
 import pandas as pd
-
-from utils.normalize import norm_key, values_equal, norm_col
-
-
-def _read_table(path: str, header_row_1based: int) -> pd.DataFrame:
-    """
-    Reads Excel using pandas with the given header row (1-based).
-    Keeps all columns; caller filters.
-    """
-    header_idx = header_row_1based - 1
-    df = pd.read_excel(path, header=header_idx, engine="openpyxl")
-    # Drop completely empty columns
-    df = df.loc[:, ~df.columns.to_series().apply(lambda x: str(x).startswith("Unnamed"))]
-    # Normalize col names
-    df.columns = [norm_col(c) for c in df.columns]
-    return df
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 
-def run_reference_check(
-    main_path: str,
-    ref_path: str,
-    key_column: str,
-    compare_columns: List[str],
-    main_header_row: int,
-    ref_header_row: int,
-    main_run_date: Optional[str] = None,
-    ref_run_date: Optional[str] = None,
-    main_filename: Optional[str] = None,
-    ref_filename: Optional[str] = None,
-) -> Dict[str, Any]:
-    df_main = _read_table(main_path, main_header_row)
-    df_ref = _read_table(ref_path, ref_header_row)
+FILL_ADDED = PatternFill("solid", fgColor="C6EFCE")     # light green
+FILL_DELETED = PatternFill("solid", fgColor="FFC7CE")   # light red
+FILL_MODIFIED = PatternFill("solid", fgColor="FFEB9C")  # light yellow
 
-    key_column = norm_col(key_column)
-    compare_columns = [norm_col(c) for c in compare_columns if norm_col(c)]
-    compare_columns = [c for c in compare_columns if c != key_column]
+HEADER_FONT = Font(bold=True)
+CENTER = Alignment(vertical="center")
 
-    # Validate key column
-    if key_column not in df_main.columns:
-        raise ValueError(f"Key column '{key_column}' not found in MAIN columns: {list(df_main.columns)[:30]}...")
-    if key_column not in df_ref.columns:
-        raise ValueError(f"Key column '{key_column}' not found in REFERENCE columns: {list(df_ref.columns)[:30]}...")
 
-    # If compare columns not found, filter them out (but keep signal)
-    missing_main = [c for c in compare_columns if c not in df_main.columns]
-    missing_ref = [c for c in compare_columns if c not in df_ref.columns]
-    existing_compare = [c for c in compare_columns if (c in df_main.columns and c in df_ref.columns)]
+def write_anomaly_report_xlsx(path: str, summary: Dict, anomalies_df: pd.DataFrame) -> None:
+    wb = Workbook()
 
-    if not existing_compare:
-        raise ValueError(
-            "None of the compare columns exist in both files. "
-            f"Missing in main: {missing_main}. Missing in reference: {missing_ref}."
-        )
+    # Summary sheet
+    ws1 = wb.active
+    ws1.title = "Summary"
 
-    # Normalize keys
-    df_main[key_column] = df_main[key_column].apply(norm_key)
-    df_ref[key_column] = df_ref[key_column].apply(norm_key)
+    summary_rows = [
+        ("Main file", summary.get("main_file", "")),
+        ("Reference file", summary.get("ref_file", "")),
+        ("Key column", summary.get("key_column", "")),
+        ("Main header row", summary.get("main_header_row", "")),
+        ("Reference header row", summary.get("ref_header_row", "")),
+        ("Added rows", summary.get("added_rows", 0)),
+        ("Deleted rows", summary.get("deleted_rows", 0)),
+        ("Modified rows", summary.get("modified_rows", 0)),
+        ("Modified cells", summary.get("modified_cells", 0)),
+        ("Compare columns used", ", ".join(summary.get("compare_columns_used", []) or [])),
+        ("Missing compare cols in main", ", ".join(summary.get("compare_columns_missing_in_main", []) or [])),
+        ("Missing compare cols in reference", ", ".join(summary.get("compare_columns_missing_in_ref", []) or [])),
+    ]
 
-    # Basic key quality checks
-    if (df_main[key_column] == "").any():
-        raise ValueError("MAIN key column contains empty values.")
-    if (df_ref[key_column] == "").any():
-        raise ValueError("REFERENCE key column contains empty values.")
+    ws1.append(["Metric", "Value"])
+    ws1["A1"].font = HEADER_FONT
+    ws1["B1"].font = HEADER_FONT
 
-    if df_main[key_column].duplicated().any():
-        dup = df_main.loc[df_main[key_column].duplicated(), key_column].head(5).tolist()
-        raise ValueError(f"MAIN key column has duplicates. Example keys: {dup}")
-    if df_ref[key_column].duplicated().any():
-        dup = df_ref.loc[df_ref[key_column].duplicated(), key_column].head(5).tolist()
-        raise ValueError(f"REFERENCE key column has duplicates. Example keys: {dup}")
+    for k, v in summary_rows:
+        ws1.append([k, v])
 
-    main_map = df_main.set_index(key_column, drop=False)
-    ref_map = df_ref.set_index(key_column, drop=False)
+    ws1.column_dimensions["A"].width = 28
+    ws1.column_dimensions["B"].width = 80
 
-    main_keys = set(main_map.index.tolist())
-    ref_keys = set(ref_map.index.tolist())
+    # Changes sheet
+    ws2 = wb.create_sheet("Changes")
+    if anomalies_df is None or anomalies_df.empty:
+        ws2.append(["No anomalies found."])
+        wb.save(path)
+        return
 
-    added_keys = sorted(list(main_keys - ref_keys))
-    deleted_keys = sorted(list(ref_keys - main_keys))
-    common_keys = sorted(list(main_keys & ref_keys))
+    # Write dataframe
+    for r_idx, row in enumerate(dataframe_to_rows(anomalies_df, index=False, header=True), start=1):
+        ws2.append(row)
+        if r_idx == 1:
+            for c in range(1, len(row) + 1):
+                ws2.cell(row=r_idx, column=c).font = HEADER_FONT
+                ws2.cell(row=r_idx, column=c).alignment = CENTER
 
-    anomalies = []
+    # Style rows based on change type
+    # Columns: change_type, key, column_name, old_value, new_value
+    change_col = 1
+    for r in range(2, ws2.max_row + 1):
+        change_type = ws2.cell(row=r, column=change_col).value
+        fill = None
+        if change_type == "ADDED":
+            fill = FILL_ADDED
+        elif change_type == "DELETED":
+            fill = FILL_DELETED
+        elif change_type == "MODIFIED":
+            fill = FILL_MODIFIED
 
-    # Added rows
-    for k in added_keys:
-        anomalies.append({
-            "change_type": "ADDED",
-            "key": k,
-            "column_name": "",
-            "old_value": "",
-            "new_value": "(new row)",
-        })
+        if fill:
+            for c in range(1, ws2.max_column + 1):
+                ws2.cell(row=r, column=c).fill = fill
+                ws2.cell(row=r, column=c).alignment = Alignment(vertical="top", wrap_text=True)
 
-    # Deleted rows
-    for k in deleted_keys:
-        anomalies.append({
-            "change_type": "DELETED",
-            "key": k,
-            "column_name": "",
-            "old_value": "(row existed)",
-            "new_value": "",
-        })
+    # Column widths
+    widths = [12, 24, 22, 35, 35]
+    for i, w in enumerate(widths, start=1):
+        ws2.column_dimensions[chr(64 + i)].width = w
 
-    modified_rows = 0
-    modified_cells = 0
-
-    # Modified cells
-    for k in common_keys:
-        row_main = main_map.loc[k]
-        row_ref = ref_map.loc[k]
-
-        row_changed = False
-        for col in existing_compare:
-            a = row_ref.get(col, None)
-            b = row_main.get(col, None)
-            if not values_equal(a, b):
-                modified_cells += 1
-                row_changed = True
-                anomalies.append({
-                    "change_type": "MODIFIED",
-                    "key": k,
-                    "column_name": col,
-                    "old_value": "" if pd.isna(a) else a,
-                    "new_value": "" if pd.isna(b) else b,
-                })
-
-        if row_changed:
-            modified_rows += 1
-
-    anomalies_df = pd.DataFrame(anomalies, columns=["change_type", "key", "column_name", "old_value", "new_value"])
-
-    summary = {
-        "main_file": main_filename or "",
-        "ref_file": ref_filename or "",
-        "added_rows": len(added_keys),
-        "deleted_rows": len(deleted_keys),
-        "modified_rows": modified_rows,
-        "modified_cells": modified_cells,
-        "main_header_row": main_header_row,
-        "ref_header_row": ref_header_row,
-        "key_column": key_column,
-        "compare_columns_used": existing_compare,
-        "compare_columns_missing_in_main": missing_main,
-        "compare_columns_missing_in_ref": missing_ref,
-    }
-
-    return {"summary": summary, "anomalies_df": anomalies_df}
+    wb.save(path)

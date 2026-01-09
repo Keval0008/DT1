@@ -24,7 +24,12 @@ from services.diff_engine import run_reference_check
 from services.report_writer import write_anomaly_report_xlsx
 
 
-app = dash.Dash(__name__, title=APP_TITLE, external_stylesheets=[dbc.themes.FLATLY])
+app = dash.Dash(
+    __name__,
+    title=APP_TITLE,
+    external_stylesheets=[dbc.themes.FLATLY],
+    suppress_callback_exceptions=True,  # needed because summary cards render after comparison
+)
 server = app.server
 
 
@@ -56,31 +61,7 @@ def _upload_box():
     )
 
 
-def _summary_cards(summary: dict):
-    def _card(title, value):
-        return dbc.Card(
-            dbc.CardBody(
-                [
-                    html.Div(title, className="text-muted small"),
-                    html.Div(str(value), className="fs-3 fw-bold"),
-                ]
-            ),
-            className="shadow-sm",
-        )
-
-    return dbc.Row(
-        className="g-3",
-        children=[
-            dbc.Col(_card("Added rows", summary.get("added_rows", 0)), md=3),
-            dbc.Col(_card("Deleted rows", summary.get("deleted_rows", 0)), md=3),
-            dbc.Col(_card("Modified rows", summary.get("modified_rows", 0)), md=3),
-            dbc.Col(_card("Modified cells", summary.get("modified_cells", 0)), md=3),
-        ],
-    )
-
-
 def _current_main_alert_content(filename: str | None, run_date_display: str | None):
-    # Label stays in alert’s base styling; filename+date get a green background pill.
     if not filename:
         return "Current/Main file: —"
 
@@ -93,10 +74,67 @@ def _current_main_alert_content(filename: str | None, run_date_display: str | No
                 pill_text,
                 className="px-2 py-1 rounded",
                 style={
-                    "backgroundColor": "#d1e7dd",  # bootstrap success-subtle-ish
-                    "color": "#0f5132",            # bootstrap success text-ish
+                    "backgroundColor": "#d1e7dd",
+                    "color": "#0f5132",
                     "fontWeight": "600",
                 },
+            ),
+        ],
+    )
+
+
+def _clickable_stat_card(btn_id: str, title: str, value: int, is_active: bool):
+    # Button wrapper makes the card clickable while keeping "card" look.
+    border = "2px solid #0d6efd" if is_active else "1px solid #e9ecef"
+    return dbc.Button(
+        id=btn_id,
+        n_clicks=0,
+        color="light",
+        className="p-0 w-100 text-start",
+        style={"border": border},
+        children=dbc.Card(
+            className="shadow-sm border-0",
+            children=dbc.CardBody(
+                [
+                    html.Div(title, className="text-muted small"),
+                    html.Div(str(value), className="fs-3 fw-bold"),
+                    html.Div("Click to filter table", className="text-muted small"),
+                ]
+            ),
+        ),
+    )
+
+
+def _summary_cards_clickable(summary: dict, active_filter: str | None):
+    return dbc.Row(
+        className="g-3",
+        children=[
+            dbc.Col(
+                _clickable_stat_card(
+                    "card_added",
+                    "Added rows",
+                    int(summary.get("added_rows", 0)),
+                    is_active=(active_filter == "added"),
+                ),
+                md=4,
+            ),
+            dbc.Col(
+                _clickable_stat_card(
+                    "card_deleted",
+                    "Deleted rows",
+                    int(summary.get("deleted_rows", 0)),
+                    is_active=(active_filter == "deleted"),
+                ),
+                md=4,
+            ),
+            dbc.Col(
+                _clickable_stat_card(
+                    "card_modified",
+                    "Modified rows",
+                    int(summary.get("modified_rows", 0)),
+                    is_active=(active_filter == "modified"),
+                ),
+                md=4,
             ),
         ],
     )
@@ -116,6 +154,10 @@ def reference_tab_layout():
             dcc.Store(id="diff_store", storage_type="memory"),
             dcc.Store(id="report_path_store", storage_type="memory"),
 
+            # New: store for anomaly records currently displayed + filter state
+            dcc.Store(id="anomaly_records_store", storage_type="memory"),
+            dcc.Store(id="anomaly_filter_store", storage_type="memory"),  # "added"/"deleted"/"modified"/None
+
             # Top row: Clear session (left aligned)
             dbc.Row(
                 className="mb-2",
@@ -132,11 +174,11 @@ def reference_tab_layout():
                 ],
             ),
 
-            # Row 1: Upload & Selection cards (same width/height)
+            # Row 1: Upload & Selection cards
             dbc.Row(
                 className="g-3 align-items-stretch",
                 children=[
-                    # LEFT: Upload & Session Controls (now WITHOUT Clear button)
+                    # LEFT: Upload
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -154,7 +196,6 @@ def reference_tab_layout():
                                     className="d-flex flex-column",
                                     children=[
                                         _upload_box(),
-
                                         html.Div(className="mt-3"),
                                         dcc.Loading(
                                             type="default",
@@ -165,7 +206,6 @@ def reference_tab_layout():
                                                 children="Upload files to begin.",
                                             ),
                                         ),
-
                                         html.Div(
                                             [
                                                 html.Div("Uploaded files in session", className="fw-semibold mb-2"),
@@ -189,7 +229,7 @@ def reference_tab_layout():
                         ),
                     ),
 
-                    # RIGHT: Current vs Previous selection
+                    # RIGHT: selection
                     dbc.Col(
                         md=6,
                         children=dbc.Card(
@@ -214,7 +254,6 @@ def reference_tab_layout():
                                                 children="Current/Main file: —",
                                             ),
                                         ),
-
                                         html.Div(className="mt-3"),
                                         dbc.Label("Reference file (previous runs only)"),
                                         dcc.Dropdown(
@@ -236,7 +275,7 @@ def reference_tab_layout():
                 ],
             ),
 
-            # Everything below becomes visible ONLY when reference file is selected
+            # Shown only after reference selection
             html.Div(
                 id="post_reference_sections",
                 style={"display": "none"},
@@ -371,7 +410,7 @@ def reference_tab_layout():
                         ],
                     ),
 
-                    # Row 3: Output (summary + anomalies + download)
+                    # Row 3: Output
                     dbc.Row(
                         className="g-3 mt-1",
                         children=[
@@ -384,13 +423,14 @@ def reference_tab_layout():
                                             html.Div(
                                                 [
                                                     html.Span("Output", className="fw-semibold"),
-                                                    html.Span("  •  Summary, anomalies, and report download", className="text-muted small"),
+                                                    html.Span("  •  Click a card to filter table", className="text-muted small"),
                                                 ]
                                             )
                                         ),
                                         dbc.CardBody(
                                             children=[
                                                 html.Div(id="summary_cards_area"),
+                                                html.Div(id="active_filter_hint", className="text-muted small mt-2"),
                                                 html.Hr(className="my-3"),
                                                 dcc.Loading(
                                                     type="default",
@@ -473,6 +513,7 @@ def financial_tab_layout():
     )
 
 
+# ---- App Layout ----
 app.layout = dbc.Container(
     fluid=True,
     className="py-3",
@@ -509,15 +550,13 @@ def render_tab(tab_value):
     return reference_tab_layout() if tab_value == "reference_tab" else financial_tab_layout()
 
 
-# 1) Show/hide comparison + output sections only when reference file selected
+# Show/hide sections after reference selected
 @app.callback(
     Output("post_reference_sections", "style"),
     Input("ref_reference_dropdown", "value"),
 )
 def toggle_post_sections(ref_value):
-    if ref_value:
-        return {"display": "block"}
-    return {"display": "none"}
+    return {"display": "block"} if ref_value else {"display": "none"}
 
 
 # Upload callback
@@ -531,6 +570,7 @@ def toggle_post_sections(ref_value):
     Output("ref_reference_dropdown", "options"),
     Output("ref_reference_dropdown", "value"),
     Output("ref_files_table_wrapper", "children"),
+    # Reset outputs on upload/clear
     Output("diff_store", "data"),
     Output("summary_cards_area", "children"),
     Output("anomaly_table", "data"),
@@ -539,6 +579,9 @@ def toggle_post_sections(ref_value):
     Output("run_compare_status", "color"),
     Output("download_hint", "children"),
     Output("download_hint", "color"),
+    Output("anomaly_records_store", "data"),
+    Output("anomaly_filter_store", "data"),
+    Output("active_filter_hint", "children"),
     Input("ref_upload", "contents"),
     Input("ref_upload", "filename"),
     Input("ref_clear_session_btn", "n_clicks"),
@@ -549,7 +592,6 @@ def toggle_post_sections(ref_value):
 def handle_upload(contents_list, filename_list, clear_clicks, session_data, existing_files):
     triggered = dash.callback_context.triggered[0]["prop_id"].split(".")[0]
 
-    # Clear session
     if triggered == "ref_clear_session_btn":
         if session_data and session_data.get("session_id"):
             cleanup_session_dir(session_data["session_id"])
@@ -560,14 +602,21 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
             _current_main_alert_content(None, None),
             [], None,
             dbc.Alert("No files uploaded yet.", color="secondary", className="mb-0"),
-            None, None, [],
             None,
-            "Select a reference file, then run comparison.", "secondary",
-            "Run comparison first to generate a report.", "secondary",
+            None,
+            [],
+            None,
+            "Run comparison to generate anomalies and report.",
+            "secondary",
+            "Run comparison first to generate a report.",
+            "secondary",
+            None,          # anomaly_records_store
+            None,          # anomaly_filter_store
+            "",            # active_filter_hint
         )
 
     if not contents_list or not filename_list:
-        return (no_update,) * 17
+        return (no_update,) * 20
 
     session_id = (session_data or {}).get("session_id") or str(uuid.uuid4())
     ensure_session_dir(session_id)
@@ -650,7 +699,7 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
         msg += f" {invalid_count} file(s) had missing/invalid run date in row 1."
         color = "warning"
 
-    # Reset comparison outputs on new upload (prevents stale report/anomalies)
+    # Reset comparison outputs on new upload
     return (
         {"session_id": session_id},
         files,
@@ -665,10 +714,13 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
         None,
         [],
         None,
-        "Select a reference file, then run comparison.",
+        "Run comparison to generate anomalies and report.",
         "secondary",
         "Run comparison first to generate a report.",
         "secondary",
+        None,   # anomaly_records_store
+        None,   # anomaly_filter_store
+        "",
     )
 
 
@@ -682,6 +734,9 @@ def handle_upload(contents_list, filename_list, clear_clicks, session_data, exis
     Output("report_path_store", "data"),
     Output("download_hint", "children"),
     Output("download_hint", "color"),
+    Output("anomaly_records_store", "data"),
+    Output("anomaly_filter_store", "data"),
+    Output("active_filter_hint", "children"),
     Input("run_compare_btn", "n_clicks"),
     State("session_store", "data"),
     State("ref_files_store", "data"),
@@ -704,39 +759,27 @@ def run_comparison(
 ):
     if not session_data or not session_data.get("session_id"):
         return (
-            "Upload files first.",
-            "danger",
+            "Upload files first.", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
-        )
-
-    if not files_store:
-        return (
-            "Upload files first.",
-            "danger",
-            no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     current_id = (meta_store or {}).get("current_file_id")
-    if not current_id:
+    if not current_id or not files_store:
         return (
-            "Could not determine Current/Main file. Ensure at least one file has a valid run date in row 1.",
-            "danger",
+            "Upload files first and ensure at least one file has a valid run date.", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     if not ref_file_id:
         return (
-            "Select a reference file from previous runs.",
-            "danger",
+            "Select a reference file from previous runs.", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     files_by_id = {f["file_id"]: f for f in files_store}
@@ -745,11 +788,10 @@ def run_comparison(
 
     if not main or not ref:
         return (
-            "Main/Reference file not found in session. Try uploading again.",
-            "danger",
+            "Main/Reference file not found in session. Try uploading again.", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     compare_cols = compare_cols_selected if compare_cols_selected else default_compare_columns()
@@ -765,11 +807,10 @@ def run_comparison(
         )
     except Exception as e:
         return (
-            f"Header detection failed: {e}",
-            "danger",
+            f"Header detection failed: {e}", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     # Diff
@@ -788,11 +829,10 @@ def run_comparison(
         )
     except Exception as e:
         return (
-            f"Comparison failed: {e}",
-            "danger",
+            f"Comparison failed: {e}", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     summary = result["summary"]
@@ -807,11 +847,10 @@ def run_comparison(
         write_anomaly_report_xlsx(report_path, summary, anomalies_df)
     except Exception as e:
         return (
-            f"Report generation failed: {e}",
-            "danger",
+            f"Report generation failed: {e}", "danger",
             no_update, no_update, no_update, no_update,
-            "Run comparison first to generate a report.",
-            "secondary",
+            "Run comparison first to generate a report.", "secondary",
+            no_update, no_update, no_update,
         )
 
     status_msg = (
@@ -819,7 +858,11 @@ def run_comparison(
         f"Report: {os.path.basename(report_path)}"
     )
 
-    summary_ui = _summary_cards(summary)
+    # Only 3 cards now + start with no filter
+    active_filter = None
+    summary_ui = _summary_cards_clickable(summary, active_filter)
+
+    # Store the displayed anomalies for fast client-side-ish filtering
     anomalies_records = anomalies_df.head(5000).to_dict("records")
 
     diff_store = {"summary": summary, "anomalies_count": int(len(anomalies_df))}
@@ -829,11 +872,74 @@ def run_comparison(
         "success",
         diff_store,
         summary_ui,
-        anomalies_records,
+        anomalies_records,  # initial unfiltered
         {"report_path": report_path},
         f"Report ready: {os.path.basename(report_path)}",
         "success",
+        anomalies_records,  # store full (displayed) set
+        active_filter,
+        "Showing: All changes (click a card to filter, click again to reset).",
     )
+
+
+# Card click -> filter table
+@app.callback(
+    Output("anomaly_filter_store", "data"),
+    Output("anomaly_table", "data"),
+    Output("summary_cards_area", "children"),
+    Output("active_filter_hint", "children"),
+    Input("card_added", "n_clicks"),
+    Input("card_deleted", "n_clicks"),
+    Input("card_modified", "n_clicks"),
+    State("anomaly_filter_store", "data"),
+    State("anomaly_records_store", "data"),
+    State("diff_store", "data"),
+    prevent_initial_call=True,
+)
+def filter_by_card(n_added, n_deleted, n_modified, current_filter, records, diff_store):
+    if not records or not diff_store or not diff_store.get("summary"):
+        return no_update, no_update, no_update, no_update
+
+    trig = dash.ctx.triggered_id
+    selected = None
+    if trig == "card_added":
+        selected = "added"
+    elif trig == "card_deleted":
+        selected = "deleted"
+    elif trig == "card_modified":
+        selected = "modified"
+
+    # toggle off if clicking same active filter
+    if selected == current_filter:
+        new_filter = None
+    else:
+        new_filter = selected
+
+    # filter records robustly on change_type text
+    def _match(r):
+        ct = str(r.get("change_type", "")).lower()
+        if new_filter == "added":
+            return "add" in ct or "new" in ct or ct == "insert"
+        if new_filter == "deleted":
+            return "delete" in ct or "removed" in ct or "drop" in ct
+        if new_filter == "modified":
+            return "mod" in ct or "update" in ct or "change" in ct
+        return True
+
+    filtered = [r for r in records if _match(r)] if new_filter else records
+
+    summary = diff_store["summary"]
+    cards = _summary_cards_clickable(summary, new_filter)
+
+    hint = "Showing: All changes (click a card to filter, click again to reset)."
+    if new_filter == "added":
+        hint = "Showing: Added rows only (click again to reset)."
+    elif new_filter == "deleted":
+        hint = "Showing: Deleted rows only (click again to reset)."
+    elif new_filter == "modified":
+        hint = "Showing: Modified rows only (click again to reset)."
+
+    return new_filter, filtered, cards, hint
 
 
 # Download

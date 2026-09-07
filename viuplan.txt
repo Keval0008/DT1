@@ -1,0 +1,449 @@
+# Input Database Design
+
+**Derived from:** `input_template_singapore.xlsx` (entity `4200 - HBAP Singapore`)
+**Target:** `run.sqlite` — input portion
+**Companion to:** `IMPAIRMENT_TOOL_PLAN.md` §5.3
+
+---
+
+## 1. What the template actually contains
+
+### 1.1 Year coverage is ragged *per item*, within one entity
+
+| Sheet | Periods present | Forecast count |
+|---|---|---|
+| `Latest_FRP_PBT (in million LCY)` | Opening, 2026–2031 | **6** |
+| `Latest_FRP_RWA (in billion LCY)` | Opening, 2026–2030 | **5** |
+| `CET1_required` | Opening, 2026–2030 | 5 |
+| `Tax_input` | Opening, 2026–2030 | 5 |
+| `Manual_Adjustments(Mn LCY)` | Opening, 2026–2031 | 6 |
+| `Growth_rate (in Percentage)` | 1993–2056 | 64 |
+| `dta_adjustments` | 2023–2045 | 23 |
+
+`look_ahead = 6`. RWA is one year short of the horizon it is projected over, so an
+implicit extension rule exists in the engine today. **That rule must become explicit,
+declared per item, and stored with the run** — otherwise it is invisible to a reviewer
+and unverifiable by an auditor.
+
+### 1.2 Five distinct data grains
+
+| Grain | Sheets | Key |
+|---|---|---|
+| A. line × item × period × layer | FRP_PBT, FRP_RWA, Manual_Adjustments, CET1_required, Tax overrides | entity, business_line, item, period, layer |
+| B. line × item (time-invariant) | Discount_rate, tangible_equity, CET1_actual, Tax_input rate, saracen_extra | entity, business_line, item |
+| C. entity × period | Growth_rate, dta_adjustments | entity, item, period |
+| D. entity scalar | look_ahead (TOR, testing_date, cgu_rollup, exclude_cgu_fcfe, …) | entity, key |
+| E. chart-of-accounts line item | saracen | entity, category, line_item_code |
+| F. user preferences | default scenarios, custom BEP presets | ordinal |
+
+Grains A, B and C collapse into **one fact table** using sentinels. E and F are genuinely
+different grains and get their own tables.
+
+### 1.3 Units are inconsistent and must be normalised
+
+| Source | Native unit | Example |
+|---|---|---|
+| FRP_PBT | millions LCY | 1426.127 |
+| FRP_RWA | **billions** LCY | 33.819 |
+| Manual_Adjustments | millions LCY | 0.0 |
+| saracen | **thousands** LCY | 1301179.285 |
+| saracen_extra | mixed mn / thousand per column | 80.0 / 121230.0 |
+| Growth_rate | percent as number | 2.2908 = 2.2908% |
+| Discount_rate | decimal fraction | 0.116903 |
+| Tax_input | **negative** decimal | -0.1375 |
+| CET1_actual | decimal fraction | 0.042034 |
+
+Two facts about the same balance sheet in different magnitudes is the single most likely
+source of a silent order-of-magnitude error. The store holds **canonical units only**,
+with the source unit recorded for traceability.
+
+### 1.4 Sentinel values requiring decoding at ingestion
+
+- `saracen_extra` `CC allocation %` = `-1.0` on the CC row — a plug/remainder marker,
+  not a negative percentage. Decode at ingestion; never store `-1.0` as a rate.
+- `Tax_input` rates are stored negative (`-0.1375`) and applied as a deduction. Store the
+  sign convention explicitly in `dim_item` rather than leaving it implied.
+- `HK Retail` / `HK Commercial` are present but all-zero for this entity. **Present-and-nil
+  is different from absent** and must be distinguishable in the store.
+
+---
+
+## 2. Design principles
+
+1. **Periods are rows, never columns.** Adding a seventh year inserts rows; it does not
+   alter the schema, the DDL, or any query.
+2. **Business lines are rows in a dimension table**, not a hard-coded enum. Each entity
+   declares its own set and each line's role.
+3. **One fact table** for grains A/B/C. Sentinels rather than NULLs, because SQLite
+   primary keys treat NULL as distinct from NULL, which silently breaks uniqueness.
+4. **Canonical units in `value`**, source unit and raw value retained alongside.
+5. **The horizon is declared, not inferred.** `dim_period` materialises the entity
+   horizon; a coverage check reconciles facts against it and applies a declared policy.
+6. **The store schema does not move when the Excel template moves.** Template
+   irregularities — the space in `Growth_rate (in Percentage)`, pipe-delimited
+   `Actuals|2026` headers, unit-bearing sheet names — terminate at the ingestion boundary.
+
+---
+
+## 3. Schema
+
+### 3.1 Dimension: business lines
+
+Solves *"business lines might change for different entities"*.
+
+```sql
+CREATE TABLE dim_business_line (
+    entity_code       TEXT    NOT NULL,
+    business_line     TEXT    NOT NULL,   -- 'CIB' | 'iWPB' | 'HK Retail' | 'CC' | 'Total'
+    ordinal           INTEGER NOT NULL,   -- display order
+    role              TEXT    NOT NULL,   -- see below
+    in_cgu_rollup     INTEGER NOT NULL,   -- contributes to the Total identity
+    in_cgu_fcfe       INTEGER NOT NULL,   -- included in CGU free cash flow
+    is_active         INTEGER NOT NULL,   -- 0 = present in template but nil
+    PRIMARY KEY (entity_code, business_line)
+);
+```
+
+`role` ∈ `rollup_total` | `operating` | `centre` | `inactive`.
+
+Populated by parsing the `look_ahead` sheet:
+
+- `cgu_rollup = "Total=CIB+iWPB+HK Retail+HK Commercial+CC"` → `in_cgu_rollup` and the
+  identity to validate
+- `exclude_cgu_fcfe = "CC"` → `in_cgu_fcfe = 0`, `role = 'centre'`
+
+For Singapore:
+
+| business_line | ordinal | role | in_cgu_rollup | in_cgu_fcfe | is_active |
+|---|---|---|---|---|---|
+| Total | 0 | rollup_total | 0 | 0 | 1 |
+| CIB | 1 | operating | 1 | 1 | 1 |
+| iWPB | 2 | operating | 1 | 1 | 1 |
+| HK Retail | 3 | operating | 1 | 1 | **0** |
+| HK Commercial | 4 | operating | 1 | 1 | **0** |
+| CC | 5 | centre | 1 | **0** | 1 |
+
+Another entity supplies a different row set. No code changes; no schema changes.
+
+### 3.2 Dimension: periods
+
+Solves *"some take 5 year, some 6, some 7"*.
+
+```sql
+CREATE TABLE dim_period (
+    entity_code   TEXT    NOT NULL,
+    period        TEXT    NOT NULL,   -- 'Opening' | '2026' | ... | 'Terminal'
+    ordinal       INTEGER NOT NULL,   -- Opening = 0, first forecast = 1
+    period_type   TEXT    NOT NULL,   -- opening | forecast | terminal | historical
+    PRIMARY KEY (entity_code, period)
+);
+```
+
+Materialised from `look_ahead` + `testing_date`. For Singapore (`look_ahead = 6`,
+`testing_date = 2026-02-28`): Opening(0), 2026(1) … 2031(6), Terminal(7).
+
+An entity with `look_ahead = 7` produces one extra row. Nothing else changes.
+
+`period` is deliberately `TEXT`, because `Opening` and `Terminal` are first-class periods
+alongside calendar years. `ordinal` carries the ordering; never sort on `period`.
+
+### 3.3 Dimension: items
+
+Declares canonical units, sign conventions and horizon policy — the metadata that makes
+ragged coverage safe.
+
+```sql
+CREATE TABLE dim_item (
+    item              TEXT PRIMARY KEY,
+    category          TEXT    NOT NULL,   -- pnl | balance_sheet | rate | capital | macro
+    canonical_unit    TEXT    NOT NULL,   -- mn_lcy | pct | ratio
+    grain             TEXT    NOT NULL,   -- line_period | line_only | entity_period
+    sign_convention   TEXT,               -- 'negative_is_charge' for tax_rate
+    horizon_policy    TEXT    NOT NULL,   -- exact | extend_last | zero_fill | not_applicable
+    required          INTEGER NOT NULL
+);
+```
+
+Seed values implied by the template:
+
+| item | category | canonical_unit | grain | horizon_policy |
+|---|---|---|---|---|
+| `pbt` | pnl | mn_lcy | line_period | exact |
+| `rwa` | balance_sheet | mn_lcy | line_period | **extend_last** |
+| `cet1_required` | capital | ratio | line_period | extend_last |
+| `cet1_actual` | capital | ratio | line_only | not_applicable |
+| `cet1_adjustment` | capital | mn_lcy | line_only | not_applicable |
+| `discount_rate` | rate | ratio | line_only | not_applicable |
+| `tax_rate` | rate | ratio | line_period | extend_last |
+| `tangible_equity` | balance_sheet | mn_lcy | line_only | not_applicable |
+| `growth_rate` | macro | pct | entity_period | exact |
+| `dta_adjustment` | capital | mn_lcy | entity_period | zero_fill |
+| `free_cash_flows` | pnl | mn_lcy | line_period | exact |
+
+`horizon_policy = extend_last` on `rwa` is the explicit statement of the rule currently
+implicit in the engine: RWA supplies 5 forecast years against a 6-year horizon, so 2031
+repeats 2030. **Declaring it makes it reviewable.** Store `dim_item` inside every run so
+the run remains self-describing.
+
+`canonical_unit` for `rwa` is `mn_lcy` even though the sheet is billions — conversion
+happens at ingestion, and `unit_source` retains `bn_lcy`.
+
+### 3.4 Fact table
+
+```sql
+CREATE TABLE fact_input (
+    entity_code    TEXT NOT NULL,
+    business_line  TEXT NOT NULL,   -- 'ENTITY' sentinel for entity-level items
+    item           TEXT NOT NULL,
+    period         TEXT NOT NULL,   -- 'NA' sentinel for time-invariant items
+    layer          TEXT NOT NULL,   -- base | actuals | overlays | manual_adj
+    value          REAL,            -- canonical units
+    unit           TEXT NOT NULL,   -- canonical unit, mirrors dim_item
+    value_source   REAL,            -- as it appeared in the source
+    unit_source    TEXT,            -- e.g. 'bn_lcy'
+    source_ref     TEXT,            -- 'Latest_FRP_RWA (in billion LCY)!D3'
+    PRIMARY KEY (entity_code, business_line, item, period, layer),
+    FOREIGN KEY (entity_code, business_line) REFERENCES dim_business_line(entity_code, business_line),
+    FOREIGN KEY (item) REFERENCES dim_item(item)
+);
+
+CREATE INDEX ix_fact_item     ON fact_input(entity_code, item, period);
+CREATE INDEX ix_fact_line     ON fact_input(entity_code, business_line, item);
+CREATE INDEX ix_fact_period   ON fact_input(entity_code, period);
+```
+
+Sentinel rules, applied consistently:
+
+- `business_line = 'ENTITY'` — growth_rate, dta_adjustment
+- `period = 'NA'` — discount_rate, tangible_equity, cet1_actual, flat tax_rate
+- `layer = 'base'` — anything with no Actuals/Overlays split
+
+`source_ref` is what lets a reviewer trace any stored number back to a template cell. It
+costs one text column and removes an entire class of "where did this come from" queries.
+
+**The tax pattern deserves note.** `Tax_input` carries a flat rate *and* empty per-year
+override columns. Long form handles this with no special casing:
+
+```sql
+-- flat rate
+('4200','CIB','tax_rate','NA','base', -0.1375, 'ratio', ...)
+-- optional 2028 override, present only when populated
+('4200','CIB','tax_rate','2028','base', -0.17,  'ratio', ...)
+```
+
+Resolution is `COALESCE(period_specific, flat)`. A wide schema would need a second table
+for overrides.
+
+### 3.5 Entity scalars
+
+```sql
+CREATE TABLE scalar_input (
+    entity_code TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value_text  TEXT,
+    value_num   REAL,
+    value_type  TEXT NOT NULL,   -- int | float | date | text | csv_list | expression
+    PRIMARY KEY (entity_code, key)
+);
+```
+
+| key | value | type |
+|---|---|---|
+| `look_ahead` | 6 | int |
+| `testing_date` | 2026-02-28 | date |
+| `TOR` | 1.2645 | float |
+| `treat_current_year_as_full` | Y | text |
+| `remaining_year_fraction` | *(empty)* | float |
+| `cgu_rollup` | `Total=CIB+iWPB+HK Retail+HK Commercial+CC` | expression |
+| `dta_excluded` | *(empty)* | csv_list |
+| `exclude_cgu_fcfe` | `CC` | csv_list |
+| `contribution_sequence_list` | *(empty)* | csv_list |
+
+`cgu_rollup` is stored **both** as its raw expression (audit) and decomposed into
+`dim_business_line.in_cgu_rollup` (query). Store the source of truth and the derived form,
+never only the derived form.
+
+### 3.6 Saracen line items
+
+Grain E — chart-of-accounts codes, not business lines.
+
+```sql
+CREATE TABLE saracen_input (
+    entity_code    TEXT NOT NULL,
+    category       TEXT NOT NULL,   -- tangible_equity | CET_adjustments
+    line_item_code TEXT NOT NULL,   -- 'E100000'
+    line_item_name TEXT,            -- 'Total Equity'
+    value          REAL,            -- canonical mn_lcy
+    unit           TEXT NOT NULL,
+    value_source   REAL,            -- thousands, as supplied
+    unit_source    TEXT,
+    PRIMARY KEY (entity_code, category, line_item_code)
+);
+```
+
+Split the `E100000 - Total Equity` string at ingestion. Codes are stable; descriptions are
+not, and joining on a concatenated label is a recurring source of breakage.
+
+`saracen_extra` is grain B and goes into `fact_input` as ordinary line-level items
+(`bank_premises_revaluation`, `saracen_goodwill`, `right_of_use_assets`, `ppe`, …), with
+the `CC allocation %` columns decoded — the `-1.0` plug resolved into an explicit
+remainder allocation before storage.
+
+### 3.7 Preferences
+
+Not financial data. Kept separate so controls and variance never traverse them.
+
+```sql
+CREATE TABLE scenario_preset (
+    ordinal   INTEGER PRIMARY KEY,
+    parameter TEXT NOT NULL,   -- growth_rate | discount_rate | rwa | pbt
+    change    REAL NOT NULL,
+    unit      TEXT NOT NULL    -- bps | %
+);
+
+CREATE TABLE bep_preset (
+    preset  TEXT PRIMARY KEY,  -- 'Discount Rate' | 'FRP PBT years' | ...
+    enabled INTEGER NOT NULL
+);
+```
+
+---
+
+## 4. How the schema absorbs your two variations
+
+### 4.1 Variable horizon (5 / 6 / 7 years)
+
+```sql
+-- every entity's horizon, whatever its length
+SELECT entity_code, COUNT(*) AS forecast_years
+FROM dim_period WHERE period_type = 'forecast'
+GROUP BY entity_code;
+
+-- coverage check: which items fall short, and what policy applies
+SELECT f.item,
+       COUNT(DISTINCT f.period)                          AS supplied,
+       (SELECT COUNT(*) FROM dim_period p
+         WHERE p.entity_code = f.entity_code
+           AND p.period_type = 'forecast')               AS required,
+       i.horizon_policy
+FROM fact_input f
+JOIN dim_item i ON i.item = f.item
+WHERE f.entity_code = '4200' AND i.grain = 'line_period'
+GROUP BY f.item
+HAVING supplied < required;
+```
+
+For Singapore this returns `rwa`, `cet1_required` and `tax_rate` — each with a declared
+policy. An item short of horizon **with `horizon_policy = 'exact'` is a hard control
+failure**, not a silent zero-fill.
+
+### 4.2 Variable business lines
+
+```sql
+-- the CGU roll-up identity, whatever the entity's line set
+SELECT f.period,
+       SUM(CASE WHEN d.in_cgu_rollup = 1 THEN f.value END) AS components,
+       SUM(CASE WHEN d.role = 'rollup_total' THEN f.value END) AS total,
+       ABS(SUM(CASE WHEN d.in_cgu_rollup = 1 THEN f.value END)
+         - SUM(CASE WHEN d.role = 'rollup_total' THEN f.value END)) AS diff
+FROM fact_input f
+JOIN dim_business_line d
+  ON d.entity_code = f.entity_code AND d.business_line = f.business_line
+WHERE f.entity_code = '4200' AND f.item = 'pbt' AND f.layer = 'actuals'
+GROUP BY f.period;
+```
+
+No entity-specific branching anywhere. An entity with three lines or nine works unchanged.
+
+---
+
+## 5. Controls this schema makes cheap
+
+| ID | Rule | Severity |
+|---|---|---|
+| C01 | Roll-up identity holds per item/period within tolerance | error |
+| C02 | Item period coverage meets horizon, or a policy is declared | error |
+| C03 | No `fact_input.business_line` absent from `dim_business_line` | error |
+| C04 | No `fact_input.period` absent from `dim_period` | error |
+| C05 | Every `item` present in `dim_item` | error |
+| C06 | `unit` matches `dim_item.canonical_unit` | error |
+| C07 | Required items present for every active line | error |
+| C08 | Discount rate within a plausible band (0–50%) | warning |
+| C09 | Tax rate sign matches `dim_item.sign_convention` | error |
+| C10 | Inactive lines carry only zero or null values | warning |
+| C11 | Opening period present for every `line_period` item | error |
+| C12 | Q-o-Q movement exceeds threshold | warning + commentary |
+
+C03–C06 are referential integrity — free, from foreign keys. They would each need
+bespoke code against a wide schema.
+
+---
+
+## 6. Q-o-Q variance
+
+The long form makes this a single join, with no knowledge of years or line names:
+
+```sql
+ATTACH DATABASE '...\2026Q2\run_.../run.sqlite' AS prior;
+
+SELECT c.business_line, c.item, c.period, c.layer,
+       p.value AS prior_value,
+       c.value AS curr_value,
+       c.value - p.value AS delta,
+       CASE WHEN p.value <> 0
+            THEN (c.value - p.value) / ABS(p.value) END AS pct_change
+FROM main.fact_input c
+LEFT JOIN prior.fact_input p
+       ON  p.entity_code   = c.entity_code
+       AND p.business_line = c.business_line
+       AND p.item          = c.item
+       AND p.period        = c.period
+       AND p.layer         = c.layer
+WHERE c.entity_code = '4200'
+ORDER BY c.item, c.business_line, c.period;
+```
+
+`LEFT JOIN` surfaces the interesting cases automatically: a line or year present this
+quarter and absent last quarter appears with `prior_value IS NULL`. A `FULL OUTER` (or
+the union of two `LEFT JOIN`s in SQLite) catches removals too. **Structural change between
+quarters is exactly what a reviewer must see**, and it falls out of the schema rather than
+needing to be programmed.
+
+---
+
+## 7. Ingestion mapping
+
+| Template sheet | Target | Transform |
+|---|---|---|
+| `Discount_rate` | `fact_input` | unpivot lines; `period='NA'`, `layer='base'` |
+| `Growth_rate (in Percentage)` | `fact_input` | unpivot 64 years; `business_line='ENTITY'` |
+| `CET1_required` | `fact_input` | unpivot; note the `CET1 ratio` column holds the line name |
+| `look_ahead` | `scalar_input` + `dim_period` + `dim_business_line` | parse `cgu_rollup`, `exclude_cgu_fcfe` |
+| `Manual_Adjustments(Mn LCY)` | `fact_input` | unpivot; `adj_type` → `item`; `layer='manual_adj'` |
+| `default scenarios` | `scenario_preset` | direct |
+| `custom BEP presets` | `bep_preset` | `enable`/`disable` → 1/0 |
+| `dta_adjustments` | `fact_input` | unpivot; `business_line='ENTITY'` |
+| `tangible_equity` | `fact_input` | unpivot lines; `period='NA'` |
+| `saracen (in thousand LCY)` | `saracen_input` | split code from name; ×0.001 → mn |
+| `saracen_extra` | `fact_input` | one item per column; decode `-1.0` allocation plug |
+| `Latest_FRP_PBT (in million LCY)` | `fact_input` | split `Actuals\|2026` → layer + period |
+| `Latest_FRP_RWA (in billion LCY)` | `fact_input` | as above, **×1000 → mn** |
+| `CET1_actual` | `fact_input` | two items: `cet1_actual`, `cet1_adjustment` |
+| `Tax_input` | `fact_input` | flat rate → `period='NA'`; populated years → overrides |
+
+Sheet names, header formats and units appear **only** in this table and in the parser
+modules. Nothing downstream of ingestion knows that RWA arrived in billions or that one
+sheet name contains a space before a parenthesis.
+
+---
+
+## 8. Why not the alternatives
+
+| Design | Fails because |
+|---|---|
+| One table per sheet, mirroring the template | Ragged years become ragged columns; adding a year is a migration; every entity family needs its own DDL |
+| Wide table, one column per year (`y1…y7`) | Meaningless for growth_rate's 64 periods; `y6` means 2031 for one entity and 2032 for another; every query hard-codes column names |
+| JSON blob per entity | No referential integrity, no SQL variance query, no indexing — this is a file, not a database |
+| Table per entity | Q-o-Q and cross-entity reporting require dynamic SQL; the four families diverge permanently |
+
+The long form is the only shape where **adding a year or a business line is an INSERT.**

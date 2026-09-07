@@ -1,0 +1,617 @@
+# GitHub Enterprise Registry — Design
+
+**Repository:** `impairment-registry`
+**Purpose:** entitlements, entity configuration, and version control for the impairment tool
+**Companion to:** `IMPAIRMENT_TOOL_PLAN.md` §6, `RUN_SQLITE_DATA_DICTIONARY.md`
+
+---
+
+## 1. Principles
+
+### 1.1 Git is a registry, not a database
+
+These are YAML files under version control, not tables in a server. That choice buys three
+things a database would not:
+
+| Property | Delivered by |
+|---|---|
+| Who changed an entitlement, when, and why | Commit history |
+| Who approved it | Pull request review |
+| What it looked like on any past date | `git log` / `git show` |
+| Prevention of unreviewed change | Branch protection + CODEOWNERS |
+
+For an audit question of the form *"prove that only authorised people could access the
+Singapore numbers in Q3 2026"*, a reviewed commit history is stronger evidence than a
+database row that someone could have updated in place.
+
+### 1.2 What this enforces, and what it does not
+
+State this plainly in the repository README, because an auditor will ask.
+
+- **The real access enforcement is NTFS ACLs on the shared drive.** Those are enforced by
+  Windows. A user who is removed from this registry but still holds NTFS permissions can
+  reach the files by other means.
+- **The registry is the authoritative record of who was *authorised*, and the control that
+  keeps the tool and the ACLs aligned.** It is a detective and preventive control at the
+  application layer, not the security boundary.
+- `os.environ["USERNAME"]` is user-controlled. Identity is therefore keyed on **Windows
+  SID**, which is not trivially spoofable, but the tool still runs on the user's machine.
+
+**Design rule:** every entitlement change in this repo must be paired with the
+corresponding NTFS group change. Section 8 defines the reconciliation control that detects
+drift between the two.
+
+### 1.3 What must never be committed
+
+| Prohibited | Reason |
+|---|---|
+| Personal access tokens, passwords, connection strings | Credential exposure; use Windows Credential Manager |
+| Any financial data — PBT, RWA, headroom | This repo has a wider audience than the numbers |
+| Run outputs or template contents | Belongs in the run store |
+| Email addresses beyond corporate directory names | Minimise PII surface |
+
+Enforce with a pre-commit secret scan and a CI check (§9).
+
+---
+
+## 2. Repository layout
+
+```
+impairment-registry/
+  README.md
+  CODEOWNERS                        admin control — who may approve what
+  global.yaml                       tool-wide settings and minimum versions
+  admins.yaml                       registry administrators, declared
+  users.yaml                        SID ↔ person directory (single source)
+  entities/
+    4200-hbap-singapore.yaml
+    4300-hbuk.yaml
+    4400-mena.yaml
+    4500-hbce.yaml
+  templates/
+    template_registry.yaml          Excel template versions and compatibility
+  versions/
+    engine_registry.yaml            released engine versions and compatibility
+    schema_registry.yaml            run.sqlite schema versions
+  .github/
+    workflows/validate.yml          CI schema validation (blocking)
+    pull_request_template.md
+  schemas/
+    *.schema.json                   JSON Schema for each file type
+```
+
+---
+
+## 3. `users.yaml` — person directory
+
+One place where a SID maps to a person. Entity files then reference `user_id` only, so a
+leaver is removed in one file rather than eleven.
+
+```yaml
+schema_version: 1
+users:
+  - user_id: jdoe
+    sid:      "S-1-5-21-1234567890-1234567890-1234567890-1001"
+    sam:      "CORP\\jdoe"
+    name:     "J Doe"
+    status:   active            # active | suspended | left
+    added:    "2026-01-15"
+    added_by: rmehta
+
+  - user_id: asmith
+    sid:      "S-1-5-21-1234567890-1234567890-1234567890-1002"
+    sam:      "CORP\\asmith"
+    name:     "A Smith"
+    status:   active
+    added:    "2026-01-15"
+    added_by: rmehta
+
+  - user_id: bwong
+    sid:      "S-1-5-21-1234567890-1234567890-1234567890-1003"
+    sam:      "CORP\\bwong"
+    name:     "B Wong"
+    status:   left
+    added:    "2025-04-02"
+    added_by: rmehta
+    removed:  "2026-08-31"
+    removed_by: rmehta
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `user_id` | string | yes | Stable key; never reused, even after a leaver |
+| `sid` | string | yes | Windows SID — the identity actually matched at runtime |
+| `sam` | string | yes | `DOMAIN\username`, for display and troubleshooting only |
+| `name` | string | yes | Display name |
+| `status` | enum | yes | `active` \| `suspended` \| `left` |
+| `added` / `added_by` | date / user_id | yes | Joiner evidence |
+| `removed` / `removed_by` | date / user_id | when `left` | Leaver evidence |
+
+**Leavers are kept, never deleted.** Setting `status: left` denies access while preserving
+the record that the person once held it — which is what a leaver-access review needs.
+Deleting the row destroys the evidence.
+
+---
+
+## 4. `entities/<code>.yaml` — entitlements and entity configuration
+
+One file per entity. This is the file that changes most often, and the one requiring
+review.
+
+```yaml
+schema_version: 1
+
+entity:       "4200 - HBAP Singapore"
+entity_code:  "4200"
+family:       hbap                    # hbap | hbuk | mena | hbce
+status:       active                  # active | dormant | retired
+
+store_path:   '\\corp-fs01\impairment\runs\4200-HBAP-Singapore'
+archive_path: '\\corp-fs01\impairment\archive\4200-HBAP-Singapore'
+template:     "4200-hbap-singapore"   # key into templates/template_registry.yaml
+
+ntfs_group:   "CORP\\GG-Impairment-4200"   # the group that actually grants access
+
+access:
+  preparers:
+    - user_id: jdoe
+      granted: "2026-01-15"
+      granted_by: rmehta
+  reviewers:
+    - user_id: asmith
+      granted: "2026-01-15"
+      granted_by: rmehta
+    - user_id: kpatel
+      granted: "2026-03-01"
+      granted_by: rmehta
+  viewers:
+    - user_id: mchen
+      granted: "2026-02-10"
+      granted_by: rmehta
+
+review:
+  last_reviewed:    "2026-07-01"
+  last_reviewed_by: rmehta
+  next_review_due:  "2027-01-01"
+```
+
+### 4.1 Field reference
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `entity` | string | yes | Must match `entity` in the input template exactly |
+| `entity_code` | string | yes | Matches `entity_code` throughout `run.sqlite` |
+| `family` | enum | yes | Selects the engine code path — see `business_entities.yaml` |
+| `status` | enum | yes | `dormant` hides it from the picker without deleting history |
+| `store_path` | UNC | yes | Run store root for this entity |
+| `archive_path` | UNC | yes | Archive root |
+| `template` | string | yes | Key into `template_registry.yaml`, **not** a filename |
+| `ntfs_group` | string | yes | The AD group that actually grants folder access |
+| `access.*` | list | yes | `user_id` references into `users.yaml` |
+
+`template` deliberately references a registry key rather than a filename, so a template
+version bump happens in one place instead of across every entity file.
+
+### 4.2 Role capabilities
+
+| Capability | viewer | reviewer | preparer | admin |
+|---|---|---|---|---|
+| Open a frozen run | ✓ | ✓ | ✓ | ✓ |
+| Open a draft run | | ✓ | ✓ | ✓ |
+| Sensitivity / break-even / VIU walk | ✓ | ✓ | ✓ | ✓ |
+| Download Excel export | ✓ | ✓ | ✓ | ✓ |
+| Ingest raw files and create a run | | | ✓ | |
+| Add commentary | | ✓ | ✓ | |
+| Move the `FROZEN` pointer | | ✓ | | |
+| Edit this registry | | | | ✓ |
+
+Two deliberate separations:
+
+- **Preparers cannot freeze.** The person who produces the numbers is not the person who
+  declares them final.
+- **Admins do not appear in `access` by virtue of being admins.** An administrator who
+  needs to run an entity must be listed explicitly, so the grant is visible.
+
+### 4.3 Roles are not additive
+
+A `user_id` must appear in **at most one** role list per entity. Listing someone as both
+preparer and reviewer defeats the segregation above, and CI rejects it (§9).
+
+---
+
+## 5. `admins.yaml` and `CODEOWNERS` — administrative access
+
+Two files, deliberately. `admins.yaml` is the human-readable declaration; `CODEOWNERS` is
+what GitHub actually enforces.
+
+```yaml
+# admins.yaml
+schema_version: 1
+admins:
+  - user_id: rmehta
+    scope:   global               # global | family:hbap | entity:4200
+    granted: "2026-01-10"
+    granted_by: dhead
+    justification: "Tool owner"
+
+  - user_id: dhead
+    scope:   global
+    granted: "2026-01-10"
+    granted_by: dhead
+    justification: "Head of Finance Systems — break-glass"
+
+  - user_id: lchan
+    scope:   family:hbap
+    granted: "2026-04-01"
+    granted_by: rmehta
+    justification: "APAC regional controller"
+
+break_glass:
+  user_id: dhead
+  note: "Sole account able to approve changes without a second reviewer.
+         Every use must be raised as an incident within one business day."
+```
+
+```
+# CODEOWNERS — what GitHub enforces
+
+*                               @rmehta @dhead
+/entities/                      @rmehta @dhead
+/entities/4200-*.yaml           @rmehta @lchan
+/admins.yaml                    @dhead
+/CODEOWNERS                     @dhead
+/global.yaml                    @rmehta @dhead
+/versions/                      @rmehta
+/templates/                     @rmehta
+```
+
+**Required branch protection on `main`:**
+
+| Setting | Value | Why |
+|---|---|---|
+| Require pull request | on | No direct commits |
+| Required approvals | 1 (2 for `admins.yaml`, `CODEOWNERS`) | Four-eyes on privilege change |
+| Require review from Code Owners | on | The right approver, not any approver |
+| Dismiss stale approvals on push | on | Prevents approve-then-amend |
+| Require status checks | `validate` | A malformed file cannot reach `main` |
+| Restrict who can push | admins only | Defence in depth |
+| Allow force push / deletion | **off** | Preserves the audit trail |
+
+**`admins.yaml` is a declaration; `CODEOWNERS` is the control.** They must agree, and
+CI checks that they do (§9) — otherwise the documented admin list drifts from who can
+actually approve, which is exactly the gap an access review is meant to catch.
+
+---
+
+## 6. `global.yaml` — tool-wide settings
+
+```yaml
+schema_version: 1
+
+versions:
+  min_engine_version:    "1.4.0"     # older engines are blocked at startup
+  current_engine_version: "1.4.2"    # advisory — prompts an upgrade
+  min_schema_version:    1
+
+registry:
+  cache_ttl_hours:        24
+  offline_grace_hours:    72         # beyond this, freeze is blocked
+
+paths:
+  store_root:    '\\corp-fs01\impairment\runs'
+  archive_root:  '\\corp-fs01\impairment\archive'
+  template_root: '\\corp-fs01\impairment\templates'
+
+support:
+  owner:   "R Mehta"
+  contact: "impairment-tool@corp.example"
+  message: |
+    Your version of the Impairment Analysis tool is out of date.
+    Please contact impairment-tool@corp.example to obtain the current release.
+
+policy:
+  require_reconciliation_before_freeze: true
+  reconciliation_tolerance_abs:         0.01
+  freeze_requires_role:                 reviewer
+  archive_retention_years:              7
+```
+
+| Field | Effect if violated |
+|---|---|
+| `min_engine_version` | Modal dialog, support contact shown, tool blocked |
+| `min_schema_version` | Older `run.sqlite` files refused with an explanation |
+| `cache_ttl_hours` | Past TTL, a staleness banner is shown |
+| `offline_grace_hours` | Past grace, read-only; freeze blocked |
+| `require_reconciliation_before_freeze` | Freeze blocked until Excel reconciles |
+
+---
+
+## 7. Version registries
+
+Three things version independently and must be reconciled: the **engine**, the **Excel
+template**, and the **`run.sqlite` schema**.
+
+### 7.1 `versions/engine_registry.yaml`
+
+```yaml
+schema_version: 1
+engines:
+  - version:        "1.4.2"
+    released:       "2026-09-01"
+    commit:         "a91be03"
+    schema_version: 1
+    status:         current          # current | supported | deprecated | withdrawn
+    notes:          "RWA horizon policy made explicit"
+
+  - version:        "1.4.0"
+    released:       "2026-06-15"
+    commit:         "7c21fd8"
+    schema_version: 1
+    status:         supported
+    notes:          "Run store introduced"
+
+  - version:        "1.3.4"
+    released:       "2026-03-02"
+    commit:         "1de9a44"
+    schema_version: 0
+    status:         withdrawn
+    withdrawn_on:   "2026-06-20"
+    reason:         "Terminal value rounding defect — HBUK only"
+```
+
+| Field | Notes |
+|---|---|
+| `version` | Semantic version, matching `impairment/version.py` |
+| `commit` | Ties the release to source; needed for audit |
+| `schema_version` | Which `run.sqlite` schema it writes |
+| `status` | `withdrawn` blocks the version outright |
+| `withdrawn_on` / `reason` | Required when `status: withdrawn` |
+
+**A `withdrawn` entry is how you recall a bad release.** Users on that version are blocked
+at next launch and shown `reason` alongside the support contact — without which a known
+defective build keeps producing numbers until someone notices.
+
+### 7.2 `templates/template_registry.yaml`
+
+```yaml
+schema_version: 1
+templates:
+  - key:              "4200-hbap-singapore"
+    version:          "v3"
+    file:             "4200-HBAP-Singapore_v3.xlsx"
+    sha256:           "3b1f9c2e..."
+    min_engine:       "1.4.0"
+    schema_version:   1
+    status:           current
+    effective_from:   "2026-07-01"
+    changed:          "Added CET1 allocation disclosure block"
+
+  - key:              "4200-hbap-singapore"
+    version:          "v2"
+    file:             "4200-HBAP-Singapore_v2.xlsx"
+    sha256:           "8ee40a11..."
+    min_engine:       "1.3.0"
+    schema_version:   0
+    status:           superseded
+    effective_from:   "2026-01-01"
+    superseded_on:    "2026-07-01"
+```
+
+`sha256` is the important field. The tool verifies the hash of the template it picked up
+from the shared drive against the registry before filling it. **A template edited directly
+on the share is then detected rather than silently used** — which is the failure this
+whole design exists to prevent.
+
+### 7.3 `versions/schema_registry.yaml`
+
+```yaml
+schema_version: 1
+schemas:
+  - version:      1
+    introduced:   "2026-06-15"
+    engine_min:   "1.4.0"
+    readable_by:  ["1.4.0", "1.4.1", "1.4.2"]
+    notes:        "dim_business_line, dim_period, dim_item, fact_input"
+
+  - version:      0
+    introduced:   "2026-01-01"
+    engine_min:   "1.0.0"
+    readable_by:  ["1.3.0", "1.3.4"]
+    status:       deprecated
+    notes:        "Pre-store; no dimension tables"
+```
+
+### 7.4 Compatibility rules
+
+Applied at startup and again whenever a run is opened:
+
+| # | Rule | On failure |
+|---|---|---|
+| V1 | `engine_version >= global.min_engine_version` | Block, show support contact |
+| V2 | `engine_registry[engine].status != withdrawn` | Block, show `reason` |
+| V3 | `run.schema_version` readable by this engine | Refuse the run, explain |
+| V4 | `run.engine_version <= running engine` | **Refuse** — never render newer-engine output |
+| V5 | Template `sha256` matches registry | Block export, flag tampering |
+| V6 | Template `min_engine <= engine_version` | Block export, prompt upgrade |
+
+**V4 is the one that protects reported numbers.** A colleague on a newer build produces a
+run; an older build must not open it and present figures its own code did not compute.
+
+---
+
+## 8. Access resolution
+
+Executed at startup, after reading the user's txt input file.
+
+```
+1. Resolve Windows SID of the current process owner
+2. Load registry — fresh from GHE, else local cache (§ global.registry)
+3. Look up SID in users.yaml
+       not found            → deny, show support contact
+       status != active     → deny, show support contact
+4. For each entities/*.yaml where status == active:
+       find user_id in access.preparers / reviewers / viewers
+       → build the entity list with the resolved role
+5. Empty list                → deny, show support contact
+6. Apply version rules V1–V2 from § 7.4
+7. Present only entitled entities in the picker
+```
+
+### 8.1 Degradation policy
+
+| Registry state | Behaviour |
+|---|---|
+| Reachable | Refresh cache, proceed normally |
+| Unreachable, cache age < `cache_ttl_hours` | Proceed; banner shows cache timestamp |
+| Unreachable, cache age < `offline_grace_hours` | Proceed **read-only**; freeze blocked |
+| Unreachable, cache age > grace | Block; show support contact |
+| No cache at all | Block; show support contact |
+
+Quarter-end deadlines do not pause for network outages. Graceful degradation is a
+requirement, not a nicety — but freezing, which is the point of no return, always requires
+a live entitlement check.
+
+### 8.2 Local cache
+
+Written to `%LOCALAPPDATA%\ImpairmentTool\registry_cache.json`:
+
+```json
+{
+  "cached_at":        "2026-09-18T08:02:11Z",
+  "registry_commit":  "d31f7a9",
+  "registry_ref":     "refs/heads/main",
+  "resolved_sid":     "S-1-5-21-...-1001",
+  "entities": [
+    {"entity_code": "4200", "role": "preparer",
+     "store_path": "\\\\corp-fs01\\impairment\\runs\\4200-HBAP-Singapore"}
+  ],
+  "global": { "min_engine_version": "1.4.0", "cache_ttl_hours": 24 }
+}
+```
+
+`registry_commit` goes into the run manifest, so any run can be traced to the exact
+entitlement state under which it was created.
+
+The cache is a convenience, not a control: a user who edits it grants themselves nothing,
+because NTFS still refuses the folder.
+
+### 8.3 NTFS reconciliation control
+
+The registry and the AD groups must not drift. Run quarterly:
+
+```
+For each entities/*.yaml:
+    registry_users = preparers ∪ reviewers ∪ viewers   (status == active)
+    ad_users       = members of ntfs_group
+    report registry_users − ad_users   → entitled but cannot access
+    report ad_users − registry_users   → can access but not entitled  ← the finding that matters
+```
+
+The second set is the access-review exception. Without this control, the registry
+documents an intent that the file system does not implement.
+
+---
+
+## 9. CI validation — blocking
+
+`.github/workflows/validate.yml` runs on every pull request. **A malformed registry locks
+every user out of the tool**, so this check is not optional.
+
+| # | Check | Severity |
+|---|---|---|
+| 1 | Every file parses as YAML and matches its JSON Schema | error |
+| 2 | Every `user_id` referenced exists in `users.yaml` | error |
+| 3 | No `user_id` in two roles for the same entity | error |
+| 4 | Every `sid` is unique and well-formed | error |
+| 5 | Every `template` key resolves in `template_registry.yaml` | error |
+| 6 | Every entity has ≥1 preparer and ≥1 reviewer | error |
+| 7 | `admins.yaml` agrees with `CODEOWNERS` | error |
+| 8 | Version references resolve across the three registries | error |
+| 9 | Secret scan — no tokens, keys or passwords | error |
+| 10 | `min_engine_version` is not above `current_engine_version` | error |
+| 11 | Entity `status: active` with all users `left` | warning |
+| 12 | `next_review_due` in the past | warning |
+| 13 | UNC paths are well-formed | warning |
+
+Check 6 deserves note: an entity with a preparer but no reviewer can produce runs that
+nobody is authorised to freeze — a deadlock discovered at the worst possible moment.
+
+Check 10 prevents the self-inflicted outage of setting a minimum version above the version
+anyone actually has.
+
+---
+
+## 10. Change control
+
+### 10.1 Pull request template
+
+```markdown
+## Change type
+- [ ] Add user access   - [ ] Remove user access   - [ ] Change role
+- [ ] New entity        - [ ] Version bump         - [ ] Admin change
+
+## Entities affected
+
+## Business justification
+
+## Approval reference
+Ticket / email / access request ID:
+
+## Checklist
+- [ ] NTFS group updated to match (required for access changes)
+- [ ] Segregation maintained — preparer is not also reviewer
+- [ ] Leaver marked `status: left`, not deleted
+- [ ] CI validation passing
+```
+
+### 10.2 Standard operating procedures
+
+| Event | Action |
+|---|---|
+| **Joiner** | Add to `users.yaml`; add to entity role list; add to AD group |
+| **Leaver** | Set `status: left` + `removed`/`removed_by`. Do **not** delete. Remove from AD group |
+| **Role change** | Move between lists in one PR, so the change is a single reviewable diff |
+| **Engine release** | Add to `engine_registry.yaml`; bump `current_engine_version`; raise `min_engine_version` only after users have upgraded |
+| **Bad release** | Set `status: withdrawn` + `reason`; raise `min_engine_version` above it |
+| **Template change** | New version entry with new `sha256`; keep the old as `superseded` |
+| **Quarterly access review** | Run §8.3; update `review.last_reviewed`; attach evidence to the PR |
+
+### 10.3 Evidence produced
+
+For an access review or audit, the repository yields directly:
+
+| Question | Answer |
+|---|---|
+| Who could access entity 4200 in Q3 2026? | `git show <commit-as-at-quarter-end>:entities/4200-hbap-singapore.yaml` |
+| Who approved that access? | Pull request reviewers |
+| When was it granted, and by whom? | `granted` / `granted_by`, plus commit metadata |
+| Were leavers removed promptly? | `removed` date vs HR leaving date |
+| Was segregation of duties maintained? | CI check 3, enforced on every merge |
+| Which engine produced a given run? | `run_meta.engine_version` → `engine_registry.yaml` |
+| Was the template tampered with? | `sha256` verification at export time |
+
+---
+
+## Appendix A — File summary
+
+| File | Grain | Changes | Approvers | Purpose |
+|---|---|---|---|---|
+| `users.yaml` | one row per person | joiners/leavers | admins | SID ↔ person |
+| `entities/<code>.yaml` | one file per entity | access changes | entity code owners | Entitlements + config |
+| `admins.yaml` | one row per admin | rare | `@dhead` only | Declared administrators |
+| `CODEOWNERS` | path rules | rare | `@dhead` only | Enforced approval routing |
+| `global.yaml` | singleton | per release | admins | Versions, paths, policy |
+| `templates/template_registry.yaml` | one row per template version | per template change | admins | Template versions + hashes |
+| `versions/engine_registry.yaml` | one row per release | per release | admins | Release history |
+| `versions/schema_registry.yaml` | one row per schema | rare | admins | Store schema compatibility |
+
+## Appendix B — Open decisions
+
+| # | Decision | Default if unresolved |
+|---|---|---|
+| A1 | Does the tool read GHE via API, or a cloned working copy on the share? | API with local cache |
+| A2 | Service account or individual PAT for registry reads? | Read-only service account, machine-scoped |
+| A3 | Is the AD group per entity or per region? | Per entity, matching `ntfs_group` |
+| A4 | Can a reviewer freeze without the preparer's sign-off? | Yes; preparer sign-off tracked as commentary |
+| A5 | Access review frequency | Quarterly, aligned to the VIU cycle |
+| A6 | Who runs the §8.3 NTFS reconciliation? | Tool owner, quarterly, evidence attached to a PR |
